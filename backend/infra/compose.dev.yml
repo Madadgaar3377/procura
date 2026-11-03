@@ -1,0 +1,26 @@
+# Local development only; set secrets in your own environment and avoid deploying this to production.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: procurement_dev
+      POSTGRES_USER: procurement
+      POSTGRES_PASSWORD: ${DEV_POSTGRES_PASSWORD:?Set a unique local password}
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - procurement_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U procurement -d procurement_dev"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "127.0.0.1:6380:6379"
+volumes:
+  procurement_pg_data:

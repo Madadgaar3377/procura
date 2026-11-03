@@ -1,0 +1,40 @@
+# Implementation status — 2026-10-20
+
+This is an audit and incremental hardening of the existing backend. Existing route families and workflow structure remain in place. No hosted database migration, real SMS/email, deployment, Git commit, or frontend change was performed.
+
+| Area | Implemented in this pass | Remaining |
+|---|---|---|
+| Authentication | Redis-backed request throttles with development-only in-process fallback; HMAC-hashed phone/email OTPs; encrypted queued OTP secrets; email verification and password recovery; refresh-token family rotation and replay-family revocation; password reset revokes refresh sessions. | Configure/test Redis failover; admin MFA/passkeys and independent authentication review. |
+| Tenant/RBAC | Restricted supplier price-book reads to supplier roles/admins; checked supplier ownership on price writes; buyer comparison remains submitted-only; inactive organization checks; verified CR duplicate protection. | Accepted member invitation/consent workflow; verify all authorization behavior against PostgreSQL concurrency. |
+| RFQ/matching/quotes | Existing RFQ, match, invitation, quotation, comparison and import workflows retained; matching now fetches candidate organizations in one query; quote comparison avoids per-quotation line queries; stable outbox dedupe keys and RFQ row locks. | Load and race testing against PostgreSQL; broader product/material coverage rules. |
+| Supplier capabilities | Fixed generated response contracts for JSON-backed list fields so capability qualifications and match reasons serialize as arrays, matching the mapped model annotations. Added a regression assertion for capability creation. | Broader JSON response-contract coverage. |
+| SMS | SMS Gateway for Android Public Cloud adapter uses HTTPS Basic Auth, a stable provider message ID, TTL and provider status polling; OTP, RFQ invitation and deadline alert templates; retries and per-user delivery status. | No credentials configured and no live gateway request made. Review Public Cloud handling before sending sensitive OTP content. |
+| Email | Hostinger SMTP adapter supports SSL on port 465 and STARTTLS on port 587; HTML templates; email verification/password recovery, RFQ/quotation/company alerts and 24-hour RFQ reminders; bounded retries and failure records. | No credentials configured and no live SMTP request made. SMTP acceptance cannot guarantee deduplication after a process crash. |
+| Worker/outbox | Leased row claiming (`SKIP LOCKED` on supporting databases), bounded exponential retry, dead-letter status, stable SMS IDs, queued consent-gated delivery and SMS status polling. | Prove concurrent-worker recovery/idempotency on PostgreSQL; run a supervised production queue only after review. |
+| Database status | Added public `GET /api/v1/db/connect/status` with a read-only probe and sanitized connected/disconnected response; never returns the URL or raw database error. | PostgreSQL connectivity remains blocked by this environment's outbound network policy. |
+| Database/migrations | Normalizes ordinary PostgreSQL URLs to psycopg v3; added additive revision `c2a1b7345e6f`; guarded local `init-db`/`seed-demo` from PostgreSQL. | The supplied hosted development PostgreSQL URL is configured in local `.env` with `sslmode=verify-full`. A read-only connection resolved the host but outbound TCP was blocked by the local network sandbox (WinError 10013), before database authentication; schema/revision could not be inspected. No hosted writes or migration were performed. Do not apply the migration until connectivity, duplicate-email/verified-CR checks, plan review and user approval. |
+| Production gate | Production startup still fails closed. | Private R2, malware scanning, admin MFA, legal review, live-provider approvals, PostgreSQL concurrency/load/failover and security assessment. |
+
+## Verification performed
+
+- Python 3.15.0: `python -m pytest -q` — **21 passed**, with one Starlette deprecation warning about `httpx`/`httpx2` in `TestClient`.
+- `python -m compileall -q app alembic tests` — passed; Ruff unused-import checks on changed files — passed. Ruff's broader default check on the changed source/test set is not clean (154 findings, including import/style rules, FastAPI `Depends` signatures and broad exception catches).
+- `alembic heads` — one head: `c2a1b7345e6f`.
+- OpenAPI generation — 67 paths and 74 documented HTTP operations, including the new auth and delivery-status routes.
+- Alembic full upgrade/downgrade on a newly created disposable SQLite file — passed; downgrade left only the expected `alembic_version` table. No hosted database was migrated.
+- Tests exercised the database status route on isolated SQLite and verified sanitized connection failures; mocked tests exercised SMS Basic Auth/payload/idempotency/status polling, SMTP SSL message construction, email verification/recovery, price-book role isolation, and opt-in outbox delivery.
+- Hosted PostgreSQL check used a read-only transaction (`SELECT 1` plus schema inspection if connected); outbound TCP was blocked by the local network sandbox (WinError 10013) before authentication. No writes or migrations were attempted.
+- `.venv` had no project dependencies and package installation could not reach PyPI. Checks ran with the preinstalled Python 3.15 interpreter; the test fixture used isolated in-memory SQLite and `MOCK_NOTIFICATIONS=true`.
+- Postman CLI/MCP was unavailable, so Postman Orbit/simulation was not run. Provider behavior was checked against current provider documentation and exercised with local HTTP/SMTP mocks.
+
+## Remaining security and operational issues
+
+- SMS and SMTP credentials are intentionally absent from this report and are not configured in this workspace. Real delivery remains disabled (`MOCK_NOTIFICATIONS=true`); no messages were sent.
+- The SMS Public Cloud documentation positions it for non-sensitive content. OTP delivery through that service needs a reviewed privacy decision; consider its private deployment before production.
+- The migration adds partial unique indexes for normalized user email and verified CR number. Inspect existing hosted rows for duplicates before applying it.
+- SMTP has no provider idempotency/status API in this integration; the worker uses a deterministic `Message-ID` and unique outbox record, but an accepted message may be duplicated if the process crashes before recording success.
+- Redis, real SMS/SMTP, live PostgreSQL behavior, query plans, high concurrency, R2/scanning, admin MFA, member acceptance, legal/compliance controls and production throughput remain unverified.
+
+2026-10-28: Added auth dispatch configuration logs and SMTP connection/authentication/acceptance logs; SMS gateway operation/status logs; worker logs safe delivery error details. Mock sends explicitly logged. Configuration inspection: live email/SMS configured, auto dispatch enabled (connectivity unverified). Full python -m pytest -q launched; still running with errors observed, so validation is not passing or complete.
+
+2026-10-28 recovery delivery fix: existing accounts have verified phones and unverified emails; recovery email lookup previously queued nothing. Lookup now accepts either account identifier if a verified recovery contact exists; sends remain restricted to verified destinations. Added skipped eligibility logs and regression coverage, including neither-contact-verified case. Delivery/recovery suites: 48 passed. Earlier full suite: 267 passed, 6 skipped, 2 failures, 15 errors (temp directory permissions among errors); full suite not clean. Read-only live probes: SMTP authenticated successfully; SMS gateway devices HTTP 200, one device; existing pending SMS now reports Sent, not confirmed Delivered. No new live messages sent. Restart backend to load changes.

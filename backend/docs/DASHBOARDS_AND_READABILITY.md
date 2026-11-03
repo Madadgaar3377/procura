@@ -1,0 +1,17 @@
+# Buyer/supplier dashboards and site readability ? 2026-10-23
+
+Buyer overview now displays total RFQs, draft RFQs, published/collecting RFQs and received quotations. The six most recent RFQs show title/reference, city, current persisted status, response deadline, elapsed-deadline notice and direct view/continue-draft actions. A recent-record status filter and full-company RFQ status breakdown help review progress. Shortcuts lead to company profile, reports, notifications and RFQ creation.
+
+Supplier overview displays total invitations, pending invitations, accepted invitations and submitted quotations. Recent RFQs include only requests the company has been invited to; status and deadlines are visible. The full-company invitation status breakdown and quotation-draft count expose the next work to review. Review-invitation, quotation and company shortcuts remain routed through existing workflows.
+
+All numbers and recent records are scoped to the selected active company through the existing report endpoint. `GET /reports/summary` adds rfq_statuses, invitation_statuses, quotation_statuses and recent_rfqs. These additive fields retain existing metrics/activity and access checks. Status totals count all authorized records, not a 100-record client page. Recent RFQs are ordered newest-first and limited to six. Grouped counts replace repeated individual count queries. Buyer quotation aggregates still exclude supplier drafts; suppliers only see invited RFQs and their own quotations. No database schema migration is needed.
+
+Site-wide body text is now 16px. Small interface labels/text have been increased, names and regular copy use near-black text, table cells and input controls are larger, and sidebar links are more readable. Blue actions and semantic status colors remain distinguishable. Tables scroll inside their panels on narrow screens. The new dashboard has desktop, mobile and RTL layouts and Arabic translations. Tailwind now also scans the features directory so component styles used there are included.
+
+Validation: full backend suite 83 passed, 2 skipped; frontend API tests 14 passed; TypeScript and production build passed. Tests cover selected-company isolation, buyer/supplier permissions, correct grouped statuses, six-record ordering and accurate totals with 107 RFQs. Browser screenshots and responsive checks are recorded below when completed.
+
+The protected IMPLEMENTATION_STATUS.md remains unwritable; current results are recorded in this document. No real provider messages, hosted database writes, deployment, Git commit or push occurred.
+
+Browser validation passed for buyer/supplier desktop and 390px mobile dashboards, supplier RTL, near-black RFQ names and a 16px body font. Existing RFQ, comparison, material/category editing, user deletion, public home desktop/mobile and authorization checks also passed against disposable SQLite. Screenshots are in frontend/.test-runtime/screenshots: buyer-dashboard-desktop.png, buyer-dashboard-mobile.png, supplier-dashboard-desktop.png, supplier-dashboard-mobile.png, supplier-dashboard-mobile-rtl.png and public-home-readable-*.png. Final visual review corrected a platform-encoding issue in the reference separator and unavailable-value placeholder; company changes reset the recent-status filter.
+
+Final frontend rebuild and browser/HTTP smoke were rerun after the text/selection cleanup and passed. RFQ reference separators and missing-value dashes now render correctly; chart labels also use larger dark text.

@@ -1,0 +1,92 @@
+from functools import lru_cache
+from pathlib import Path
+
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    app_env: str = 'development'
+    database_url: str = 'sqlite:///./data/procurement.db'
+    jwt_secret: str = 'CHANGE_ME_FOR_LOCAL_ONLY'
+    jwt_issuer: str = Field(default='procura', min_length=1, max_length=200)
+    jwt_audience: str = Field(default='procura-api', min_length=1, max_length=200)
+    token_minutes: int = 30
+    refresh_days: int = 7
+    admin_bootstrap_key: str = ''
+    redis_url: str = ''
+    cors_origins: str = 'http://localhost:3000,http://127.0.0.1:3000'
+    database_connect_timeout: int = Field(default=5,ge=1,le=30)
+    database_lock_timeout_ms: int = Field(default=3000,ge=100,le=30000)
+    database_statement_timeout_ms: int = Field(default=15000,ge=1000,le=120000)
+    database_sslrootcert: str = ''
+    mock_notifications: bool = True
+    auth_delivery_auto_dispatch: bool = True
+    recovery_minutes: int = Field(default=10, ge=5, le=30)
+    otp_resend_seconds: int = Field(default=60, ge=30, le=300)
+    sms_provider: str = 'android_gateway'
+    sms_gateway_enabled: bool = False
+    sms_gateway_mode: str = 'mock'
+    notification_test_phone: str = Field(default='',validation_alias=AliasChoices('notification_test_phone','sms_test_phone','test_phone'))
+    notification_test_email: str = Field(default='',validation_alias=AliasChoices('notification_test_email','smtp_test_email','test_email'))
+    notification_default_country: str = 'SA'
+    sms_gate_api_url: str = Field(
+        default='https://api.sms-gate.app/3rdparty/v1/messages',
+        validation_alias=AliasChoices('sms_gate_api_url', 'sms_gateway_api_url', 'sms_gateway_base_url'),
+    )
+    sms_gate_username: str = Field(
+        default='',
+        validation_alias=AliasChoices('sms_gate_username', 'sms_gateway_username'),
+    )
+    sms_gate_password: str = Field(
+        default='',
+        validation_alias=AliasChoices('sms_gate_password', 'sms_gateway_password'),
+    )
+
+    @field_validator('sms_gate_api_url', mode='after')
+    @classmethod
+    def _normalize_sms_gate_url(cls, v: str) -> str:
+        v = (v or '').rstrip('/')
+        if v and not v.endswith('/3rdparty/v1/messages'):
+            v = f'{v}/3rdparty/v1/messages'
+        return v
+    support_url: str = ''
+    frontend_url: str = 'http://localhost:3000'
+    smtp_host: str = 'smtp.hostinger.com'
+    smtp_port: int = Field(default=465,ge=1,le=65535)
+    smtp_username: str = ''
+    smtp_password: str = ''
+    smtp_from_email: str = ''
+    smtp_use_tls: bool = True
+    field_encryption_key: str = ''
+    delivery_timeout_seconds: int = Field(default=10,ge=1,le=30)
+    delivery_max_attempts: int = Field(default=5,ge=1,le=10)
+    delivery_status_max_polls: int = Field(default=24,ge=1,le=100)
+    upload_dir: str = './data/private'
+    max_upload_bytes: int = 5_000_000
+    matching_batch_size: int = 5
+    require_capability_approval: bool = False
+    model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / '.env', extra='ignore')
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env.lower() == 'production'
+
+    @property
+    def is_test(self) -> bool:
+        return self.app_env.lower() == 'test'
+
+
+def normalize_database_url(url: str) -> str:
+    """Use the installed psycopg v3 driver for ordinary PostgreSQL URLs."""
+    if url.startswith('postgres://'):
+        return 'postgresql+psycopg://' + url[len('postgres://'):]
+    if url.startswith('postgresql://'):
+        return 'postgresql+psycopg://' + url[len('postgresql://'):]
+    if url.startswith('postgresql+psycopg2://'):
+        return 'postgresql+psycopg://' + url[len('postgresql+psycopg2://'):]
+    return url
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

@@ -1,0 +1,6 @@
+{
+  "audit_completed": false,
+  "error_type": "OperationalError",
+  "no_changes_made": true,
+  "duplicate_identities": "unknown: read-only audit did not complete"
+}
