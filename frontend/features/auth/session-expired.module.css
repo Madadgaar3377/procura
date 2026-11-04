@@ -1,0 +1,18 @@
+.page{display:flex;flex-direction:column;min-height:100vh;min-height:100dvh;background:#f8fafc}
+.main{flex:1;display:grid;place-items:center;width:100%;min-width:0;min-height:560px;min-height:clamp(480px,65dvh,720px);padding:64px 24px}
+.card{width:100%;max-width:480px;padding:36px 32px 28px;text-align:center;border:1px solid #e2e8f0;border-radius:16px;background:#fff;box-shadow:0 8px 28px #0f172a06,0 2px 6px #0f172a03;animation:card-enter 240ms ease-out}
+.icon{display:grid;place-items:center;width:56px;height:56px;margin:0 auto 24px;color:#2563eb;background:#eff6ff;border-radius:16px;animation:icon-enter 280ms ease-out}
+.card .title{font-size:26px;line-height:1.3;letter-spacing:-.6px;font-weight:650;color:#0f172a;text-wrap:balance}
+.card .description{margin-top:14px;color:#64748b;font-size:15px;line-height:1.8;text-wrap:pretty}
+.actions{display:flex;flex-direction:column;gap:10px;margin-top:28px}
+.primary,.secondary{display:flex;justify-content:center;align-items:center;min-height:48px;font-size:15px;font-weight:600;text-decoration:none;border-radius:8px;transition:background-color 160ms,color 160ms,box-shadow 160ms}
+.primary{background:#2563eb;color:#fff;padding:12px 18px;box-shadow:0 2px 4px #2563eb14}
+.primary:hover{background:#1d4ed8;box-shadow:0 4px 12px #2563eb24}
+.secondary{color:#64748b;padding:10px 12px}
+.secondary:hover{color:#0f172a;background:#f8fafc}
+.card .tagline{margin-top:24px;padding-top:20px;border-top:1px solid #f1f5f9;font-size:12px;line-height:1.7;color:#64748b;text-wrap:balance}
+.page:dir(rtl) .title{letter-spacing:0;line-height:1.6}
+@keyframes card-enter{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+@keyframes icon-enter{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
+@media(max-width:480px){.main{padding:36px 16px;min-height:500px}.card{padding:28px 22px 24px;border-radius:14px}.card .title{font-size:24px}.icon{margin-bottom:20px}.card .description{font-size:15px}.actions{margin-top:24px}}
+@media(prefers-reduced-motion:reduce){.card,.icon{animation:none}.primary,.secondary{transition:none}}

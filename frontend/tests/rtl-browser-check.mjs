@@ -1,0 +1,73 @@
+import {spawn} from 'node:child_process';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {setTimeout as delay} from 'node:timers/promises';
+import assert from 'node:assert/strict';
+export async function browserCheck({origin,frontend,rfqId,quoteId,before=false}){
+ const port=20000+Math.floor(Math.random()*10000);
+ const chrome=spawn('C:/Program Files/Google/Chrome/Application/chrome.exe',['--headless=new','--disable-gpu','--disable-extensions','--disable-background-networking','--no-sandbox','--disable-dev-shm-usage','--no-first-run','--no-default-browser-check',`--remote-debugging-port=${port}`,`--user-data-dir=${path.join(frontend,'.test-runtime','chrome-profile-'+process.pid)}`,'about:blank'],{windowsHide:true,stdio:'ignore'});
+ let ws;let screenshotOnFailure=async()=>{};let debugGeometry=async()=>({});
+ try{
+  let target;
+  for(let i=0;i<80;i++){try{const r=await fetch(`http://127.0.0.1:${port}/json/list`,{signal:AbortSignal.timeout(2000)});target=(await r.json()).find(p=>p.type==='page');if(target)break;}catch{}await delay(250);}
+  if(!target)throw new Error('Headless Chrome debugging interface unavailable');
+  ws=new WebSocket(target.webSocketDebuggerUrl);await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(new Error('Chrome WebSocket connection timed out')),5000);ws.addEventListener('open',()=>{clearTimeout(timeout);resolve();},{once:true});ws.addEventListener('error',reject,{once:true});});
+  let sequence=0;const pending=new Map();let intercept;const runtimeErrors=[];const apiFailures=[];
+  ws.addEventListener('message',e=>{const data=JSON.parse(e.data);if(data.method==='Fetch.requestPaused')intercept?.(data.params);if(data.method==='Network.responseReceived'){const response=data.params.response;if(response.url.includes(':18081/api/v1/')&&response.status>=400&&!(response.status===401&&response.url.includes('/auth/'))&&!(response.status===503&&response.url.includes('/organizations/')))apiFailures.push({url:response.url,status:response.status});}if(data.method==='Runtime.consoleAPICalled'&&data.params.type==='error'){const message=data.params.args.map(arg=>arg.value||arg.description||'').join(' ');if(/hydrat|server rendered|didn.t match/i.test(message))runtimeErrors.push(message);}if(data.method==='Runtime.exceptionThrown')runtimeErrors.push(data.params.exceptionDetails.text);if(data.id){const call=pending.get(data.id);pending.delete(data.id);if(data.error)call?.reject(new Error(data.error.message));else call?.resolve(data.result);}});
+  function command(method,params={}){return new Promise((resolve,reject)=>{const id=++sequence;const timeout=setTimeout(()=>{pending.delete(id);reject(new Error('Chrome command timed out: '+method));},20000);pending.set(id,{resolve:value=>{clearTimeout(timeout);resolve(value);},reject:error=>{clearTimeout(timeout);reject(error);}});ws.send(JSON.stringify({id,method,params}));});}
+  async function evaluate(expression){const r=await command('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result.value;}
+  async function until(expression){for(let i=0;i<100;i++){if(await evaluate(expression))return;await delay(100);}await screenshot('browser-failure');throw new Error('Browser condition timed out: '+expression+' | '+await evaluate('document.body.innerText.slice(-2500)'));}
+  async function navigate(route){await command('Page.navigate',{url:origin+route});await until('document.readyState === "complete"');await delay(350);}
+  const artifacts=path.join(frontend,'.test-runtime','rtl-screenshots');await fs.mkdir(artifacts,{recursive:true});
+  async function screenshot(name){await delay(220);const result=await command('Page.captureScreenshot',{format:'png',captureBeyondViewport:false});await fs.writeFile(path.join(artifacts,name+'.png'),Buffer.from(result.data,'base64'));}
+
+  await command('Page.enable');await command('Runtime.enable');await command('Network.enable');await navigate('/login');
+  async function login(role){await evaluate(`fetch('/api/backend/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({identifier:'${({buyer:'+966500009901',supplier:'+966500009902',admin:'+966500009903'})[role]}',password:'SmokeTestPassword-123'})}).then(async r=>{if(!r.ok)throw Error(await r.text());})`);}
+  async function call(route,body){return evaluate(`fetch('/api/backend/${route}',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(${JSON.stringify(body)})}).then(async r=>{const d=await r.json();if(!r.ok)throw Error(JSON.stringify(d));return d;})`);}
+
+  const widths=before?[1280,1920,375]:[320,375,430,768,1024,1280,1440,1920];
+  const geometry=()=>evaluate(`(()=>{const box=selector=>{const node=document.querySelector(selector);if(!node)return null;const r=node.getBoundingClientRect();const s=getComputedStyle(node);return {x:r.x,y:r.y,width:r.width,right:r.right,display:s.display,direction:s.direction,columns:s.gridTemplateColumns,flex:s.flexDirection};};return {width:innerWidth,scroll:document.documentElement.scrollWidth,dir:document.documentElement.dir,lang:document.documentElement.lang,frame:box('.app-frame'),layout:box('.app-layout'),sidebar:box('.side-nav'),content:box('.app-content')};})()`);
+  screenshotOnFailure=()=>screenshot(before?'before-failure':'after-failure');debugGeometry=geometry;
+  const results=[];
+  if(!before){const html=await (await fetch(origin+'/app/supplier/dashboard',{headers:{cookie:'procura.locale=ar'}})).text();assert.match(html,/<html[^>]*lang="ar"/);assert.match(html,/<html[^>]*dir="rtl"/);}
+
+  async function switchLanguage(arabic){const dir=arabic?'rtl':'ltr';if(await evaluate('document.documentElement.dir')!==dir){await evaluate(`(document.querySelector('[aria-label="Switch language"]')||document.querySelector('.language-button')).click()`);await until(`document.documentElement.dir===${JSON.stringify(dir)}`);}await delay(120);}
+  function check(g,context){
+   assert.ok(g.scroll<=g.width+1,`${context}: page overflow ${JSON.stringify(g)}`);
+   if(!g.layout)return;
+   assert.ok(Math.abs(g.content.width-(g.layout.width-(g.width>1024?g.sidebar.width:0)))<=1,`${context}: content squeezed ${JSON.stringify(g)}`);
+   if(g.width>1024){assert.ok(g.sidebar.width>=239&&g.sidebar.width<=265,`${context}: sidebar width`);if(g.dir==='rtl')assert.ok(g.sidebar.x>=g.content.right-2,`${context}: sidebar must be right of content`);else assert.ok(g.sidebar.right<=g.content.x+2,`${context}: sidebar must be left of content`);}
+   else assert.equal(g.sidebar.display,'none',`${context}: mobile sidebar must be hidden`);
+  }
+  const routes={supplier:['dashboard','company','capabilities','inbox','quotations','price-book','reports','membership','notifications','settings',`rfqs/${rfqId}`,`quote/${quoteId}`],buyer:['dashboard','rfqs','rfqs/new',`rfqs/${rfqId}`,`quote/${quoteId}`,'matches','quotations','compare','company','reports','notifications','settings'],admin:['dashboard','users','categories','materials','material-import','supplier-import','verification','suppliers','buyers','rfqs',`rfqs/${rfqId}`,`quote/${quoteId}`,'matching','quotations','reports','notifications','settings']};
+  for(const role of before?['supplier','admin']:['supplier','buyer','admin']){
+   await login(role);
+   for(const width of widths){
+    await command('Emulation.setDeviceMetricsOverride',{width,height:960,deviceScaleFactor:1,mobile:width<768});
+    for(const route of before?['dashboard',role==='supplier'?'company':'categories']:routes[role]){
+     await navigate(`/app/${role}/${route}`);await until(`!!document.querySelector('.app-topbar')&&!!document.querySelector('.page-head,.dashboard-heading')`);
+     const pathname=await evaluate('location.pathname');
+     if(!before&&route==='company')await evaluate(`(()=>{const input=document.querySelector('[name=trading_name]');if(input){Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'Supplier');input.dispatchEvent(new Event('input',{bubbles:true}));}})()`);
+     for(const arabic of [false,true,false]){await switchLanguage(arabic);const g=await geometry();results.push({role,route,...g});if(!before)check(g,`${role}/${route} ${width} ${g.dir}`);assert.equal(await evaluate('location.pathname'),pathname,'Language switching must preserve route');if(!before&&route==='company')assert.equal(await evaluate(`document.querySelector('[name=trading_name]')?.value`),'Supplier','Do not translate or reset form inputs');if(!before&&route==='company'){for(const tab of ['business','contact','supply','verification']){const exists=await evaluate(`!!document.querySelector('#company-tab-${tab}')`);if(exists){await evaluate(`document.querySelector('#company-tab-${tab}').click()`);await until(`!document.querySelector('#company-panel-${tab}').hidden`);check(await geometry(),`${role} ${tab} ${width}`);}}await evaluate(`document.querySelector('#company-tab-business').click()`);}if(!before&&arabic){const mixed=await evaluate(`Array.from(document.querySelectorAll('.side-link')).map(node=>node.textContent.trim()).filter(text=>/[A-Za-z]/.test(text))`);assert.deepEqual(mixed,[],`Untranslated navigation: ${role}`);}}
+     if(!before&&route==='users'){await switchLanguage(true);await evaluate(`document.querySelector('.page-head-action button').click()`);await until(`!!document.querySelector('dialog[open]')`);assert.ok(await evaluate(`(()=>{const r=document.querySelector('dialog[open]').getBoundingClientRect();return r.left>=-1&&r.right<=document.documentElement.clientWidth+1&&r.height<=innerHeight;})()`),'Arabic dialog stays inside viewport');await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await until(`!document.querySelector('dialog[open]')`);await switchLanguage(false);}
+     if(before||route==='dashboard'||route==='company'||route==='categories'){await switchLanguage(true);await screenshot(`${before?'before':'after'}-${role}-${route}-${width}-ar`);await switchLanguage(false);await screenshot(`${before?'before':'after'}-${role}-${route}-${width}-en`);}
+    }
+    await switchLanguage(true);await navigate(`/app/${role}/dashboard`);await until(`!!document.querySelector('.app-topbar')`);const refreshed=await geometry();results.push({role,route:'refresh',...refreshed});if(!before){assert.equal(refreshed.dir,'rtl','Refresh preserves Arabic');check(refreshed,`${role} refresh ${width}`);}
+    if(!before&&width<=1024){await evaluate(`document.querySelector('.workspace-menu').click()`);await until(`document.querySelector('#workspace-drawer').open`);const r=await evaluate(`(()=>{const r=document.querySelector('#workspace-drawer').getBoundingClientRect();return {x:r.x,right:r.right,width:r.width};})()`);assert.ok(r.x>=-1&&r.right<=width+1);await screenshot(`after-${role}-drawer-${width}-ar`);assert.ok(Math.abs(r.right-(await evaluate('document.documentElement.clientWidth')))<2,'Arabic drawer opens on right: '+JSON.stringify(r));await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await until(`!document.querySelector('#workspace-drawer').open`);await switchLanguage(false);await evaluate(`document.querySelector('.workspace-menu').click()`);await until(`document.querySelector('#workspace-drawer').open`);assert.ok(await evaluate(`Math.abs(document.querySelector('#workspace-drawer').getBoundingClientRect().left)<2`),'English drawer opens on left');await command('Input.dispatchKeyEvent',{type:'keyDown',key:'Escape',code:'Escape',windowsVirtualKeyCode:27});await until(`!document.querySelector('#workspace-drawer').open`);}
+    console.log(`${before?'Baseline':'RTL regression'}: ${role} ${width}px`);
+   }
+  }
+  if(!before){
+   await switchLanguage(true);
+   const traceScript=await command('Page.addScriptToEvaluateOnNewDocument',{source:`window.__localeFrames=[];function trace(){if(document.querySelector('.app-frame'))window.__localeFrames.push(document.documentElement.dir);if(window.__localeFrames.length<30)requestAnimationFrame(trace);}requestAnimationFrame(trace);`});
+   await navigate('/app/admin/dashboard');await until(`!!document.querySelector('.app-topbar')`);await delay(300);assert.ok(await evaluate(`window.__localeFrames.length>0&&window.__localeFrames.every(value=>value==='rtl')`),'Refresh must not paint the English shell before Arabic');await command('Network.deleteCookies',{name:'procura.locale',url:origin});await navigate('/app/admin/dashboard');await until(`!!document.querySelector('.app-topbar')`);await delay(200);assert.ok(await evaluate(`window.__localeFrames.length>0&&window.__localeFrames.every(value=>value==='rtl')`),'Legacy localStorage preference is restored before the shell paints');await command('Page.removeScriptToEvaluateOnNewDocument',{identifier:traceScript.identifier});
+   const blockedStorage=await command('Page.addScriptToEvaluateOnNewDocument',{source:`Storage.prototype.getItem=function(){throw new Error('Storage disabled for test')};Storage.prototype.setItem=function(){throw new Error('Storage disabled for test')};`});await navigate('/app/admin/dashboard');await until(`!!document.querySelector('.app-topbar')`);assert.equal(await evaluate('document.documentElement.dir'),'rtl','Cookie preference survives disabled localStorage');await command('Page.removeScriptToEvaluateOnNewDocument',{identifier:blockedStorage.identifier});await navigate('/app/admin/dashboard');await until(`!!document.querySelector('.app-topbar')`);
+   const directory=await evaluate(`fetch('/api/backend/directory/suppliers?limit=1').then(r=>r.json())`);
+   for(const width of widths){await command('Emulation.setDeviceMetricsOverride',{width,height:960,deviceScaleFactor:1,mobile:width<768});for(const route of ['/suppliers',...(directory[0]?[`/suppliers/${directory[0].id}`]:[])]){await navigate(route);await until(`!!document.querySelector('.language-button')`);for(const arabic of [false,true,false]){await switchLanguage(arabic);assert.ok((await geometry()).scroll<=width+1);results.push({role:'public',route,...(await geometry())});}}}
+
+  }
+  await fs.writeFile(path.join(artifacts,before?'before-layout.json':'after-layout.json'),JSON.stringify(results,null,2));
+  if(!before){assert.deepEqual(apiFailures,[]);assert.deepEqual(runtimeErrors,[]);}
+  console.log(`${before?'Baseline captured':'RTL browser checks passed'}: ${results.length} layout observations.`);
+ }catch(error){try{await screenshotOnFailure();console.error(await debugGeometry());}catch{}throw error;}finally{ws?.close();chrome.kill();}
+}

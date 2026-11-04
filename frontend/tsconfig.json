@@ -1,0 +1,66 @@
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": [
+      "dom",
+      "dom.iterable",
+      "esnext"
+    ],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "react-jsx",
+    "incremental": true,
+    "plugins": [
+      {
+        "name": "next"
+      }
+    ],
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "next.config.ts",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx",
+    "features/**/*.ts",
+    "features/**/*.tsx",
+    "lib/**/*.ts",
+    "lib/**/*.tsx",
+    ".next/types/**/*.ts",
+    ".next/dev/types/**/*.ts",
+    ".next-buyer-current/types/**/*.ts",
+    ".next-buyer-current/dev/types/**/*.ts",
+    ".next-account-settings-test/types/**/*.ts",
+    ".next-account-settings-test/dev/types/**/*.ts",
+    ".next-global-phone-test/types/**/*.ts",
+    ".next-global-phone-test/dev/types/**/*.ts",
+    ".next-global-phone-build/types/**/*.ts",
+    ".next-global-phone-build/dev/types/**/*.ts",
+    ".next-global-phone-final/types/**/*.ts",
+    ".next-global-phone-final/dev/types/**/*.ts",
+    ".next-membership-validation/types/**/*.ts",
+    ".next-membership-validation/dev/types/**/*.ts",
+    ".next-admin-verification/types/**/*.ts",
+    ".next-admin-verification/dev/types/**/*.ts",
+    ".next-plan-validation/types/**/*.ts",
+    ".next-plan-validation/dev/types/**/*.ts",
+    ".next-saudi-policy/types/**/*.ts",
+    ".next-saudi-policy/dev/types/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

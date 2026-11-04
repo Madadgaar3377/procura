@@ -1,0 +1,443 @@
+{
+  "auth/register": [
+    "POST"
+  ],
+  "auth/otp/request": [
+    "POST"
+  ],
+  "auth/otp/verify": [
+    "POST"
+  ],
+  "auth/login": [
+    "POST"
+  ],
+  "auth/refresh": [
+    "POST"
+  ],
+  "auth/logout": [
+    "POST"
+  ],
+  "auth/me": [
+    "GET"
+  ],
+  "auth/email/verification/request": [
+    "POST"
+  ],
+  "auth/email/verification/confirm": [
+    "POST"
+  ],
+  "auth/password/forgot": [
+    "POST"
+  ],
+  "auth/password/verify": [
+    "POST"
+  ],
+  "auth/password/reset": [
+    "POST"
+  ],
+  "auth/password/change": [
+    "POST"
+  ],
+  "auth/sessions/revoke-others": [
+    "POST"
+  ],
+  "auth/account-preferences": [
+    "GET",
+    "PATCH"
+  ],
+  "auth/notification-preferences": [
+    "PATCH"
+  ],
+  "auth/sessions": [
+    "GET"
+  ],
+  "auth/sessions/{session_id}": [
+    "DELETE"
+  ],
+  "auth/browser/login": [
+    "POST"
+  ],
+  "auth/browser/refresh": [
+    "POST"
+  ],
+  "auth/browser/logout": [
+    "POST"
+  ],
+  "auth/phone/change/{challenge_id}/status": [
+    "GET"
+  ],
+  "auth/phone/change/request": [
+    "POST"
+  ],
+  "auth/phone/change/confirm": [
+    "POST"
+  ],
+  "organizations/{org_id}/public-profile": [
+    "GET",
+    "PATCH"
+  ],
+  "organizations": [
+    "POST",
+    "GET"
+  ],
+  "organizations/admin/suppliers": [
+    "POST"
+  ],
+  "organizations/claimable/suppliers": [
+    "GET"
+  ],
+  "organizations/{org_id}": [
+    "GET",
+    "PATCH"
+  ],
+  "organizations/{org_id}/verification": [
+    "POST",
+    "GET"
+  ],
+  "organizations/{org_id}/documents": [
+    "POST"
+  ],
+  "organizations/{org_id}/claims": [
+    "POST"
+  ],
+  "organizations/admin/review/queue": [
+    "GET"
+  ],
+  "organizations/admin/review/verification/{verification_id}": [
+    "POST"
+  ],
+  "organizations/admin/review/claim/{claim_id}": [
+    "POST"
+  ],
+  "organizations/{org_id}/members": [
+    "GET",
+    "POST"
+  ],
+  "organizations/admin/directory/unclaimed": [
+    "GET"
+  ],
+  "organizations/{org_id}/favorites": [
+    "GET"
+  ],
+  "organizations/{org_id}/favorites/{supplier_id}": [
+    "PUT",
+    "DELETE"
+  ],
+  "taxonomy/categories/import/preview": [
+    "POST"
+  ],
+  "taxonomy/categories/import/{batch_id}/confirm": [
+    "POST"
+  ],
+  "taxonomy/categories": [
+    "GET",
+    "POST"
+  ],
+  "taxonomy/categories/archived": [
+    "GET"
+  ],
+  "taxonomy/categories/manage": [
+    "GET"
+  ],
+  "taxonomy/categories/with-material": [
+    "POST"
+  ],
+  "taxonomy/categories/{category_id}": [
+    "PUT",
+    "DELETE"
+  ],
+  "taxonomy/categories/{category_id}/archive": [
+    "PATCH"
+  ],
+  "taxonomy/categories/{category_id}/restore": [
+    "PATCH"
+  ],
+  "taxonomy/units": [
+    "GET",
+    "POST"
+  ],
+  "taxonomy/materials": [
+    "GET",
+    "POST"
+  ],
+  "taxonomy/materials/manage": [
+    "GET"
+  ],
+  "taxonomy/materials/{material_id}": [
+    "GET",
+    "PUT"
+  ],
+  "taxonomy/materials/manual": [
+    "POST"
+  ],
+  "taxonomy/materials/{material_id}/revisions": [
+    "GET"
+  ],
+  "taxonomy/materials/{material_id}/archive": [
+    "PATCH"
+  ],
+  "taxonomy/materials/{material_id}/restore": [
+    "PATCH"
+  ],
+  "imports/materials/preview": [
+    "POST"
+  ],
+  "imports/materials/{batch_id}/preview-options": [
+    "POST"
+  ],
+  "imports/materials/{batch_id}/confirm": [
+    "POST"
+  ],
+  "imports/materials/{batch_id}": [
+    "GET"
+  ],
+  "imports/materials": [
+    "GET"
+  ],
+  "imports/{kind}": [
+    "POST"
+  ],
+  "imports/batches": [
+    "GET"
+  ],
+  "imports/suppliers/{batch_id}/confirm": [
+    "POST"
+  ],
+  "capabilities/selections": [
+    "PUT"
+  ],
+  "capabilities": [
+    "POST"
+  ],
+  "capabilities/{org_id}": [
+    "GET"
+  ],
+  "capabilities/{capability_id}/confirm": [
+    "POST"
+  ],
+  "capabilities/{capability_id}/eligibility": [
+    "PATCH"
+  ],
+  "directory/suppliers": [
+    "GET"
+  ],
+  "directory/suppliers/{supplier_id}": [
+    "GET"
+  ],
+  "directory/suppliers/{supplier_id}/related": [
+    "GET"
+  ],
+  "rfqs": [
+    "POST",
+    "GET"
+  ],
+  "rfqs/{rfq_id}": [
+    "GET",
+    "PUT"
+  ],
+  "rfqs/{rfq_id}/publish": [
+    "POST"
+  ],
+  "rfqs/{rfq_id}/close": [
+    "POST"
+  ],
+  "rfqs/{rfq_id}/cancel": [
+    "POST"
+  ],
+  "rfqs/{rfq_id}/reminders": [
+    "POST"
+  ],
+  "rfqs/{rfq_id}/attachments": [
+    "POST"
+  ],
+  "rfqs/{rfq_id}/attachments/{attachment_id}": [
+    "GET",
+    "DELETE"
+  ],
+  "matching/rfqs/{rfq_id}/dispatch": [
+    "POST"
+  ],
+  "matching/rfqs/{rfq_id}/results": [
+    "GET"
+  ],
+  "matching/invitations": [
+    "GET"
+  ],
+  "matching/invitations/{invitation_id}/{action}": [
+    "POST"
+  ],
+  "pricebooks/policy": [
+    "GET"
+  ],
+  "pricebooks": [
+    "POST"
+  ],
+  "pricebooks/{org_id}/page": [
+    "GET"
+  ],
+  "pricebooks/{org_id}": [
+    "GET"
+  ],
+  "pricebooks/{price_id}": [
+    "PUT"
+  ],
+  "pricebooks/{price_id}/status": [
+    "PATCH"
+  ],
+  "pricebooks/{price_id}/history": [
+    "GET"
+  ],
+  "pricebooks/{org_id}/automation": [
+    "GET",
+    "PUT"
+  ],
+  "pricebooks/{org_id}/bulk-import": [
+    "POST"
+  ],
+  "pricebooks/{org_id}/imports/{batch_id}": [
+    "GET"
+  ],
+  "pricebooks/{org_id}/imports/{batch_id}/rows/{row_number}": [
+    "PUT"
+  ],
+  "pricebooks/{org_id}/imports/{batch_id}/confirm": [
+    "POST"
+  ],
+  "quotations": [
+    "GET"
+  ],
+  "quotations/invitations/{invitation_id}/auto-draft": [
+    "POST"
+  ],
+  "quotations/{quotation_id}/lines": [
+    "PUT"
+  ],
+  "quotations/{quotation_id}": [
+    "GET"
+  ],
+  "quotations/{quotation_id}/submit": [
+    "POST"
+  ],
+  "quotations/rfqs/{rfq_id}/comparison": [
+    "GET"
+  ],
+  "quotations/{quotation_id}/decision/{decision}": [
+    "POST"
+  ],
+  "quotations/{quotation_id}/history": [
+    "GET"
+  ],
+  "notifications": [
+    "GET"
+  ],
+  "notifications/deliveries": [
+    "GET"
+  ],
+  "notifications/admin/outbox/{event_id}/retry": [
+    "POST"
+  ],
+  "notifications/{notification_id}/read": [
+    "POST"
+  ],
+  "notifications/admin/outbox": [
+    "GET"
+  ],
+  "memberships/plans": [
+    "GET"
+  ],
+  "memberships/admin/plans": [
+    "GET",
+    "POST"
+  ],
+  "memberships/admin/plan-page": [
+    "GET"
+  ],
+  "memberships/admin/plans/{plan_id}": [
+    "GET",
+    "PUT",
+    "DELETE"
+  ],
+  "memberships/admin/plans/{plan_id}/publication": [
+    "PATCH"
+  ],
+  "memberships/admin/plans/{plan_id}/duplicate": [
+    "POST"
+  ],
+  "memberships/admin/plans/{plan_id}/permanent": [
+    "DELETE"
+  ],
+  "memberships/admin/plan-order": [
+    "POST"
+  ],
+  "memberships/settings": [
+    "GET"
+  ],
+  "memberships/admin/settings": [
+    "PUT"
+  ],
+  "memberships/organizations/{org_id}": [
+    "GET"
+  ],
+  "memberships/admin/assign": [
+    "POST"
+  ],
+  "memberships/admin/subscriptions": [
+    "GET"
+  ],
+  "memberships/admin/subscriptions/{sub_id}": [
+    "PATCH"
+  ],
+  "memberships/admin/promotions": [
+    "POST",
+    "GET"
+  ],
+  "memberships/admin/promotions/{promotion_id}": [
+    "DELETE",
+    "PUT"
+  ],
+  "memberships/public/featured-suppliers": [
+    "GET"
+  ],
+  "memberships/rfqs/{rfq_id}/public-consent": [
+    "PUT"
+  ],
+  "memberships/public/featured-rfqs": [
+    "GET"
+  ],
+  "memberships/public/suppliers/{org_id}/status": [
+    "GET"
+  ],
+  "admin/dashboard": [
+    "GET"
+  ],
+  "admin/audit": [
+    "GET"
+  ],
+  "admin/settings": [
+    "GET"
+  ],
+  "admin/users": [
+    "GET",
+    "POST"
+  ],
+  "admin/users/{user_id}": [
+    "GET",
+    "PATCH",
+    "DELETE"
+  ],
+  "db/connect/status": [
+    "GET"
+  ],
+  "reports/summary": [
+    "GET"
+  ],
+  "contact": [
+    "POST"
+  ],
+  "contact/admin/inquiries": [
+    "GET"
+  ],
+  "contact/admin/inquiries/{inquiry_id}": [
+    "PATCH"
+  ]
+}

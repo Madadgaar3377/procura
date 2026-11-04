@@ -1,0 +1,9 @@
+const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const vm=require('node:vm');const path=require('node:path');const {createRequire}=require('node:module');const ts=require('typescript');const React=require('react');const {renderToStaticMarkup}=require('react-dom/server');
+test('Arabic table labels and statuses translate while company names and descriptions remain original',()=>{
+ const filename=path.resolve(__dirname,'../features/shared/ui.tsx');const localRequire=createRequire(filename);const exported={};
+ const dictionary={'Company name':'اسم الشركة',Description:'الوصف',Status:'الحالة',Submitted:'مقدم',Supplier:'مورد',Civil:'مدني'};
+ const source=ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+ vm.runInNewContext(source,{exports:exported,require:name=>name==='@/lib/locale'?{useLocale:()=>({arabic:true,t:value=>dictionary[value]||value})}:name==='@/lib/api/client'?{}:name==='@/lib/api/errors'?{ApiError:Error}:name==='@/components/ui/button'?{Button:({children})=>React.createElement('button',null,children)}:name==='@/features/shared/toast'?{useToast:()=>({})}:name==='./field-error'?{FieldError:()=>null}:name==='./loading'?{}:localRequire(name)});
+ const markup=renderToStaticMarkup(React.createElement(exported.DataTable,{rows:[{id:'original-id',name:'Supplier',description:'Civil',status:'submitted'}],columns:['name','description','status'],labels:{name:'Company name',description:'Description',status:'Status'},paginate:false}));
+ assert.match(markup,/>Supplier<\/td>/);assert.match(markup,/>Civil<\/td>/);assert.match(markup,/اسم الشركة/);assert.match(markup,/>مقدم<\/span>/);
+});

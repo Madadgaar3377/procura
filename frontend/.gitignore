@@ -1,0 +1,74 @@
+
+# Dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Next.js
+/.next/
+
+/.next/*
+/out/
+
+# Production build
+/build
+/dist
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Testing
+/coverage/
+/playwright-report/
+/test-results/
+/.nyc_output
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDEs and editors
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Local certificates and keys
+*.pem
+*.key
+*.crt
+
+# Miscellaneous
+*.log
+.cache/
+.temp/
+
+/.next-integration/
+/.npm-cache/
+
+/.test-runtime/
