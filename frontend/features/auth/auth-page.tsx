@@ -350,7 +350,16 @@ export default function LiveAuth({ type }: { type: string }) {
     </section>
 
     <section className="auth-form-side">
-      <header className="auth-form-top"><Link href="/" className="auth-back"><IconArrowLeft size={15}/>{t("Back to Procura")}</Link><span><IconLock size={14}/>{t("Secure business access")}</span></header>
+      <header className="auth-form-top">
+        <div className="auth-mobile-header">
+          <Link href="/" className="brand auth-mobile-brand">Procura<span className="brand-dot">.</span></Link>
+          <button className="auth-language" type="button" onClick={() => setArabic(!arabic)}>{arabic ? "English" : "العربية"}</button>
+        </div>
+        <div className="auth-form-top-actions">
+          <Link href="/" className="auth-back"><IconArrowLeft size={15}/>{t("Back to Procura")}</Link>
+          <span><IconLock size={14}/>{t("Secure business access")}</span>
+        </div>
+      </header>
       <div className="auth-form-wrap">
         <form className="live-auth" onSubmit={submit} onInvalidCapture={event=>{const input=event.target;if(!(input instanceof HTMLInputElement||input instanceof HTMLSelectElement||input instanceof HTMLTextAreaElement))return;if(input.name)setFieldErrors(previous=>({...previous,[input.name]:input.validity.valueMissing?"This field is required.":input.validationMessage}));}} onChange={event=>{const target=event.target;const name=target instanceof HTMLInputElement||target instanceof HTMLSelectElement||target instanceof HTMLTextAreaElement?target.name:"";if(name)setFieldErrors(previous=>({...previous,[name]:""}));}}>
           <span className="section-label">{t(register ? "CREATE ACCOUNT" : forgot ? "PASSWORD HELP" : verify ? "MOBILE VERIFICATION" : reset ? "RESET PASSWORD" : email ? "EMAIL VERIFICATION" : "BUSINESS ACCESS")}</span>

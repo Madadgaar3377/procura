@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { cookies,headers } from "next/headers";
 import "./globals.css";
 import "./workspace.css";
@@ -7,6 +7,8 @@ import "./supplier-profile.css";
 import {configuredSiteURL} from '@/features/marketing/seo';
 import { LocaleProvider } from "@/lib/locale";
 import { ToastProvider } from "@/features/shared/toast";
+
+export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" };
 
 export const metadata: Metadata = {
   title: "Procura — Saudi Supplier Discovery & RFQs",
