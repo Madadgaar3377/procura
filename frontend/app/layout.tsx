@@ -11,11 +11,60 @@ import { ToastProvider } from "@/features/shared/toast";
 export const viewport: Viewport = { width: "device-width", initialScale: 1, viewportFit: "cover" };
 
 export const metadata: Metadata = {
-  title: "Procura — Saudi Supplier Discovery & RFQs",
-  description: "A clearer way for Saudi procurement teams to discover qualified suppliers and manage requests for quotation.",
-  applicationName: "Procura",
+  metadataBase: configuredSiteURL(),
+  title: {
+    default: "Procumaterial | Saudi Arabia B2B Procurement & Supplier Platform",
+    template: "%s | Procumaterial",
+  },
+  description: "Connect with trusted Saudi suppliers, submit procurement RFQs, discover Civil, Electrical and Mechanical materials, and compare competitive supplier quotations through Procumaterial.",
+  applicationName: "Procumaterial",
   referrer: "no-referrer",
-  ...(configuredSiteURL()?{metadataBase:configuredSiteURL()}:{}),
+  keywords: [
+    "Saudi Arabia procurement platform",
+    "B2B procurement Saudi Arabia",
+    "Saudi suppliers directory",
+    "Supplier sourcing Saudi Arabia",
+    "RFQ platform Saudi Arabia",
+    "Construction material suppliers Saudi Arabia",
+    "Electrical suppliers Saudi Arabia",
+    "Mechanical suppliers Saudi Arabia",
+    "Civil material suppliers Saudi Arabia",
+    "Request for quotation Saudi Arabia",
+    "B2B supplier matching Saudi Arabia",
+  ],
+  alternates: {
+    canonical: "/",
+    languages: {
+      en: "/?lang=en",
+      ar: "/?lang=ar",
+      "x-default": "/",
+    },
+  },
+  openGraph: {
+    type: "website",
+    siteName: "Procumaterial",
+    title: "Procumaterial | Saudi Arabia B2B Procurement & Supplier Platform",
+    description: "Connect with trusted Saudi suppliers, submit procurement RFQs, discover Civil, Electrical and Mechanical materials, and compare competitive supplier quotations through Procumaterial.",
+    url: "https://procumaterial.com",
+    locale: "en_US",
+    alternateLocale: "ar_SA",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Procumaterial | Saudi Arabia B2B Procurement & Supplier Platform",
+    description: "Connect with trusted Saudi suppliers, submit procurement RFQs, discover Civil, Electrical and Mechanical materials, and compare competitive supplier quotations through Procumaterial.",
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-video-preview": -1,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+    },
+  },
 };
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

@@ -167,7 +167,7 @@ def decide(quotation_id:str,decision:str,user:User=Depends(current_user),db:Sess
                  'url':get_settings().frontend_url.rstrip('/')+'/app/supplier/quote/'+quote.id},
         source_key=f'quotation-decision:{quote.id}:{decision}')
     recipients=db.scalars(select(Member.user_id).join(User,User.id==Member.user_id).where(Member.organization_id==quote.supplier_org_id,User.is_active.is_(True))).all()
-    db.add_all(Notification(recipient_user_id=recipient,event=template,message=f'Procura: {rfq.reference} quotation {decision}',status='delivered') for recipient in recipients)
+    db.add_all(Notification(recipient_user_id=recipient,event=template,message=f'Procumaterial: {rfq.reference} quotation {decision}',status='delivered') for recipient in recipients)
     db.commit()
     return snapshot(db,quote)
 

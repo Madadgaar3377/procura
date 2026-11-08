@@ -355,6 +355,10 @@ class CapabilityIn(Model):
 class CapabilityEligibilityIn(Model):
     eligibility_status:Literal['enabled','suspended','revoked','rejected']
 
+class CapabilityReviewIn(Model):
+    approve:bool
+    rejection_reason:str=Field(default='',max_length=1000)
+
 class PriceIn(Model):
     org_id:str
     material_id:str|None=None

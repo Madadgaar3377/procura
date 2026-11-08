@@ -222,6 +222,15 @@ class PublicCapabilityGroup(PublicCategory):
     subcategories: list[PublicCategory] = Field(default_factory=list)
 
 
+class CapabilityReviewItem(CapabilityOut):
+    organization_name: str
+    main_category_id: str
+    main_category_name: str
+    subcategory_id: str | None = None
+    subcategory_name: str | None = None
+    related_materials: list[str] = Field(default_factory=list)
+
+
 class PublicCompanyDetails(ResponseModel):
     trading_name: str | None = None
     company_type: str | None = None

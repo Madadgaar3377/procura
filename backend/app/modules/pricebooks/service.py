@@ -2,7 +2,7 @@
 from datetime import datetime, timezone
 from hashlib import sha256
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select,func
 from app.models import PriceBookItem, Material, Category, Capability, Organization, AuditEvent
 from app.schemas import PriceIn, QuoteAutomationIn
 from app.security import org_member, audit
@@ -33,18 +33,37 @@ def capability_categories(db,org_id):
     key=('rate_capability_categories',org_id)
     if key not in db.info:
         selected={}
-        for category_id,confirmed in db.execute(select(Capability.category_id,Capability.confirmed).where(Capability.org_id==org_id,Capability.eligibility_status=='enabled')):
-            selected[category_id]=selected.get(category_id,False) or confirmed
+        for category_id,confirmed,status in db.execute(select(Capability.category_id,Capability.confirmed,Capability.eligibility_status).where(Capability.org_id==org_id)):
+            value='approved' if confirmed and status=='enabled' else 'pending' if status=='enabled' else 'rejected'
+            selected[category_id]='approved' if selected.get(category_id)!='approved' and value=='approved' else selected.get(category_id,value)
         db.info[key]=selected
     return db.info[key]
+
+def ensure_material_capability(db,org,main,sub):
+    """Create a pending declaration for the material's stable category IDs.
+
+    Reuse each declared service area so approval and RFQ coverage remain scoped
+    to that city. With no declared area, use the supplier's registered city.
+    Existing approval/denial state is never changed by adding a private rate.
+    """
+    category_id=sub or main
+    if not category_id: return
+    cities=list(db.scalars(select(Capability.city).where(Capability.org_id==org.id)).all())
+    if not cities and org.city and org.city.strip(): cities=[org.city.strip()]
+    for city in dict.fromkeys(cities):
+        exists=db.scalar(select(Capability.id).where(Capability.org_id==org.id,
+            Capability.category_id==category_id,func.lower(func.trim(Capability.city))==city.casefold()))
+        if not exists:
+            db.add(Capability(org_id=org.id,category_id=category_id,city=city,confirmed=False))
+    db.flush()
+    db.info.pop(('rate_capability_categories',org.id),None)
 
 
 def validate_scope(db,org_id,main,sub,*,require_approval=False):
     parent=db.get(Category,main) if main else None;leaf=db.get(Category,sub) if sub else parent
     if not parent or not parent.active or parent.parent_id or not leaf or not leaf.active or (sub and leaf.parent_id!=main):raise HTTPException(422,'Material category hierarchy is inactive or invalid')
     selected=capability_categories(db,org_id)
-    if (sub or main) not in selected:raise HTTPException(422,'Select this subcategory in your company profile before saving a private rate')
-    if require_approval and not selected[sub or main]:raise HTTPException(422,'Capability approval is required by the current RFQ policy')
+    if require_approval and selected.get(sub or main)!='approved':raise HTTPException(422,'Capability approval is required by the current RFQ policy')
 
 
 def validate_unit(db,unit):
@@ -77,18 +96,25 @@ def custom_identity(main,sub,description,unit):
 
 
 def save_rate(db,user,payload:PriceIn,item=None,*,expected_version=None):
-    supplier(db,user,payload.org_id,lock=True)
+    organization=supplier(db,user,payload.org_id,lock=True)
     if item and (item.org_id!=payload.org_id or (item.material_id and payload.material_id and item.material_id!=payload.material_id)):raise HTTPException(422,'Cannot change rate organization or material; create a separate rate')
     expected=expected_version if expected_version is not None else payload.expected_version
     if item and expected is not None and expected!=item.version:raise HTTPException(409,'This rate changed. Reload before saving your edits.')
     if payload.material_id:
-        material,unit=validate_material(db,payload.org_id,payload.material_id,payload.unit)
+        material=db.get(Material,payload.material_id)
+        if not material or not material.active:raise HTTPException(422,'Select an active Material Master item')
         main,sub=category_pair(db,material)
+        ensure_material_capability(db,organization,main,sub)
+        material,unit=validate_material(db,payload.org_id,payload.material_id,payload.unit)
         if payload.main_category_id and payload.main_category_id!=main or payload.subcategory_id and payload.subcategory_id!=sub:raise HTTPException(422,'Selected categories do not match the Material Master item')
         description=payload.supplier_description or (item.supplier_description if item else '') or payload.offered_description or material.name_en
         custom_key=None
     else:
         material=None;main=payload.main_category_id;sub=payload.subcategory_id
+        parent=db.get(Category,main) if main else None;leaf=db.get(Category,sub) if sub else None
+        if not parent or not parent.active or parent.parent_id or not leaf or not leaf.active or leaf.parent_id!=main:
+            raise HTTPException(422,'Material category hierarchy is inactive or invalid')
+        ensure_material_capability(db,organization,main,sub)
         validate_scope(db,payload.org_id,main,sub)
         unit=validate_unit(db,payload.unit);description=payload.supplier_description
         custom_key=custom_identity(main,sub,description,unit)
@@ -118,7 +144,7 @@ def rate_record(db,item,material=None,categories=None):
     stale=material and (not material.active or normalize_unit(material.unit)!=item.unit or material.version!=item.material_version)
     state='inactive' if not item.active else 'expired' if item.valid_until and utc(item.valid_until)<=datetime.now(timezone.utc) else 'review' if stale else 'active'
     selected=capability_categories(db,item.org_id)
-    capability_status='approved' if selected.get(sub or main) else 'pending' if (sub or main) in selected else 'not_selected'
+    capability_status=selected.get(sub or main,'pending')
     return {**record(item),'main_category_id':main,'subcategory_id':sub,'main_category_name':categories[main].name_en if main in categories else '', 'subcategory_name':categories[sub].name_en if sub in categories else '', 'material_description':item.supplier_description or (material.name_en if material else ''),'status':state,'capability_status':capability_status}
 
 

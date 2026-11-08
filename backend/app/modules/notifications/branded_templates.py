@@ -1,4 +1,4 @@
-"""Escaped bilingual Procura templates for existing notification events."""
+"""Escaped bilingual Procumaterial templates for existing notification events."""
 
 from datetime import UTC
 from html import escape
@@ -9,10 +9,10 @@ TAGLINE = "Procurement Without Complexity"
 
 def render_message(template: str, context: dict, secret: str | None = None) -> tuple[str, str, str]:
     if template == 'phone_changed':
-        plain = 'Procura Security: Your registered phone number was changed. If this was not you, contact Procura support immediately.'
+        plain = 'Procumaterial Security: Your registered phone number was changed. If this was not you, contact Procumaterial support immediately.'
         if context.get('language') == 'ar':
             plain = 'أمان بروكيورا: تم تغيير رقم هاتف حسابك. إذا لم تقم بهذا التغيير، تواصل مع الدعم فوراً.'
-        return 'Procura | Phone number changed', plain, '<p>'+escape(plain)+'</p>'
+        return 'Procumaterial | Phone number changed', plain, '<p>'+escape(plain)+'</p>'
     if template == "password_changed":
         from datetime import datetime
 
@@ -22,15 +22,15 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         parsed=urlsplit(support)
         if parsed.scheme not in {'https','http'} or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError('Support URL must be an absolute application URL')
-        subject='Procura | Your Password Was Changed'
+        subject='Procumaterial | Your Password Was Changed'
         if context.get('channel')=='sms':
-            plain="Procura Security: Your account password was changed. If this wasn't you, contact Procura support immediately."
+            plain="Procumaterial Security: Your account password was changed. If this wasn't you, contact Procumaterial support immediately."
         else:
             when=context.get('changed_at') or datetime.now(UTC).isoformat()
-            plain=("Hello,\n\nYour Procura account password was successfully changed.\n\n"
+            plain=("Hello,\n\nYour Procumaterial account password was successfully changed.\n\n"
                 "If you made this change, no further action is required.\n\n"
-                "If you did not make this change, contact Procura support and use the secure account recovery process immediately.\n\n"
-                f"Date/time (UTC): {when}\nSupport: {support}\n\nProcura Team\nProcurement Without Complexity.")
+                "If you did not make this change, contact Procumaterial support and use the secure account recovery process immediately.\n\n"
+                f"Date/time (UTC): {when}\nSupport: {support}\n\nProcumaterial Team\nProcurement Without Complexity.")
         return subject,plain,'<html><body><h1>Your password was changed</h1><p>'+escape(plain).replace('\n','<br>')+'</p></body></html>'
     arabic = context.get("language") == "ar"
     sms = context.get("channel") == "sms"
@@ -46,17 +46,17 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
             else ("Password recovery" if template == "password_reset" else "Verify your account")
         )
         plain = (
-            f"Procura: رمز التحقق {secret or ''}. تنتهي صلاحيته خلال {minutes} دقائق. لا تشاركه."
+            f"Procumaterial: رمز التحقق {secret or ''}. تنتهي صلاحيته خلال {minutes} دقائق. لا تشاركه."
             if arabic
-            else f"Procura verification code: {secret or ''}. Expires in {minutes} minutes. Do not share this code."
+            else f"Procumaterial verification code: {secret or ''}. Expires in {minutes} minutes. Do not share this code."
         )
     else:
         messages = {
             "registration_welcome": (
-                "Welcome to Procura",
-                "مرحباً بك في Procura",
-                "Welcome to Procura. Complete your company profile and verify your business details to begin.",
-                "مرحباً بك في Procura. أكمل ملف شركتك وتحقق من بياناتها للبدء.",
+                "Welcome to Procumaterial",
+                "مرحباً بك في Procumaterial",
+                "Welcome to Procumaterial. Complete your company profile and verify your business details to begin.",
+                "مرحباً بك في Procumaterial. أكمل ملف شركتك وتحقق من بياناتها للبدء.",
             ),
             "membership_expiration": (
                 "Membership expiration",
@@ -67,7 +67,7 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
             "rfq_invitation": (
                 "New RFQ Invitation",
                 "دعوة جديدة لطلب عرض سعر",
-                f"Hello {context.get('supplier_name', '')},\n\nA new procurement request matching your company's supply categories is available.\n\nRFQ: {ref}\nProject: {title}\nCategory: {context.get('categories', '')}\nDelivery Location: {context.get('delivery_location', '')}\nDeadline: {deadline}\n\nReview the requirements and submit your quotation through Procura.",
+                f"Hello {context.get('supplier_name', '')},\n\nA new procurement request matching your company's supply categories is available.\n\nRFQ: {ref}\nProject: {title}\nCategory: {context.get('categories', '')}\nDelivery Location: {context.get('delivery_location', '')}\nDeadline: {deadline}\n\nReview the requirements and submit your quotation through Procumaterial.",
                 f"مرحباً {context.get('supplier_name', '')}،\n\nيتوفر طلب شراء جديد يتوافق مع فئات توريد شركتكم.\nطلب عرض السعر: {ref}\nالمشروع: {title}\nالفئات: {context.get('categories', '')}\nموقع التسليم: {context.get('delivery_location', '')}\nالموعد النهائي: {deadline}\n\nراجع المواد المطلوبة وقدم عرضك عبر لوحة المورد.",
             ),
             "deadline_reminder": (
@@ -107,12 +107,12 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         heading = ar if arabic else en
         plain = translated if arabic else english
         if sms:
-            plain = "Procura: " + plain
+            plain = "Procumaterial: " + plain
             if template == "rfq_invitation":
                 plain = (
-                    f"Procura: طلب عرض سعر جديد {ref} يناسب فئات توريدك. راجع لوحة المورد."
+                    f"Procumaterial: طلب عرض سعر جديد {ref} يناسب فئات توريدك. راجع لوحة المورد."
                     if arabic
-                    else f"Procura: New RFQ {ref} matches your supply categories. Open your supplier dashboard to review."
+                    else f"Procumaterial: New RFQ {ref} matches your supply categories. Open your supplier dashboard to review."
                 )
     if template in {"quotation_shortlisted", "quotation_awarded", "quotation_rejected"}:
         decision = template.removeprefix("quotation_")
@@ -123,9 +123,9 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         }
         heading = decision_labels[decision] if arabic else "Quotation " + decision
         plain = (
-            f"Procura: {decision_labels[decision]} — {ref}. راجع لوحة المورد."
+            f"Procumaterial: {decision_labels[decision]} — {ref}. راجع لوحة المورد."
             if arabic
-            else f"Procura: Your quotation for RFQ {ref} was {decision}. Review your supplier dashboard."
+            else f"Procumaterial: Your quotation for RFQ {ref} was {decision}. Review your supplier dashboard."
         )
     if template == "verification_updated":
         status = str(context.get("status", "updated"))
@@ -136,24 +136,24 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
             "pending": "قيد المراجعة",
         }.get(status, "محدثة")
         plain = (
-            f"Procura: حالة التحقق من شركتك {status_ar}. راجع ملف الشركة للاطلاع على التفاصيل."
+            f"Procumaterial: حالة التحقق من شركتك {status_ar}. راجع ملف الشركة للاطلاع على التفاصيل."
             if arabic
-            else f"Procura: Your company verification status is {status}. Review your company profile for details."
+            else f"Procumaterial: Your company verification status is {status}. Review your company profile for details."
         )
     if template == 'password_reset':
         heading = 'إعادة تعيين كلمة المرور' if arabic else 'Reset Your Password'
         if not sms:
             plain = (
-                f"مرحباً،\n\nتلقينا طلباً لإعادة تعيين كلمة مرور حسابك في Procura. استخدم الرابط الآمن أدناه أو الرمز {secret or ''}. تنتهي صلاحيته خلال {minutes} دقائق.\n\nإذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة."
+                f"مرحباً،\n\nتلقينا طلباً لإعادة تعيين كلمة مرور حسابك في Procumaterial. استخدم الرابط الآمن أدناه أو الرمز {secret or ''}. تنتهي صلاحيته خلال {minutes} دقائق.\n\nإذا لم تطلب ذلك، يمكنك تجاهل هذه الرسالة."
                 if arabic else
-                f"Hello,\n\nWe received a request to reset your Procura account password.\n\nUse the secure button below to set a new password, or enter code {secret or ''}. This link expires in {minutes} minutes.\n\nIf you did not request this, you can ignore this email."
+                f"Hello,\n\nWe received a request to reset your Procumaterial account password.\n\nUse the secure button below to set a new password, or enter code {secret or ''}. This link expires in {minutes} minutes.\n\nIf you did not request this, you can ignore this email."
             )
         elif not arabic:
-            plain = f"Procura: Your password reset code is {secret or ''}. Expires in {minutes} minutes. Do not share it."
+            plain = f"Procumaterial: Your password reset code is {secret or ''}. Expires in {minutes} minutes. Do not share it."
     if template == 'password_changed':
         heading = 'تم تغيير كلمة المرور' if arabic else 'Password changed'
-        plain = 'تم تغيير كلمة مرور حسابك في Procura. إذا لم تقم بذلك، تواصل مع فريق الدعم فوراً.' if arabic else 'Your Procura password was changed. If this was not you, contact support immediately.'
-    subject = f"Procura | {heading}" + (f" — {ref}" if ref else "")
+        plain = 'تم تغيير كلمة مرور حسابك في Procumaterial. إذا لم تقم بذلك، تواصل مع فريق الدعم فوراً.' if arabic else 'Your Procumaterial password was changed. If this was not you, contact support immediately.'
+    subject = f"Procumaterial | {heading}" + (f" — {ref}" if ref else "")
     url = str(context.get("url", "")) if not security or template=='password_reset' else ""
     parsed = urlsplit(url)
     if parsed.scheme not in {"https", "http"} or not parsed.netloc or parsed.username or parsed.password:
@@ -179,15 +179,15 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         '<body style="margin:0;background:#F8FAFC;color:#0F172A;font-family:Arial,Tahoma,sans-serif">'
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="padding:24px 12px" align="center">'
         '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;background:#FFFFFF;border:1px solid #E2E8F0">'
-        f'<tr><td style="padding:28px;background:#0F172A;color:#FFFFFF"><div style="font-size:28px;font-weight:bold">Procura</div><div style="font-size:13px;margin-top:8px">{TAGLINE}</div></td></tr>'
+        f'<tr><td style="padding:28px;background:#0F172A;color:#FFFFFF"><div style="font-size:28px;font-weight:bold">Procumaterial</div><div style="font-size:13px;margin-top:8px">{TAGLINE}</div></td></tr>'
         f'<tr><td style="padding:28px;text-align:{"right" if arabic else "left"}"><h1 style="font-size:23px;line-height:1.4;margin:0 0 20px">{escape(heading)}</h1>{paragraphs}{link}'
-        f'<p style="font-size:14px;line-height:1.6;margin-top:28px">{"فريق Procura" if arabic else "Procura Team"}<br>{TAGLINE}</p>'
+        f'<p style="font-size:14px;line-height:1.6;margin-top:28px">{"فريق Procumaterial" if arabic else "Procumaterial Team"}<br>{TAGLINE}</p>'
         "</td></tr></table></td></tr></table></body></html>"
     )
     if not sms:
         plain = (
-            f"Procura — {TAGLINE}\n\n{plain}"
+            f"Procumaterial — {TAGLINE}\n\n{plain}"
             + (f"\n\n{cta}: {url}" if url else "")
-            + f"\n\nProcura Team\n{TAGLINE}"
+            + f"\n\nProcumaterial Team\n{TAGLINE}"
         )
     return subject, plain, html

@@ -9,7 +9,7 @@ const content = {
     title: 'More clarity at every buying decision.',
     paragraphs: [
       'Business procurement starts with a simple question: who can supply what we need? Finding the answer often means searching disconnected directories, repeating requirements and following up across separate conversations.',
-      'Procura is built to bring that process together. Our purpose is to help Saudi businesses discover relevant suppliers, communicate clear requirements and review quotations with the context they need to move forward.',
+      'Procumaterial is built to bring that process together. Our purpose is to help Saudi businesses discover relevant suppliers, communicate clear requirements and review quotations with the context they need to move forward.',
       'We focus on the work between discovering a potential partner and making a commercial decision, giving buyers and suppliers a shared starting point for better business relationships.',
     ],
     audience: 'Built for both sides of business',
@@ -18,7 +18,7 @@ const content = {
       ['For buyers', 'Turn a business requirement into a structured sourcing process.', ['Explore suppliers by sector and capabilities.', 'Set out specifications, quantities and delivery requirements in an RFQ.', 'Review supplier responses and clarify the details before choosing a partner.']],
       ['For suppliers', 'Make your capabilities easier for business customers to discover.', ['Present your company, products and services in one profile.', 'Respond to relevant requests with a quotation tailored to the requirement.', 'Give prospective buyers the information they need for a productive conversation.']],
     ],
-    principles: 'The principles behind Procura',
+    principles: 'The principles behind Procumaterial',
     values: [
       ['Clarity from the start', 'Clear requirements and organized company information help both sides understand the opportunity before investing time in a response.'],
       ['Relevant connections', 'Sourcing works better when supplier capabilities match the actual business need. We put discovery and structured requests at the center of the process.'],
@@ -26,7 +26,7 @@ const content = {
       ['Business relationships', 'A quotation is the beginning of a conversation. Our aim is to make that first exchange more focused so businesses can build relationships on a clearer foundation.'],
     ],
     localTitle: 'Designed around Saudi business needs.',
-    localBody: 'Procura brings an English and Arabic experience to supplier discovery and procurement. Whether your team is exploring a new category or looking for another source of supply, the goal is the same: make business capabilities easier to find and purchasing requirements easier to understand.',
+    localBody: 'Procumaterial brings an English and Arabic experience to supplier discovery and procurement. Whether your team is exploring a new category or looking for another source of supply, the goal is the same: make business capabilities easier to find and purchasing requirements easier to understand.',
     localLink: 'Explore industries',
     ctaTitle: 'Start with your next business requirement.',
     ctaBody: 'Create a request as a buyer, or introduce your company as a supplier. Choose the starting point that fits your business.',
@@ -36,7 +36,7 @@ const content = {
     purpose: 'لماذا وُجدنا', title: 'وضوح أكبر في كل قرار شراء.',
     paragraphs: [
       'تبدأ مشتريات الشركات بسؤال بسيط: من يستطيع توفير ما نحتاجه؟ وقد يتطلب الوصول إلى الإجابة البحث في أدلة متفرقة وتكرار المتطلبات ومتابعة محادثات منفصلة.',
-      'صُممت Procura لجمع هذه الخطوات في مسار واحد. هدفنا مساعدة الشركات السعودية على اكتشاف الموردين المناسبين وتوضيح احتياجاتها ومراجعة عروض الأسعار بالمعلومات اللازمة لاتخاذ الخطوة التالية.',
+      'صُممت Procumaterial لجمع هذه الخطوات في مسار واحد. هدفنا مساعدة الشركات السعودية على اكتشاف الموردين المناسبين وتوضيح احتياجاتها ومراجعة عروض الأسعار بالمعلومات اللازمة لاتخاذ الخطوة التالية.',
       'نركز على العمل الذي يربط اكتشاف شريك محتمل باتخاذ قرار تجاري، لنمنح المشترين والموردين نقطة انطلاق مشتركة لبناء علاقات عمل أفضل.',
     ],
     audience: 'للمشترين والموردين معاً',
@@ -45,7 +45,7 @@ const content = {
       ['للمشترين', 'حوّل احتياج شركتك إلى عملية بحث وشراء منظمة.', ['استكشف الموردين بحسب القطاع والإمكانات.', 'حدد المواصفات والكميات ومتطلبات التسليم في طلب عرض سعر.', 'راجع ردود الموردين واستوضح التفاصيل قبل اختيار الشريك المناسب.']],
       ['للموردين', 'اجعل الوصول إلى إمكانات شركتك أسهل للعملاء من الشركات.', ['اعرض شركتك ومنتجاتك وخدماتك في ملف واحد.', 'استجب للطلبات المناسبة بعرض سعر يلائم المتطلبات.', 'قدّم للمشترين المعلومات التي تساعد على بدء محادثة مثمرة.']],
     ],
-    principles: 'المبادئ التي توجه Procura',
+    principles: 'المبادئ التي توجه Procumaterial',
     values: [
       ['الوضوح منذ البداية', 'تساعد المتطلبات الواضحة ومعلومات الشركة المنظمة الطرفين على فهم الفرصة قبل تخصيص الوقت لإعداد الرد.'],
       ['التواصل المناسب', 'تتحسن عملية الشراء عندما تتوافق إمكانات المورد مع احتياج الشركة الفعلي. لذلك نضع اكتشاف الموردين والطلبات المنظمة في صميم التجربة.'],
@@ -53,7 +53,7 @@ const content = {
       ['علاقات العمل', 'عرض السعر بداية للحوار. نهدف إلى جعل هذا التبادل الأول أكثر تركيزاً حتى تتمكن الشركات من بناء علاقاتها على أساس أوضح.'],
     ],
     localTitle: 'مصممة لاحتياجات الشركات السعودية.',
-    localBody: 'تقدم Procura تجربة بالعربية والإنجليزية لاكتشاف الموردين وإدارة متطلبات الشراء. سواء كان فريقك يستكشف فئة جديدة أو يبحث عن مصدر توريد آخر، يبقى الهدف واحداً: تسهيل اكتشاف إمكانات الشركات وفهم متطلبات المشتريات.',
+    localBody: 'تقدم Procumaterial تجربة بالعربية والإنجليزية لاكتشاف الموردين وإدارة متطلبات الشراء. سواء كان فريقك يستكشف فئة جديدة أو يبحث عن مصدر توريد آخر، يبقى الهدف واحداً: تسهيل اكتشاف إمكانات الشركات وفهم متطلبات المشتريات.',
     localLink: 'استكشف القطاعات',
     ctaTitle: 'ابدأ باحتياج شركتك القادم.',
     ctaBody: 'أنشئ طلباً بصفتك مشترياً، أو عرّف بشركتك بصفتك مورداً. اختر نقطة البداية المناسبة لأعمالك.',

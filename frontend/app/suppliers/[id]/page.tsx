@@ -8,7 +8,7 @@ export async function generateMetadata({params,searchParams}:Props){
  const metadata=marketingMetadata(locale,'/suppliers/'+encodeURIComponent(id));
  const supplier=await readPublicSupplier(id);
  if(!supplier)return {...metadata,robots:{index:false,follow:true}};
- const title=`${supplier.name} | Procura`;
+ const title=`${supplier.name} | Procumaterial`;
  const categories=(locale==='ar'?supplier.main_categories_ar:supplier.main_categories)||[];
  const description=supplier.profile?.description?.slice(0,180)||(categories.length?`${supplier.name} · ${categories.join(', ')}`:metadata.description);
  return {...metadata,title,description,openGraph:{...metadata.openGraph,title,description:description||undefined},twitter:{...metadata.twitter,title,description:description||undefined}};

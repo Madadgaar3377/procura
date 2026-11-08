@@ -54,7 +54,7 @@ export default function Reports({ workspace }: { workspace: Workspace }) {
 
   return <section className="reports-workspace">
     <div className="reports-heading">
-      <Heading title={workspace === "admin" ? t("Platform reports") : t("Performance reports")} description="Recent activity from your authorized Procura workspace." />
+      <Heading title={workspace === "admin" ? t("Platform reports") : t("Performance reports")} description="Recent activity from your authorized Procumaterial workspace." />
       <div className="reports-actions">
         <Button type="button" variant="outline" disabled={report.loading} onClick={report.reload}><IconRefresh size={16}/>{t("Refresh")}</Button>
         <Button type="button" variant="outline" disabled={!data} onClick={exportCsv}><IconDownload size={16}/>{t("Export CSV")}</Button>

@@ -1,14 +1,59 @@
-from app.response_contracts import CapabilityOut
+from app.response_contracts import CapabilityOut, CapabilityReviewItem
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from sqlalchemy import select,func
+from sqlalchemy import select,func,or_
 from app.database import get_db
-from app.models import Capability,Organization,Category,Material,User
-from app.schemas import CapabilityIn, CapabilitySelection, CapabilityEligibilityIn
+from app.models import Capability,Organization,Category,Material,PriceBookItem,User
+from app.schemas import CapabilityIn, CapabilitySelection, CapabilityEligibilityIn, CapabilityReviewIn
 from app.security import current_user,org_member,audit
 from app.serializers import record
 
 router=APIRouter(prefix='/capabilities',tags=['Supplier Capabilities'])
+
+@router.get('/admin/pending',response_model=list[CapabilityReviewItem])
+def pending_capabilities(user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Admin-only review queue; includes category labels and descriptions, never prices."""
+    if not user.is_admin:raise HTTPException(403,'Admin required')
+    rows=db.execute(select(Capability,Organization,Category).join(Organization,Organization.id==Capability.org_id)
+        .join(Category,Category.id==Capability.category_id).where(Capability.confirmed.is_(False),
+            Capability.eligibility_status=='enabled').order_by(Capability.created_at,Capability.id)).all()
+    category_ids={category.id for _,_,category in rows}
+    parent_ids={category.parent_id for _,_,category in rows if category.parent_id}
+    parents={category.id:category for category in db.scalars(select(Category).where(Category.id.in_(parent_ids))).all()}
+    rate_rows=db.execute(select(PriceBookItem.org_id,PriceBookItem.main_category_id,
+        PriceBookItem.subcategory_id,PriceBookItem.supplier_description,Material.name_en,
+        Material.category_id,Material.main_category_id,Material.subcategory_id)
+        .outerjoin(Material,Material.id==PriceBookItem.material_id).where(
+            PriceBookItem.org_id.in_({org.id for _,org,_ in rows}),PriceBookItem.active.is_(True),
+            or_(PriceBookItem.main_category_id.in_(category_ids),PriceBookItem.subcategory_id.in_(category_ids),
+                Material.category_id.in_(category_ids),Material.main_category_id.in_(category_ids),
+                Material.subcategory_id.in_(category_ids)))).all() if rows else []
+    descriptions_by_scope={}
+    for org_id,rate_main,rate_sub,description,material_name,material_category,material_main,material_sub in rate_rows:
+        scopes={rate_main,rate_sub,material_category,material_main,material_sub}-{None}
+        for scope in scopes:descriptions_by_scope.setdefault((org_id,scope),set()).add(description or material_name or '')
+    result=[]
+    for cap,org,category in rows:
+        parent=parents.get(category.parent_id) if category.parent_id else category
+        descriptions=sorted(descriptions_by_scope.get((org.id,category.id),set())-{''})
+        result.append({**record(cap),'organization_name':org.name,'main_category_id':parent.id,
+            'main_category_name':parent.name_en,'subcategory_id':category.id if category.parent_id else None,
+            'subcategory_name':category.name_en if category.parent_id else None,'related_materials':descriptions})
+    return result
+
+@router.post('/admin/{capability_id}/review',response_model=CapabilityOut)
+def review_capability(capability_id:str,payload:CapabilityReviewIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    if not user.is_admin:raise HTTPException(403,'Admin required')
+    cap=db.get(Capability,capability_id)
+    if not cap:raise HTTPException(404,'Capability not found')
+    approve=payload.approve
+    reason=payload.rejection_reason.strip()
+    if not approve and not reason:raise HTTPException(422,'A rejection reason is required')
+    cap.confirmed=approve;cap.rejection_reason=None if approve else reason[:1000]
+    if approve:cap.eligibility_status='enabled';cap.accepts_rfqs=True
+    else:cap.eligibility_status='rejected';cap.accepts_rfqs=False
+    audit(db,user,'supplier.capability_reviewed',cap.org_id,cap.id,approved=approve,rejection_reason=cap.rejection_reason)
+    db.commit();return record(cap)
 
 @router.put('/selections',response_model=list[CapabilityOut])
 def save_selections(payload:CapabilitySelection,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -72,7 +117,8 @@ def confirm(capability_id:str,user:User=Depends(current_user),db:Session=Depends
     if not user.is_admin:raise HTTPException(403,'Admin required')
     cap=db.get(Capability,capability_id)
     if not cap:raise HTTPException(404,'Capability not found')
-    cap.confirmed=True;audit(db,user,'supplier.capability_confirmed',cap.org_id,cap.id);db.commit()
+    cap.confirmed=True;cap.eligibility_status='enabled';cap.accepts_rfqs=True;cap.rejection_reason=None
+    audit(db,user,'supplier.capability_confirmed',cap.org_id,cap.id);db.commit()
     return record(cap)
 
 @router.patch('/{capability_id}/eligibility',response_model=CapabilityOut)

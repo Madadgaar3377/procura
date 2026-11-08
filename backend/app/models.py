@@ -294,6 +294,7 @@ class Capability(TimeID, Base):
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     accepts_rfqs: Mapped[bool] = mapped_column(Boolean, default=True)
     eligibility_status: Mapped[str] = mapped_column(String(20), default='enabled', server_default='enabled')
+    rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class PriceBookItem(TimeID, Base):
     __tablename__='price_book_items'

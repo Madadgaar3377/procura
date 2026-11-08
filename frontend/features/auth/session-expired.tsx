@@ -22,12 +22,12 @@ export default function SessionExpired(){
       <section className={styles.card} aria-labelledby="session-expired-title" aria-describedby="session-expired-description">
         <span className={styles.icon} aria-hidden="true"><IconLock size={26} stroke={1.7}/></span>
         <h1 id="session-expired-title" className={styles.title}>{t('Your session has expired')}</h1>
-        <p id="session-expired-description" className={styles.description}>{t("For your security, you've been signed out. Sign in again to continue using Procura.")}</p>
+        <p id="session-expired-description" className={styles.description}>{t("For your security, you've been signed out. Sign in again to continue using Procumaterial.")}</p>
         <div className={styles.actions}>
           <Link href="/login" prefetch={false} className={styles.primary}>{t('Sign In Again')}</Link>
           <Link href="/" className={styles.secondary}>{t('Return to Homepage')}</Link>
         </div>
-        <p className={styles.tagline}>{t('Procura — Procurement Without Complexity.')}</p>
+        <p className={styles.tagline}>{t('Procumaterial — Connecting Saudi Businesses with Trusted Suppliers.')}</p>
       </section>
     </main>
     <MarketingFooter/>

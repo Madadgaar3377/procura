@@ -51,7 +51,7 @@ class Settings(BaseSettings):
             v = f'{v}/3rdparty/v1/messages'
         return v
     support_url: str = ''
-    frontend_url: str = 'http://localhost:3000'
+    frontend_url: str = 'https://procumaterial.com'
     smtp_host: str = 'smtp.hostinger.com'
     smtp_port: int = Field(default=465,ge=1,le=65535)
     smtp_username: str = ''

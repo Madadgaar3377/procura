@@ -19,7 +19,9 @@ export interface Schemas {
   "BuyerInvitation": { "rfq_id": string; "supplier_org_id": string; "status": string; "invited_at": string; "id": string; "created_at": string; "supplier_name": string; "quotation_status"?: string | null; "reminder_eligible"?: boolean };
   "CapabilityEligibilityIn": { "eligibility_status": "enabled" | "suspended" | "revoked" | "rejected" };
   "CapabilityIn": { "org_id": string; "category_id": string; "city": string; "qualifications"?: Array<string>; "material_ids"?: Array<string>; "trade_keywords"?: string; "confirmed"?: boolean };
-  "CapabilityOut": { "org_id": string; "category_id": string; "city": string; "qualifications": Array<unknown>; "material_ids": Array<unknown>; "trade_keywords": string; "confirmed": boolean; "accepts_rfqs": boolean; "eligibility_status": string; "id": string; "created_at": string };
+  "CapabilityOut": { "org_id": string; "category_id": string; "city": string; "qualifications": Array<unknown>; "material_ids": Array<unknown>; "trade_keywords": string; "confirmed": boolean; "accepts_rfqs": boolean; "eligibility_status": string; "rejection_reason": string | null; "id": string; "created_at": string };
+  "CapabilityReviewIn": { "approve": boolean; "rejection_reason"?: string };
+  "CapabilityReviewItem": Schemas["CapabilityOut"] & { "organization_name": string; "main_category_id": string; "main_category_name": string; "subcategory_id": string | null; "subcategory_name": string | null; "related_materials": Array<string> };
   "CapabilitySelection": { "org_id": string; "main_category_ids": Array<string>; "subcategory_ids": Array<string>; "city": string };
   "CategoryEdit": { "code"?: string | null; "name_en": string; "name_ar"?: string; "parent_id"?: string | null; "sort_order"?: number; "material_id"?: string | null; "material_subcategory_id"?: string | null; "material_description"?: string | null; "unit"?: string | null };
   "CategoryImportPreview": { "batch_id"?: string | null; "status": string; "discipline"?: string | null; "sheets"?: Array<Schemas["CategoryImportSheet"]>; "selected_sheet"?: string | null; "headers"?: Array<string>; "mapping"?: Record<string, string>; "rows"?: number; "valid"?: number; "invalid"?: number; "create"?: number; "unchanged"?: number; "duplicate_rows"?: number; "categories_to_create"?: number; "arabic_labels_to_add"?: number; "sample"?: Array<Record<string, unknown>>; "issues"?: Array<Record<string, unknown>> };
@@ -218,6 +220,8 @@ export interface Operations {
   "PUT /api/v1/capabilities/selections": { body: Schemas["CapabilitySelection"]; response: Array<Schemas["CapabilityOut"]> };
   "POST /api/v1/capabilities": { body: Schemas["CapabilityIn"]; response: Schemas["CapabilityOut"] };
   "GET /api/v1/capabilities/{org_id}": { body: never; response: Array<Schemas["CapabilityOut"]> };
+  "GET /api/v1/capabilities/admin/pending": { body: never; response: Array<Schemas["CapabilityReviewItem"]> };
+  "POST /api/v1/capabilities/admin/{capability_id}/review": { body: Schemas["CapabilityReviewIn"]; response: Schemas["CapabilityOut"] };
   "POST /api/v1/capabilities/{capability_id}/confirm": { body: never; response: Schemas["CapabilityOut"] };
   "PATCH /api/v1/capabilities/{capability_id}/eligibility": { body: Schemas["CapabilityEligibilityIn"]; response: Schemas["CapabilityOut"] };
   "GET /api/v1/directory/suppliers": { body: never; response: Array<Schemas["PublicSupplier"]> };

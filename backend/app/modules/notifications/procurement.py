@@ -129,7 +129,7 @@ def prepare(db, event):
             Invitation.rfq_id==rfq.id,Invitation.id.in_(selected))).all())
         for org_id in pending_orgs(db, rfq):
             if targets is not None and org_id not in targets:continue
-            queue_in_app(db,event,org_id,'deadline_reminder',f'Procura: {rfq.reference} response deadline is approaching.')
+            queue_in_app(db,event,org_id,'deadline_reminder',f'Procumaterial: {rfq.reference} response deadline is approaching.')
             enqueue_org_notice(
                 db,
                 org_id=org_id,
@@ -182,7 +182,7 @@ def quotation_notice(db, event):
         (rfq.buyer_org_id, "buyer", "quotation_submitted"),
         (quote.supplier_org_id, "supplier", "quotation_confirmation"),
     ):
-        queue_in_app(db,event,org_id,template,f'Procura: {rfq.reference} quotation update.')
+        queue_in_app(db,event,org_id,template,f'Procumaterial: {rfq.reference} quotation update.')
         enqueue_org_notice(
             db,
             org_id=org_id,

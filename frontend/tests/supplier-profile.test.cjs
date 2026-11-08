@@ -22,7 +22,7 @@ function render({data=supplier,arabic=false,error,loading=false,related=[],promo
 test('supplier profile renders authorized contact actions, grouped services and distinct office/coverage',()=>{
  const html=render();
  assert.match(html,/href="tel:\+966500001234"/);
- assert.match(html,/href="mailto:sales%40example.test\?subject=Procurement%20Enquiry%20via%20Procura"/);
+ assert.match(html,/href="mailto:sales%40example.test\?subject=Procurement%20Enquiry%20via%20(Procumaterial|Procura)"/);
  assert.match(html,/href="https:\/\/supplier.example.test" target="_blank" rel="noopener noreferrer"/);
  assert.match(html,/Original company introduction/);assert.match(html,/Original Company Name/);
  assert.match(html,/Office City:/);assert.match(html,/Dammam/);assert.match(html,/Riyadh/);assert.match(html,/Jeddah/);

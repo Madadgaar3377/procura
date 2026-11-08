@@ -50,7 +50,7 @@ export function MarketingLanguage({locale}:{locale?:MarketingLocale}){
 
 export function MarketingBrand({inverse=false}:{inverse?:boolean}){
   // Preserve the existing approved text wordmark. No replacement symbol is drawn.
-  return <Link href="/" className={`pm-brand${inverse?' pm-brand-inverse':''}`} aria-label="Procura"><span>Procura</span><i aria-hidden="true"/></Link>;
+  return <Link href="/" className={`pm-brand${inverse?' pm-brand-inverse':''}`} aria-label="Procumaterial"><span>Procumaterial</span><i aria-hidden="true"/></Link>;
 }
 
 export function MarketingHeader({locale}:{locale?:MarketingLocale}){
@@ -90,7 +90,7 @@ export function MarketingFooter({locale}:{locale?:MarketingLocale}){
   const {arabic}=useLocale();const current=locale||(arabic?'ar':'en');const c=marketingCopy[current];let labelIndex=0;
   return <footer className="pm-footer"><div className="pm-container"><div className="pm-footer-top"><div><MarketingBrand/><p dir="ltr" className="pm-official-tagline">{c.tagline}</p><p>{c.footerNote}</p></div><a href="#top" className="pm-back-top">{c.backToTop}<IconArrowUp size={18} aria-hidden="true"/></a></div>
     <div className="pm-footer-links">{footerHrefs.map((links,index)=><nav key={c.footerGroups[index]} aria-label={c.footerGroups[index]}><h3>{c.footerGroups[index]}</h3>{links.map(href=><Link key={href} href={href} prefetch={href.startsWith('/app')||href.startsWith('/register')?false:undefined}>{c.footerLinks[labelIndex++]}</Link>)}</nav>)}</div>
-    <div className="pm-footer-bottom"><span>© {new Date().getFullYear()} Procura</span><MarketingLanguage locale={current}/></div>
+    <div className="pm-footer-bottom"><span>© {new Date().getFullYear()} Procumaterial</span><MarketingLanguage locale={current}/></div>
   </div></footer>;
 }
 

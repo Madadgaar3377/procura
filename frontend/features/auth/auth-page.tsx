@@ -322,7 +322,7 @@ export default function LiveAuth({ type }: { type: string }) {
   return <main className="auth-page auth-page-live">
     <section className="auth-story">
       <div className="auth-story-top">
-        <Link href="/" className="brand">Procura<span className="brand-dot">.</span></Link>
+        <Link href="/" className="brand">Procumaterial<span className="brand-dot">.</span></Link>
         <button className="auth-language" type="button" onClick={() => setArabic(!arabic)}>{arabic ? "English" : "العربية"}</button>
       </div>
       <div className="auth-story-copy">
@@ -338,7 +338,7 @@ export default function LiveAuth({ type }: { type: string }) {
       <div className="auth-visual" aria-label={t("Riyadh and a procurement workflow")}>
         <Image className="auth-visual-image" src="/images/riyadh-skyline.png" alt="Riyadh skyline at sunset" fill priority sizes="(max-width: 900px) 100vw, 55vw" />
         <div className="auth-visual-shade"/>
-        <div className="auth-visual-caption"><span>{t("PROCURA WORKSPACE")}</span><strong>{t("From requirement to confident decision.")}</strong></div>
+        <div className="auth-visual-caption"><span>{t("PROCUMATERIAL WORKSPACE")}</span><strong>{t("From requirement to confident decision.")}</strong></div>
         <div className="auth-flow-card" aria-hidden="true">
           <span className="auth-flow-label">{t("SOURCING WORKFLOW")}</span>
           <div className="auth-flow-step"><i className="complete"><IconCheck size={12}/></i><span><b>{t("Define the need")}</b><small>{t("Clear RFQ requirements")}</small></span><em>{t("Ready")}</em></div>
@@ -352,11 +352,11 @@ export default function LiveAuth({ type }: { type: string }) {
     <section className="auth-form-side">
       <header className="auth-form-top">
         <div className="auth-mobile-header">
-          <Link href="/" className="brand auth-mobile-brand">Procura<span className="brand-dot">.</span></Link>
+          <Link href="/" className="brand auth-mobile-brand">Procumaterial<span className="brand-dot">.</span></Link>
           <button className="auth-language" type="button" onClick={() => setArabic(!arabic)}>{arabic ? "English" : "العربية"}</button>
         </div>
         <div className="auth-form-top-actions">
-          <Link href="/" className="auth-back"><IconArrowLeft size={15}/>{t("Back to Procura")}</Link>
+          <Link href="/" className="auth-back"><IconArrowLeft size={15}/>{t("Back to Procumaterial")}</Link>
           <span><IconLock size={14}/>{t("Secure business access")}</span>
         </div>
       </header>
@@ -364,7 +364,7 @@ export default function LiveAuth({ type }: { type: string }) {
         <form className="live-auth" onSubmit={submit} onInvalidCapture={event=>{const input=event.target;if(!(input instanceof HTMLInputElement||input instanceof HTMLSelectElement||input instanceof HTMLTextAreaElement))return;if(input.name)setFieldErrors(previous=>({...previous,[input.name]:input.validity.valueMissing?"This field is required.":input.validationMessage}));}} onChange={event=>{const target=event.target;const name=target instanceof HTMLInputElement||target instanceof HTMLSelectElement||target instanceof HTMLTextAreaElement?target.name:"";if(name)setFieldErrors(previous=>({...previous,[name]:""}));}}>
           <span className="section-label">{t(register ? "CREATE ACCOUNT" : forgot ? "PASSWORD HELP" : verify ? "MOBILE VERIFICATION" : reset ? "RESET PASSWORD" : email ? "EMAIL VERIFICATION" : "BUSINESS ACCESS")}</span>
           <h1>{t(title)}</h1>
-          <p className="auth-form-description">{t(register ? "Set up your sign-in details. You will verify your mobile before continuing." : verify ? "Enter the six-digit code sent by SMS to your mobile. Email verification uses a separate code. The SMS code expires in 5 minutes." : forgot ? "Enter the email address or phone number linked to your account. The same recovery code will be sent to your verified phone and email when available." : reset ? (resetToken ? "Choose a new password to complete recovery." : "Enter the recovery code sent to your verified phone and email when available.") : email ? "Confirm your business email to keep account notifications current." : "Sign in to continue to your Procura business workspace.")}</p>
+          <p className="auth-form-description">{t(register ? "Set up your sign-in details. You will verify your mobile before continuing." : verify ? "Enter the six-digit code sent by SMS to your mobile. Email verification uses a separate code. The SMS code expires in 5 minutes." : forgot ? "Enter the email address or phone number linked to your account. The same recovery code will be sent to your verified phone and email when available." : reset ? (resetToken ? "Choose a new password to complete recovery." : "Enter the recovery code sent to your verified phone and email when available.") : email ? "Confirm your business email to keep account notifications current." : "Sign in to continue to your Procumaterial business workspace.")}</p>
           {verify && phone && <p className="auth-form-description">{t("Verification requested for")}: <strong dir="ltr">{phone}</strong>{emailAddress && <> {t("and")} <strong dir="ltr">{emailAddress}</strong></>}</p>}
           {email && emailAddress && <p className="auth-form-description">{t("Verification requested for")}: <strong dir="ltr">{emailAddress}</strong></p>}
           {verify&&<p className="auth-form-description">{arabic?"إذا لم تصلك الرسالة، تحقق من إتاحة الرسائل الدولية وتواصل مع الدعم. لا يؤكد البريد الإلكتروني ملكية رقم الهاتف.":"If SMS does not arrive, check international SMS availability and contact support. Email verification does not replace phone ownership verification."} <Link href="/contact">{t("Need help?")}</Link></p>}
@@ -401,11 +401,11 @@ export default function LiveAuth({ type }: { type: string }) {
           {reset && !resetToken && <button className="auth-resend" type="button" disabled={busy || resendIn>0 || !emailAddress} onClick={()=>void resendRecovery()}>{resendIn>0 ? `${t("Resend available in")} ${resendIn}s` : t("Resend verification code")}</button>}
           <Button type="submit" disabled={busy || !verificationReady}>{t(busy || !verificationReady ? "Please wait..." : register ? "Create account" : verify || email ? "Verify and continue" : forgot ? "Send recovery code" : reset ? (resetToken ? "Reset password" : "Verify code") : "Sign in")}</Button>
 
-          <div className="auth-form-links">{!register && <span>{t("New to Procura?")} <Link href="/register">{t("Create an account")}</Link></span>}{(forgot || reset) && <Link href="/login">{t("Back to Login")}</Link>}{!register && !forgot && <Link href="/forgot-password">{t("Forgot password?")}</Link>}{register && <span>{t("Already have an account?")} <Link href="/login">{t("Sign in")}</Link></span>}{verify && <span>{t("Wrong number?")} <Link href="/register">{t("Start again")}</Link></span>}{reset && <span>{t("Need another code?")} <Link href="/forgot-password">{t("Request a new one")}</Link></span>}</div>
+          <div className="auth-form-links">{!register && <span>{t("New to Procumaterial?")} <Link href="/register">{t("Create an account")}</Link></span>}{(forgot || reset) && <Link href="/login">{t("Back to Login")}</Link>}{!register && !forgot && <Link href="/forgot-password">{t("Forgot password?")}</Link>}{register && <span>{t("Already have an account?")} <Link href="/login">{t("Sign in")}</Link></span>}{verify && <span>{t("Wrong number?")} <Link href="/register">{t("Start again")}</Link></span>}{reset && <span>{t("Need another code?")} <Link href="/forgot-password">{t("Request a new one")}</Link></span>}</div>
           {register && <p className="auth-consent">{t("By creating an account, you agree to our")} <Link href="/terms">{t("Terms")}</Link> {t("and")} <Link href="/privacy">{t("Privacy")}</Link>.</p>}
         </form>
       </div>
-      <footer className="auth-form-footer"><span>{t("© 2026 Procura · Saudi Arabia")}</span><Link href="/contact">{t("Need help?")}</Link></footer>
+      <footer className="auth-form-footer"><span>{t("© 2026 Procumaterial · Saudi Arabia")}</span><Link href="/contact">{t("Need help?")}</Link></footer>
     </section>
   </main>;
 }
