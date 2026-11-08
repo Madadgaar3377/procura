@@ -33,10 +33,17 @@ def build_engine(url: str):
         if ':memory:' in url:
             kwargs['poolclass'] = StaticPool
     else:
-        settings=get_settings()
-        kwargs.update(pool_size=10, max_overflow=20, pool_timeout=5, pool_recycle=1800,
-            connect_args={'connect_timeout':settings.database_connect_timeout,
-                'options':f'-c lock_timeout={settings.database_lock_timeout_ms} -c statement_timeout={settings.database_statement_timeout_ms} -c idle_in_transaction_session_timeout=30000'})
+        settings = get_settings()
+        kwargs.update(
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_timeout=settings.db_pool_timeout,
+            pool_recycle=settings.db_pool_recycle,
+            connect_args={
+                'connect_timeout': settings.database_connect_timeout,
+                'options': f'-c lock_timeout={settings.database_lock_timeout_ms} -c statement_timeout={settings.database_statement_timeout_ms} -c idle_in_transaction_session_timeout=30000',
+            },
+        )
     engine = create_engine(url, **kwargs)
     if url.startswith('sqlite'):
         @event.listens_for(engine, 'connect')
@@ -52,9 +59,28 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expi
 from app.profile_schema import compatible_organization_reads
 event.listen(SessionLocal.class_, 'do_orm_execute', compatible_organization_reads)
 
+def get_pool_status() -> dict[str, Any]:
+    """Return live connection pool metrics for diagnostics and observability."""
+    pool = engine.pool
+    if hasattr(pool, 'size'):
+        return {
+            'pool_size': pool.size(),
+            'checked_in': pool.checkedin(),
+            'checked_out': pool.checkedout(),
+            'overflow': pool.overflow(),
+            'total_connections': pool.checkedin() + pool.checkedout(),
+            'pool_timeout': getattr(get_settings(), 'db_pool_timeout', 10),
+            'pool_recycle': getattr(get_settings(), 'db_pool_recycle', 1800),
+        }
+    return {'pool_type': type(pool).__name__, 'status': 'active'}
+
+
 def get_db():
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

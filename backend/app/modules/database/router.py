@@ -1,14 +1,20 @@
 import logging
 from datetime import datetime, timezone
+from time import perf_counter
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
-from app.database import engine
+from app import catalog_cache
+from app.database import engine, get_db, get_pool_status
+from app.models import Outbox
+from app.redis_client import redis_metrics
 from app.schemas import DatabaseConnectStatus
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix='/db', tags=['Database Status'])
+router = APIRouter(prefix='/db', tags=['Database Status & Performance'])
 
 
 @router.get('/connect/status', response_model=DatabaseConnectStatus)
@@ -41,3 +47,45 @@ def connect_status():
         error=None,
         checked_at=checked_at,
     )
+
+
+@router.get('/performance')
+def performance_metrics(db: Session = Depends(get_db)):
+    """Comprehensive observability for database pooling, Redis latency, L1/L2 cache, and outbox queue."""
+    t0 = perf_counter()
+    try:
+        with engine.connect() as conn:
+            conn.execute(text('SELECT 1'))
+        db_latency = round((perf_counter() - t0) * 1000.0, 2)
+        db_healthy = True
+    except Exception:
+        db_latency = None
+        db_healthy = False
+
+    # Outbox status counts
+    queue_counts = {}
+    total_queue = 0
+    try:
+        rows = db.execute(select(Outbox.status, func.count()).group_by(Outbox.status)).all()
+        for status, count in rows:
+            queue_counts[status] = count
+            if status in {'pending', 'retry', 'awaiting_status', 'processing'}:
+                total_queue += count
+    except Exception:
+        queue_counts = {'error': 'unavailable'}
+
+    return {
+        'database': {
+            'healthy': db_healthy,
+            'dialect': engine.dialect.name,
+            'latency_ms': db_latency,
+            'pool': get_pool_status(),
+        },
+        'redis': redis_metrics(),
+        'cache': catalog_cache.metrics(),
+        'queue': {
+            'active_depth': total_queue,
+            'by_status': queue_counts,
+        },
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+    }

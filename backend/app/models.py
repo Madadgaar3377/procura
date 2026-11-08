@@ -200,7 +200,7 @@ class MeasurementUnit(TimeID, Base):
 
 class Material(TimeID, Base):
     __tablename__='materials'
-    __table_args__=(Index('ix_materials_category_sort','category_id','code'),Index('ix_materials_subcategory_sort','subcategory_id','code'))
+    __table_args__=(Index('ix_materials_category_sort','category_id','code'),Index('ix_materials_subcategory_sort','subcategory_id','code'),Index('ix_materials_active_unit','active','unit'),Index('ix_materials_active_cats','active','main_category_id','subcategory_id'))
     code: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     category_id: Mapped[str] = mapped_column(ForeignKey('categories.id'), index=True)
     main_category_id: Mapped[str | None] = mapped_column(ForeignKey('categories.id'), nullable=True, index=True)
@@ -342,7 +342,7 @@ class RFQ(TimeID, Base):
 class RFQItem(TimeID, Base):
     __tablename__='rfq_items'
     rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id'), index=True)
-    material_id: Mapped[str | None] = mapped_column(ForeignKey('materials.id'), nullable=True)
+    material_id: Mapped[str | None] = mapped_column(ForeignKey('materials.id'), nullable=True, index=True)
     main_category_id: Mapped[str | None] = mapped_column(ForeignKey('categories.id'), nullable=True, index=True)
     subcategory_id: Mapped[str | None] = mapped_column(ForeignKey('categories.id'), nullable=True, index=True)
     description: Mapped[str] = mapped_column(Text)
@@ -369,7 +369,7 @@ class Invitation(TimeID, Base):
 
 class Quotation(TimeID, Base):
     __tablename__='quotations'
-    __table_args__=(UniqueConstraint('invitation_id',name='uq_quote_invitation'),)
+    __table_args__=(UniqueConstraint('invitation_id',name='uq_quote_invitation'),Index('ix_quotations_supplier_status','supplier_org_id','status'))
     invitation_id: Mapped[str] = mapped_column(ForeignKey('rfq_invitations.id'))
     rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id'), index=True)
     supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
@@ -405,7 +405,7 @@ class QuoteLine(TimeID, Base):
 
 class Notification(TimeID, Base):
     __tablename__='notifications'
-    recipient_user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    recipient_user_id: Mapped[str] = mapped_column(ForeignKey('users.id'), index=True)
     event: Mapped[str] = mapped_column(String(100))
     message: Mapped[str] = mapped_column(String(500))
     channel: Mapped[str] = mapped_column(String(30), default='in_app')

@@ -6,11 +6,10 @@ from threading import Lock
 from time import monotonic
 
 from fastapi import HTTPException, Request
-from redis import Redis
 
 from app.config import get_settings
+from app.redis_client import get_redis, mark_redis_failure, ping_redis
 
-_redis: Redis | None = None
 _local: dict[str, tuple[int, float]] = {}
 _local_lock = Lock()
 
@@ -19,23 +18,6 @@ local count = redis.call('INCR', KEYS[1])
 if count == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end
 return count
 """
-
-
-def _client() -> Redis:
-    global _redis
-    settings = get_settings()
-    if _redis is None:
-        _redis = Redis.from_url(
-            settings.redis_url,
-            socket_connect_timeout=0.5,
-            socket_timeout=0.5,
-            health_check_interval=30,
-        )
-    return _redis
-
-
-def ping_redis() -> bool:
-    return bool(_client().ping())
 
 
 def _local_consume(key: str, window_seconds: int) -> int:
@@ -67,16 +49,20 @@ def enforce_rate_limit(
     raw_key = f"{scope}:{address}:{identity}"
     key = f"saudi-procurement:rate:{sha256(raw_key.encode()).hexdigest()}"
 
-    try:
-        if settings.redis_url and not settings.is_test:
-            count = int(_client().eval(_INCREMENT_WINDOW, 1, key, window_seconds))
-        elif settings.is_production:
-            raise RuntimeError('Redis is required for production rate limiting')
-        else:
+    count = 0
+    client = get_redis() if (settings.redis_url and not settings.is_test) else None
+
+    if client is not None:
+        try:
+            count = int(client.eval(_INCREMENT_WINDOW, 1, key, window_seconds))
+        except Exception as exc:
+            mark_redis_failure(exc)
+            if settings.is_production:
+                raise HTTPException(503, 'Rate limiting is temporarily unavailable') from exc
             count = _local_consume(key, window_seconds)
-    except Exception as exc:
+    else:
         if settings.is_production:
-            raise HTTPException(503, 'Rate limiting is temporarily unavailable') from exc
+            raise HTTPException(503, 'Rate limiting is temporarily unavailable')
         count = _local_consume(key, window_seconds)
 
     if count > limit:

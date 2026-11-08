@@ -45,6 +45,7 @@ def match_and_invite(db: Session, rfq: RFQ, actor: User | None = None, limit: in
     if not item_scope:return {'eligible_suppliers':0,'new_invitations':0,'invitations':[]}
     category_scopes={sub or main for main,sub in item_scope.values()}
     category_parents=dict(db.execute(select(Category.id,Category.parent_id).where(Category.id.in_(category_scopes))).all())
+    exact_material_ids = {item.material_id for item, _ in requested if item.material_id}
 
     batch_size = max(1, min(limit if limit is not None else get_settings().matching_batch_size, 100))
     # Scan a bounded keyset, including ineligible qualification candidates, so
@@ -68,7 +69,7 @@ def match_and_invite(db: Session, rfq: RFQ, actor: User | None = None, limit: in
     candidate_ids=list(db.scalars(candidate_query).all())
     has_more=bounded and len(candidate_ids)>batch_size
     if bounded:candidate_ids=candidate_ids[:batch_size]
-    rows = db.execute(select(Capability.org_id,Capability.category_id,Capability.qualifications,Organization)
+    rows = db.execute(select(Capability.org_id,Capability.category_id,Capability.qualifications,Capability.material_ids,Organization)
         .join(Organization,Organization.id==Capability.org_id).where(Capability.org_id.in_(candidate_ids),
         Capability.category_id.in_(category_scopes),*eligibility_predicates(),
         func.lower(func.trim(Capability.city))==rfq.city.strip().casefold())).all()
@@ -80,15 +81,18 @@ def match_and_invite(db: Session, rfq: RFQ, actor: User | None = None, limit: in
 
     selected: dict[str, dict] = {}
     required={value.strip().casefold() for value in (rfq.required_qualifications or []) if value.strip()}
-    for org_id, category_id, qualifications, company in rows:
+    for org_id, category_id, qualifications, supplier_mat_ids, company in rows:
         if not required.issubset({value.strip().casefold() for value in (qualifications or [])}):continue
-        candidate=selected.setdefault(org_id,{'org':company,'covered':set()})
+        candidate=selected.setdefault(org_id,{'org':company,'covered':set(),'exact_materials':set()})
         for item_id,(main,sub) in item_scope.items():
             # A main-category capability never grants all of its subcategories.
             if category_id==(sub or main) and (not sub or category_parents.get(category_id)==main):
                 candidate['covered'].add(item_id)
+        if supplier_mat_ids and exact_material_ids:
+            matched_mats = set(supplier_mat_ids) & exact_material_ids
+            candidate['exact_materials'].update(matched_mats)
     ranked = sorted((candidate for candidate in selected.values() if candidate['covered']), key=lambda candidate: (
-        -len(candidate['covered']), candidate['org'].name.casefold(), candidate['org'].id,
+        -len(candidate.get('exact_materials', set())), -len(candidate['covered']), candidate['org'].name.casefold(), candidate['org'].id,
     ))
     if not ranked:
         return {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': []}
@@ -110,19 +114,29 @@ def match_and_invite(db: Session, rfq: RFQ, actor: User | None = None, limit: in
 
     batch_size = max(1, min(limit if limit is not None else get_settings().matching_batch_size, 100))
     invitation_candidates = [candidate for candidate in ranked if candidate['org'].id not in invited][:batch_size]
-    new_matches = [
-        RFQMatch(
+    new_matches = []
+    for candidate in ranked:
+        if candidate['org'].id in matches:
+            continue
+        exact_count = len(candidate.get('exact_materials', set()))
+        score = min(100, 60 + 10 * len(candidate['covered']) + (10 if exact_count > 0 else 0))
+        reasons = [
+            'verified company',
+            ('approved exact main category + subcategory capability' if get_settings().require_capability_approval else 'self-declared exact main category + subcategory capability'),
+            'delivery city match',
+            f"coverage:{len(candidate['covered'])}/{len(item_scope)}",
+        ]
+        if exact_material_ids:
+            reasons.append(f"exact_materials:{exact_count}/{len(exact_material_ids)}")
+        reasons.extend([f'item:{item_id}' for item_id in sorted(candidate['covered'])])
+        reasons.append('Category eligibility does not confirm technical compliance')
+        new_matches.append(RFQMatch(
             rfq_id=rfq.id,
             supplier_org_id=candidate['org'].id,
-            score=min(100, 60 + 10 * len(candidate['covered'])),
-            reasons=['verified company', ('approved exact main category + subcategory capability' if get_settings().require_capability_approval else 'self-declared exact main category + subcategory capability'), 'delivery city match',
-                     f"coverage:{len(candidate['covered'])}/{len(item_scope)}",
-                     *[f'item:{item_id}' for item_id in sorted(candidate['covered'])],
-                     'Category eligibility does not confirm technical compliance'],
-            status='eligible' if len(candidate['covered'])==len(item_scope) else 'partial',
-        )
-        for candidate in ranked if candidate['org'].id not in matches
-    ]
+            score=score,
+            reasons=reasons,
+            status='eligible' if len(candidate['covered']) == len(item_scope) else 'partial',
+        ))
     db.add_all(new_matches)
 
     invitations = [Invitation(rfq_id=rfq.id, supplier_org_id=candidate['org'].id)

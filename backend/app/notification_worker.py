@@ -177,6 +177,12 @@ def process_batch(db,limit=25,now=None,event_ids=None):
             elif event.event in {'rfq.invitation','rfq.deadline.reminder'}:
                 from app.modules.notifications.procurement import prepare
                 prepare(db,event)
+                if event.event == 'rfq.invitation' and event.payload.get('invitation_id'):
+                    try:
+                        from app.modules.quotations.automation import prepare_authorized_quote
+                        prepare_authorized_quote(db, event.payload['invitation_id'])
+                    except Exception:
+                        log.warning('Automatic quotation check for invitation=%s failed; manual submission remains open', event.payload.get('invitation_id'))
             else:core._process_event(db,event,now)
             event.lock_until=None
             if event.status=='processing':event.status='processed'
