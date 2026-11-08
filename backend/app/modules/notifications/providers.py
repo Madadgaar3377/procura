@@ -111,27 +111,36 @@ def get_sms_status(provider_message_id: str, *, transport=None) -> dict:
 
 
 def _resolve_sender(settings) -> str:
-    """Build RFC 5322 From address, falling back to smtp_username if smtp_from_email has no @."""
-    raw = settings.smtp_from_email.strip()
-    if '@' in raw:
-        return raw
-    # smtp_from_email is a display name only (e.g. 'Madadgaar') — combine with smtp_username
-    if settings.smtp_username and '@' in settings.smtp_username:
-        return f'{raw} <{settings.smtp_username}>'
-    raise DeliveryError('SMTP_FROM_EMAIL must contain a valid email address', retryable=False)
+    """Build RFC 5322 From address with display name (e.g. Procumaterial <orders@procumaterial.com>)."""
+    from email.utils import formataddr, parseaddr
+    raw = (getattr(settings, 'smtp_from_email', '') or '').strip()
+    name, addr = parseaddr(raw)
+    email_address = addr if '@' in addr else (raw if '@' in raw else (getattr(settings, 'smtp_username', '') or '').strip())
+    if not email_address or '@' not in email_address:
+        raise DeliveryError('SMTP_FROM_EMAIL or SMTP_USERNAME must contain a valid email address', retryable=False)
+    display_name = (getattr(settings, 'smtp_from_name', '') or '').strip() or name or 'Procumaterial'
+    return formataddr((display_name, email_address))
 
 
 def send_email(address: str, subject: str, plain_text: str, html_body: str, idempotency_key: str) -> str:
+    from smtplib import SMTPAuthenticationError, SMTPRecipientsRefused, SMTPResponseException
     settings = get_settings()
     message_id = f'<delivery-{sha256(idempotency_key.encode("utf-8")).hexdigest()[:32]}@procurement.local>'
     if settings.mock_notifications:
         return message_id
     if not all((settings.smtp_host, settings.smtp_username, settings.smtp_password)):
-        raise DeliveryError('SMTP credentials are not configured')
+        raise DeliveryError('SMTP credentials are not configured', retryable=False)
     if not settings.smtp_from_email and not settings.smtp_username:
-        raise DeliveryError('SMTP sender address is not configured')
-    if not settings.smtp_use_tls:
-        raise DeliveryError('SMTP TLS is required')
+        raise DeliveryError('SMTP sender address is not configured', retryable=False)
+    
+    security = (getattr(settings, 'smtp_security', '') or '').strip().upper()
+    is_implicit_ssl = (
+        settings.smtp_port == 465
+        or (security in {'SSL/TLS', 'SSL', 'TLS'} and settings.smtp_port != 587)
+    )
+    if not is_implicit_ssl and not (settings.smtp_port == 587 or security == 'STARTTLS' or settings.smtp_use_tls):
+        raise DeliveryError('Secure SMTP configuration required (SSL/TLS on port 465 or STARTTLS on port 587)', retryable=False)
+
     sender = _resolve_sender(settings)
     message = EmailMessage()
     message['Subject'] = subject
@@ -140,19 +149,39 @@ def send_email(address: str, subject: str, plain_text: str, html_body: str, idem
     message['Message-ID'] = message_id
     message.set_content(plain_text)
     message.add_alternative(html_body, subtype='html')
+    stage = 'connect'
     try:
-        if settings.smtp_port == 465:
+        if is_implicit_ssl:
             with SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=settings.delivery_timeout_seconds, context=create_default_context()) as smtp:
+                stage = 'authenticate'
                 smtp.login(settings.smtp_username, settings.smtp_password)
-                smtp.send_message(message)
+                stage = 'data'
+                refused = smtp.send_message(message)
+                if refused:
+                    raise DeliveryError('SMTP recipient refused', retryable=False)
         else:
             with SMTP(settings.smtp_host, settings.smtp_port, timeout=settings.delivery_timeout_seconds) as smtp:
                 smtp.ehlo()
-                if settings.smtp_use_tls:
+                if settings.smtp_use_tls or security == 'STARTTLS':
                     smtp.starttls(context=create_default_context())
                     smtp.ehlo()
+                stage = 'authenticate'
                 smtp.login(settings.smtp_username, settings.smtp_password)
-                smtp.send_message(message)
-    except (OSError, SMTPException) as exc:
-        raise DeliveryError(f'SMTP delivery failed ({type(exc).__name__})') from exc
+                stage = 'data'
+                refused = smtp.send_message(message)
+                if refused:
+                    raise DeliveryError('SMTP recipient refused', retryable=False)
+    except SMTPAuthenticationError as exc:
+        raise DeliveryError(f'SMTP authentication failed (code {exc.smtp_code})', retryable=False) from exc
+    except SMTPRecipientsRefused as exc:
+        codes = [value[0] for value in exc.recipients.values()]
+        retryable = bool(codes) and all(400 <= code < 500 for code in codes)
+        raise DeliveryError('SMTP recipient refused', retryable=retryable) from exc
+    except SMTPResponseException as exc:
+        retryable = 400 <= exc.smtp_code < 500
+        raise DeliveryError(f'SMTP {stage} rejected (code {exc.smtp_code})', retryable=retryable) from exc
+    except (TimeoutError, OSError) as exc:
+        raise DeliveryError(f'SMTP {stage} timed out or connection failed ({type(exc).__name__})', retryable=True) from exc
+    except SMTPException as exc:
+        raise DeliveryError(f'SMTP {stage} failed ({type(exc).__name__})', retryable=True) from exc
     return message_id

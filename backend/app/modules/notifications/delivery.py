@@ -7,7 +7,7 @@ import re
 import logging
 
 log = logging.getLogger("uvicorn.error")
-from smtplib import SMTP, SMTP_SSL, SMTPException, SMTPResponseException, SMTPRecipientsRefused
+from smtplib import SMTP, SMTP_SSL, SMTPException, SMTPResponseException, SMTPRecipientsRefused, SMTPAuthenticationError
 from ssl import create_default_context
 import httpx
 from app.config import get_settings
@@ -85,41 +85,67 @@ def send_sms(phone,text,idempotency_key, *, ttl_seconds=3600,transport=None):
 def email_message_id(key):return '<delivery-'+sha256(key.encode()).hexdigest()[:32]+'@procurement.local>'
 
 
-def send_email(address,subject,plain_text,html_body,idempotency_key):
-    settings=get_settings();message_id=email_message_id(idempotency_key)
+def send_email(address, subject, plain_text, html_body, idempotency_key):
+    settings = get_settings()
+    message_id = email_message_id(idempotency_key)
     if settings.mock_notifications:
-        log.warning('Email delivery simulated: MOCK_NOTIFICATIONS=true; no email sent')
+        log.warning("Email delivery simulated: MOCK_NOTIFICATIONS=true; no email sent")
         return message_id
-    if not (settings.smtp_username and settings.smtp_password):raise delivery_error('SMTP credentials are not configured',retryable=False)
-    if not settings.smtp_use_tls or settings.smtp_port not in {465,587}:
-        raise delivery_error('Use SMTP SSL on port 465 or STARTTLS on port 587',retryable=False)
-    sender=_resolve_sender(settings)
-    if any('\r' in value or '\n' in value for value in (address,sender,subject)) or not all(re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',parseaddr(value)[1]) for value in (sender,address)):
-        raise delivery_error('Invalid SMTP sender or recipient',retryable=False)
-    message=EmailMessage();message['From']=sender;message['To']=address;message['Subject']=subject;message['Message-ID']=message_id
-    message.set_content(plain_text);message.add_alternative(html_body,subtype='html')
-    log.info('Email SMTP configured; connecting port=%s', settings.smtp_port)
-    stage='connect'
+    if not (settings.smtp_username and settings.smtp_password):
+        raise delivery_error("SMTP credentials are not configured", retryable=False)
+    security = (getattr(settings, "smtp_security", "") or "").strip().upper()
+    is_implicit_ssl = (
+        settings.smtp_port == 465
+        or (security in {"SSL/TLS", "SSL", "TLS"} and settings.smtp_port != 587)
+    )
+    if not is_implicit_ssl and not (settings.smtp_port == 587 or security == "STARTTLS" or settings.smtp_use_tls):
+        raise delivery_error("Use SMTP SSL on port 465 or STARTTLS on port 587", retryable=False)
+    sender = _resolve_sender(settings)
+    if any("\r" in value or "\n" in value for value in (address, sender, subject)) or not all(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", parseaddr(value)[1]) for value in (sender, address)):
+        raise delivery_error("Invalid SMTP sender or recipient", retryable=False)
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = address
+    message["Subject"] = subject
+    message["Message-ID"] = message_id
+    message.set_content(plain_text)
+    message.add_alternative(html_body, subtype="html")
+    log.info("Email SMTP configured; connecting port=%s security=%s", settings.smtp_port, "SSL/TLS" if is_implicit_ssl else "STARTTLS")
+    stage = "connect"
     try:
-        factory=SMTP_SSL if settings.smtp_port==465 else SMTP
-        kwargs={'timeout':settings.delivery_timeout_seconds}
-        if settings.smtp_port==465:kwargs['context']=create_default_context()
-        with factory(settings.smtp_host,settings.smtp_port,**kwargs) as smtp:
-            if settings.smtp_port==587:smtp.ehlo();smtp.starttls(context=create_default_context());smtp.ehlo()
-            stage='authenticate'
-            smtp.login(settings.smtp_username,settings.smtp_password)
-            log.info('Email SMTP connected and authenticated')
-            stage='data';refused=smtp.send_message(message)
-            if refused:raise delivery_error('SMTP recipient refused',retryable=False)
-            stage='accepted'
-            log.info('Email send done: SMTP accepted message; inbox delivery is not confirmed')
+        factory = SMTP_SSL if is_implicit_ssl else SMTP
+        kwargs = {"timeout": settings.delivery_timeout_seconds}
+        if is_implicit_ssl:
+            kwargs["context"] = create_default_context()
+        with factory(settings.smtp_host, settings.smtp_port, **kwargs) as smtp:
+            if not is_implicit_ssl:
+                smtp.ehlo()
+                smtp.starttls(context=create_default_context())
+                smtp.ehlo()
+            stage = "authenticate"
+            smtp.login(settings.smtp_username, settings.smtp_password)
+            log.info("Email SMTP connected and authenticated")
+            stage = "data"
+            refused = smtp.send_message(message)
+            if refused:
+                raise delivery_error("SMTP recipient refused", retryable=False)
+            stage = "accepted"
+            log.info("Email send done: SMTP accepted message; inbox delivery is not confirmed")
+    except SMTPAuthenticationError as exc:
+        raise delivery_error(f"SMTP authentication failed (code {exc.smtp_code})", retryable=False, status_code=exc.smtp_code) from exc
     except SMTPRecipientsRefused as exc:
-        codes=[value[0] for value in exc.recipients.values()]
-        raise delivery_error('SMTP recipient refused',retryable=bool(codes) and all(400<=code<500 for code in codes)) from exc
+        codes = [value[0] for value in exc.recipients.values()]
+        raise delivery_error("SMTP recipient refused", retryable=bool(codes) and all(400 <= code < 500 for code in codes)) from exc
     except SMTPResponseException as exc:
-        if stage=='accepted':return message_id
-        raise delivery_error(f'SMTP {stage} rejected (code {exc.smtp_code})',retryable=400<=exc.smtp_code<500,status_code=exc.smtp_code) from exc
-    except (SMTPException,OSError) as exc:
-        if stage=='accepted':return message_id
-        raise delivery_error('SMTP '+stage+' failed ('+type(exc).__name__+')',uncertain=stage=='data') from exc
+        if stage == "accepted":
+            return message_id
+        raise delivery_error(f"SMTP {stage} rejected (code {exc.smtp_code})", retryable=400 <= exc.smtp_code < 500, status_code=exc.smtp_code) from exc
+    except (TimeoutError, OSError) as exc:
+        if stage == "accepted":
+            return message_id
+        raise delivery_error(f"SMTP {stage} timed out or failed ({type(exc).__name__})", retryable=True, uncertain=stage == "data") from exc
+    except SMTPException as exc:
+        if stage == "accepted":
+            return message_id
+        raise delivery_error(f"SMTP {stage} failed ({type(exc).__name__})", retryable=True, uncertain=stage == "data") from exc
     return message_id

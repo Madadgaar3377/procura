@@ -11,7 +11,7 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
     if template == 'phone_changed':
         plain = 'Procumaterial Security: Your registered phone number was changed. If this was not you, contact Procumaterial support immediately.'
         if context.get('language') == 'ar':
-            plain = 'أمان بروكيورا: تم تغيير رقم هاتف حسابك. إذا لم تقم بهذا التغيير، تواصل مع الدعم فوراً.'
+            plain = 'أمان بروكيو ماتيريال: تم تغيير رقم هاتف حسابك. إذا لم تقم بهذا التغيير، تواصل مع الدعم فوراً.'
         return 'Procumaterial | Phone number changed', plain, '<p>'+escape(plain)+'</p>'
     if template == "password_changed":
         from datetime import datetime

@@ -52,12 +52,40 @@ class Settings(BaseSettings):
         return v
     support_url: str = ''
     frontend_url: str = 'https://procumaterial.com'
-    smtp_host: str = 'smtp.hostinger.com'
-    smtp_port: int = Field(default=465,ge=1,le=65535)
-    smtp_username: str = ''
-    smtp_password: str = ''
-    smtp_from_email: str = ''
-    smtp_use_tls: bool = True
+    smtp_host: str = Field(
+        default='mail.spacemail.com',
+        validation_alias=AliasChoices('smtp_host', 'SMTP_HOST'),
+    )
+    smtp_port: int = Field(
+        default=465,
+        ge=1,
+        le=65535,
+        validation_alias=AliasChoices('smtp_port', 'SMTP_PORT'),
+    )
+    smtp_security: str = Field(
+        default='SSL/TLS',
+        validation_alias=AliasChoices('smtp_security', 'SMTP_SECURITY'),
+    )
+    smtp_username: str = Field(
+        default='',
+        validation_alias=AliasChoices('smtp_username', 'SMTP_USERNAME'),
+    )
+    smtp_password: str = Field(
+        default='',
+        validation_alias=AliasChoices('smtp_password', 'SMTP_PASSWORD'),
+    )
+    smtp_from_email: str = Field(
+        default='',
+        validation_alias=AliasChoices('smtp_from_email', 'SMTP_FROM_EMAIL'),
+    )
+    smtp_from_name: str = Field(
+        default='Procumaterial',
+        validation_alias=AliasChoices('smtp_from_name', 'SMTP_FROM_NAME'),
+    )
+    smtp_use_tls: bool = Field(
+        default=True,
+        validation_alias=AliasChoices('smtp_use_tls', 'SMTP_USE_TLS'),
+    )
     field_encryption_key: str = ''
     delivery_timeout_seconds: int = Field(default=10,ge=1,le=30)
     delivery_max_attempts: int = Field(default=5,ge=1,le=10)
