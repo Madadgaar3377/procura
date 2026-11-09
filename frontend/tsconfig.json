@@ -58,7 +58,9 @@
     ".next-plan-validation/types/**/*.ts",
     ".next-plan-validation/dev/types/**/*.ts",
     ".next-saudi-policy/types/**/*.ts",
-    ".next-saudi-policy/dev/types/**/*.ts"
+    ".next-saudi-policy/dev/types/**/*.ts",
+    ".next-contact-delivery-build/types/**/*.ts",
+    ".next-contact-delivery-build/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

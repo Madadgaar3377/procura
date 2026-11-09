@@ -84,11 +84,13 @@ try{
  assert.equal(supplierReport.invitations,1);assert.equal(supplierReport.quotations_submitted,1);
  assert.equal((await call('reports/summary?workspace=admin',b({}))).r.status,403);
  const adminReport=(await call('reports/summary?workspace=admin',a({}))).data;assert.equal(adminReport.rfqs_created,1);
- const enquiry=(await call('contact',{body:{name:'Smoke Contact',email:'contact@example.sa',company:'Smoke Company',topic:'buyer',message:'Please tell us how to prepare a procurement workspace.',consent:true}}));
+ const invalidEmail=await call('contact',{body:{name:'Smoke Contact',email:'not-an-email',topic:'buyer',message:'Please tell us how to prepare a procurement workspace.',consent:true}});assert.equal(invalidEmail.r.status,422);
+ const oversized=await call('contact',{body:{name:'Smoke Contact',email:'large@example.sa',topic:'buyer',message:'x'.repeat(5001),consent:true}});assert.equal(oversized.r.status,422);
+ const enquiry=(await call('contact',{body:{name:'Smoke Contact',email:'contact@example.sa',company:'Smoke Company',topic:'buyer',user_type:'buyer',category:'buyer_support',subject:'Support request',message:'Please tell us how to prepare a procurement workspace.',consent:true}}));
  assert.equal(enquiry.r.status,201);assert.equal(Object.keys(enquiry.data).sort().join(','),'message,reference');
  assert.equal((await call('contact/admin/inquiries',b({}))).r.status,403);
- const contactQueue=(await call('contact/admin/inquiries',a({}))).data;assert.equal(contactQueue.length,1);assert.equal(contactQueue[0].id,enquiry.data.reference);
- assert.equal((await call(`contact/admin/inquiries/${enquiry.data.reference}`,a({method:'PATCH',body:{status:'reviewed'}}))).r.status,200);
+ const contactQueue=(await call('contact/admin/inquiries',a({}))).data;assert.equal(contactQueue.length,1);assert.equal(contactQueue[0].ticket_reference,enquiry.data.reference);assert.equal(contactQueue[0].subject,'Support request');assert.equal(contactQueue[0].category,'buyer_support');
+ assert.equal((await call(`contact/admin/inquiries/${contactQueue[0].id}`,a({method:'PATCH',body:{status:'in_progress'}}))).r.status,200);
  assert.equal((await call('auth/logout',b({method:'POST',requestOrigin:'https://foreign.example'}))).r.status,403);
  console.log('HTTP procurement assertions passed.');
  if(process.argv.includes('--rtl-browser')||process.argv.includes('--rtl-before')){const {browserCheck}=await import('./rtl-browser-check.mjs');await browserCheck({origin,frontend,rfqId:rfq.rfq.id,quoteId:draft.quotation.id,before:process.argv.includes('--rtl-before')});}

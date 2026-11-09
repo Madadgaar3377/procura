@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     refresh_days: int = 7
     admin_bootstrap_key: str = ''
     redis_url: str = ''
-    cors_origins: str = 'http://localhost:3000,http://127.0.0.1:3000'
+    cors_origins: str = 'http://localhost:3000,http://127.0.0.1:3000,https://procumaterial.com,https://www.procumaterial.com'
     database_connect_timeout: int = Field(default=5,ge=1,le=30)
     database_lock_timeout_ms: int = Field(default=3000,ge=100,le=30000)
     database_statement_timeout_ms: int = Field(default=15000,ge=1000,le=120000)

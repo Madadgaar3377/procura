@@ -308,7 +308,7 @@ export function PortalShell({ role, path, segments, children }: { role: Role; pa
     <div className="app-layout">
       <aside className="side-nav"><div className="workspace-select"><span className="avatar"><IconBuilding size={20}/></span><div><b>{company}</b><small>{t(role==='buyer'?'Buyer account':role==='supplier'?'Supplier account':'Platform operations')}</small>{!demoMode&&session&&role!=='admin'&&<label className="organization-switcher"><span className="sr-only">{t('Organization')}</span><select aria-label="Current organization" value={session.org?.id||''} onChange={event=>session.select(event.target.value)}>{session.organizations.map(organization=><option key={organization.id} value={organization.id}>{organization.name}</option>)}</select></label>}</div></div>
         {role === "admin" ? <><SideGroup label="PLATFORM" items={adminLinks.slice(0,8)} active={activeHref} arabic={arabic}/><SideGroup label="MANAGEMENT" items={adminLinks.slice(8)} active={activeHref} arabic={arabic}/></> : <SideGroup label="WORKSPACE" items={links} active={activeHref} arabic={arabic}/>}
-        <div className="side-bottom">{t("Need help?")} <Link href="/contact" className="page-link">{t("Contact support")}</Link><br/>{t("English · عربي")}</div>
+        <div className="side-bottom">{t("Need help?")} <Link href="/contact" className="page-link">{t("Contact support")}</Link><a href="mailto:support@procumaterial.com">support@procumaterial.com</a><a href="tel:0501496516">0501496516</a><br/>{t("English · عربي")}</div>
       </aside>
       <section className="app-content">
         <LanguageContext.Provider value={arabic}>

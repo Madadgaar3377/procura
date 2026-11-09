@@ -33,9 +33,11 @@ export interface Schemas {
   "ClaimCreate": { "evidence": string };
   "ClaimOut": { "org_id": string; "claimant_id": string; "evidence": string; "status": string; "reviewer_id": string | null; "id": string; "created_at": string };
   "Comparison": { "rfq_id": string; "quotations": Array<Schemas["QuoteDetail"]> };
-  "ContactInquiryCreate": { "name": string; "email": string; "company"?: string | null; "phone"?: string | null; "topic": "buyer" | "supplier" | "partnership" | "support" | "other"; "message": string; "consent": true };
-  "ContactInquiryOut": { "name": string; "email": string; "company": string | null; "phone": string | null; "topic": string; "message": string; "status": string; "handled_by": string | null; "handled_at": string | null; "id": string; "created_at": string };
-  "ContactInquiryStatus": { "status": "reviewed" | "resolved" };
+  "ContactInquiryCreate": { "name": string; "email": string; "company"?: string | null; "phone"?: string | null; "topic"?: "buyer" | "supplier" | "partnership" | "support" | "other"; "user_type"?: "buyer" | "supplier" | "other"; "category"?: "general_inquiry" | "buyer_support" | "supplier_support" | "account_verification" | "rfq_quotations" | "technical_support" | "other"; "subject"?: string; "message": string; "consent": true; "website"?: string | null; "submission_key"?: string | null };
+  "ContactInquiryOut": { "ticket_reference": string; "submission_key": string | null; "user_id": string | null; "organization_id": string | null; "name": string; "email": string; "company": string | null; "phone": string | null; "topic": string; "user_type": string; "category": string; "subject": string; "message": string; "internal_notes": string | null; "status": string; "handled_by": string | null; "handled_at": string | null; "resolved_at": string | null; "updated_at": string; "id": string; "created_at": string };
+  "ContactInquiryStatus": { "status": "new" | "in_progress" | "waiting_for_user" | "reviewed" | "resolved" | "closed" };
+  "ContactInquiryNote": { "note": string };
+  "ContactInquiryDetail": { "inquiry": Schemas['ContactInquiryOut']; "status_history": Array<{ "action": string; "at": string; "admin_id": string | null; "details": Record<string, unknown> }>; "email_notifications": Array<{ "event": string; "status": string; "delivery_status": string | null }> };
   "ContactReceipt": { "reference": string; "message": string };
   "DatabaseConnectStatus": { "connected": boolean; "status": "connected" | "disconnected"; "message": string; "error"?: string | null; "checked_at": string };
   "Decision": { "approve": boolean; "notes": string };
@@ -306,6 +308,8 @@ export interface Operations {
   "POST /api/v1/contact": { body: Schemas["ContactInquiryCreate"]; response: Schemas["ContactReceipt"] };
   "GET /api/v1/contact/admin/inquiries": { body: never; response: Array<Schemas["ContactInquiryOut"]> };
   "PATCH /api/v1/contact/admin/inquiries/{inquiry_id}": { body: Schemas["ContactInquiryStatus"]; response: Schemas["ContactInquiryOut"] };
+  "GET /api/v1/contact/admin/inquiries/{inquiry_id}": { body: never; response: Schemas["ContactInquiryDetail"] };
+  "POST /api/v1/contact/admin/inquiries/{inquiry_id}/notes": { body: Schemas["ContactInquiryNote"]; response: Schemas["ContactInquiryOut"] };
   "GET /health/live": { body: never; response: unknown };
   "GET /health/ready": { body: never; response: unknown };
 }

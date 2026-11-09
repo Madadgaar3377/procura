@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from decimal import Decimal
+import re
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -35,13 +37,19 @@ class DatabaseConnectStatus(Model):
     checked_at: datetime
 
 class ContactInquiryCreate(Model):
+    model_config = ConfigDict(from_attributes=True, extra='forbid')
     name: str = Field(min_length=2, max_length=150)
     email: str = Field(max_length=200)
     company: str | None = Field(default=None, max_length=220)
     phone: str | None = Field(default=None, max_length=30)
-    topic: Literal['buyer','supplier','partnership','support','other']
+    topic: Literal['buyer','supplier','partnership','support','other'] = 'other'
+    user_type: Literal['buyer','supplier','other'] = 'other'
+    category: Literal['general_inquiry','buyer_support','supplier_support','account_verification','rfq_quotations','technical_support','other'] = 'general_inquiry'
+    subject: str = Field(default='General inquiry', min_length=3, max_length=200)
     message: str = Field(min_length=20, max_length=5000)
     consent: Literal[True]
+    website: str | None = Field(default=None, max_length=200)
+    submission_key: UUID | None = None
 
     @field_validator('email')
     @classmethod
@@ -52,8 +60,39 @@ class ContactInquiryCreate(Model):
             raise ValueError('Invalid email address')
         return value
 
+    @field_validator('name','company','subject','message','phone')
+    @classmethod
+    def clean_contact_text(cls, value):
+        if value is None:return None
+        value=value.strip()
+        if not value: raise ValueError('This field cannot be blank')
+        return value
+
+    @field_validator('subject')
+    @classmethod
+    def safe_contact_subject(cls,value):
+        if any(ord(char)<32 or ord(char)==127 for char in value): raise ValueError('Subject must be one line')
+        return value
+
+    @field_validator('phone')
+    @classmethod
+    def validate_contact_phone(cls,value):
+        if not value:return value
+        if not re.fullmatch(r'[+0-9() .-]{7,30}',value): raise ValueError('Enter a valid phone number')
+        return re.sub(r'[\s().-]', '', value)
+
 class ContactInquiryStatus(Model):
-    status: Literal['reviewed','resolved']
+    status: Literal['new','in_progress','waiting_for_user','reviewed','resolved','closed']
+
+class ContactInquiryNote(Model):
+    note: str = Field(min_length=1, max_length=5000)
+
+    @field_validator('note')
+    @classmethod
+    def normalize_note(cls, value):
+        value=value.strip()
+        if not value: raise ValueError('Note cannot be blank')
+        return value
 
 class UserRegister(Model):
     model_config = ConfigDict(from_attributes=True,extra='forbid')

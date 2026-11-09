@@ -1,7 +1,7 @@
 export type MarketingLocale = 'en' | 'ar';
 
 const en = {
-  nav: ['For Buyers','For Suppliers','How It Works','Industries','Supplier Directory','Memberships'],
+  nav: ['For Buyers','For Suppliers','How It Works','Industries','Supplier Directory','Memberships','Contact Us'],
   signIn:'Sign In', getStarted:'Get Started', openMenu:'Open navigation menu', closeMenu:'Close navigation menu',
   language:'Switch to Arabic', tagline:'Connecting Saudi Businesses with Trusted Suppliers.',
   heroEyebrow:'Built for Saudi procurement', heroFirst:'Simplify Procurement,', heroSecond:'Connect with Trusted Suppliers.',
@@ -119,7 +119,7 @@ const en = {
 };
 
 const ar: typeof en = {
-  nav:['للمشترين','للموردين','كيف تعمل المنصة','القطاعات','دليل الموردين','العضويات'],
+  nav:['للمشترين','للموردين','كيف تعمل المنصة','القطاعات','دليل الموردين','العضويات','تواصل معنا'],
   signIn:'تسجيل الدخول',getStarted:'ابدأ الآن',openMenu:'فتح قائمة التنقل',closeMenu:'إغلاق قائمة التنقل',language:'التبديل إلى الإنجليزية',tagline:'Connecting Saudi Businesses with Trusted Suppliers.',
   heroEyebrow:'مصممة للمشتريات في السعودية',heroFirst:'بسّط المشتريات،',heroSecond:'تواصل مع موردين موثوقين.',
   heroBody:'تربط Procumaterial بين المشترين والموردين في السعودية من خلال طلبات عروض أسعار ذكية، ومطابقة دقيقة للموردين، وإدارة متكاملة للعروض عبر التخصصات المدنية والكهربائية والميكانيكية.',

@@ -7,7 +7,7 @@ import {IconArrowRight, IconArrowUp, IconMenu2, IconWorld, IconX} from '@tabler/
 import {useLocale} from '@/lib/locale';
 import {marketingCopy, type MarketingLocale} from './copy';
 
-const navigation=['/#buyers','/#suppliers','/#how-it-works','/industries','/suppliers','/pricing'];
+const navigation=['/#buyers','/#suppliers','/#how-it-works','/industries','/suppliers','/pricing','/contact'];
 
 export function MarketingCTA({role='buyer',children,className='',arrow=true}:{role?:'buyer'|'supplier'|'auto';children:React.ReactNode;className?:string;arrow?:boolean}){
   const [busy,setBusy]=useState(false);
@@ -90,6 +90,7 @@ export function MarketingFooter({locale}:{locale?:MarketingLocale}){
   const {arabic}=useLocale();const current=locale||(arabic?'ar':'en');const c=marketingCopy[current];let labelIndex=0;
   return <footer className="pm-footer"><div className="pm-container"><div className="pm-footer-top"><div><MarketingBrand/><p dir="ltr" className="pm-official-tagline">{c.tagline}</p><p>{c.footerNote}</p></div><a href="#top" className="pm-back-top">{c.backToTop}<IconArrowUp size={18} aria-hidden="true"/></a></div>
     <div className="pm-footer-links">{footerHrefs.map((links,index)=><nav key={c.footerGroups[index]} aria-label={c.footerGroups[index]}><h3>{c.footerGroups[index]}</h3>{links.map(href=><Link key={href} href={href} prefetch={href.startsWith('/app')||href.startsWith('/register')?false:undefined}>{c.footerLinks[labelIndex++]}</Link>)}</nav>)}</div>
+    <div className="pm-footer-support"><strong>{current==='ar'?'الدعم':'Support'}</strong><a href="mailto:support@procumaterial.com">support@procumaterial.com</a><a href="tel:0501496516">0501496516</a></div>
     <div className="pm-footer-bottom"><span>© {new Date().getFullYear()} Procumaterial</span><MarketingLanguage locale={current}/></div>
   </div></footer>;
 }

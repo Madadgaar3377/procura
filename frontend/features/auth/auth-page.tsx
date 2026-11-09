@@ -405,7 +405,7 @@ export default function LiveAuth({ type }: { type: string }) {
           {register && <p className="auth-consent">{t("By creating an account, you agree to our")} <Link href="/terms">{t("Terms")}</Link> {t("and")} <Link href="/privacy">{t("Privacy")}</Link>.</p>}
         </form>
       </div>
-      <footer className="auth-form-footer"><span>{t("© 2026 Procumaterial · Saudi Arabia")}</span><Link href="/contact">{t("Need help?")}</Link></footer>
+      <footer className="auth-form-footer"><span>{t("© 2026 Procumaterial · Saudi Arabia")}</span><span><Link href="/contact">{t("Need help?")}</Link> · <a href="mailto:support@procumaterial.com">support@procumaterial.com</a> · <a href="tel:0501496516">0501496516</a></span></footer>
     </section>
   </main>;
 }

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionLocal
-from app.models import EmailOTP, Invitation, Member, Organization, Outbox, PhoneOTP, RFQ, User
+from app.models import ContactInquiry, EmailOTP, Invitation, Member, Organization, Outbox, PhoneOTP, RFQ, User
 from app.modules.matching.service import match_and_invite
 from app.modules.notifications.crypto import decrypt_delivery_secret
 from app.modules.notifications.providers import DeliveryError, get_sms_status, send_email, send_sms
@@ -235,8 +235,37 @@ def _process_event(db: Session, event: Outbox, now: datetime) -> None:
         _queue_organization_update(db, event)
     elif event.event == 'notification.delivery':
         _deliver(db, event, now)
+    elif event.event in {'contact.inquiry.support', 'contact.inquiry.ack'}:
+        _deliver_contact_inquiry(db, event)
     else:
         raise PermanentOutboxError('Unsupported outbox event')
+
+
+def _deliver_contact_inquiry(db: Session, event: Outbox) -> None:
+    """Send contact notifications through the existing durable, idempotent SMTP adapter."""
+    from html import escape
+    inquiry = db.get(ContactInquiry, event.payload.get('inquiry_id'))
+    if inquiry is None:
+        raise PermanentOutboxError('Contact inquiry no longer exists')
+    submitted = _utc(inquiry.created_at).strftime('%Y-%m-%d %H:%M UTC')
+    if event.event.endswith('.support'):
+        recipient = 'support@procumaterial.com'
+        subject = f'Contact request {inquiry.ticket_reference}: {inquiry.subject}'
+        plain = (f"Ticket: {inquiry.ticket_reference}\nName: {inquiry.name}\nEmail: {inquiry.email}\n"
+                 f"Company: {inquiry.company or 'Not provided'}\nUser type: {inquiry.user_type}\n"
+                 f"Category: {inquiry.category}\nSubject: {inquiry.subject}\nSubmitted: {submitted}\n\n{inquiry.message}")
+    else:
+        recipient = inquiry.email
+        subject = f'We received your Procumaterial enquiry — {inquiry.ticket_reference}'
+        plain = (f"Hello {inquiry.name},\n\nWe received your enquiry and recorded it under reference "
+                 f"{inquiry.ticket_reference}.\n\nYou can contact support at support@procumaterial.com or 0501496516.\n\n"
+                 "Procumaterial Support")
+    html = '<html><body><p>' + escape(plain).replace('\n', '<br>') + '</p></body></html>'
+    event.provider_message_id = send_email(recipient, subject, plain, html, event.id)
+    event.attempts += 1
+    event.delivery_status = 'accepted'
+    event.status = 'processed'
+    event.next_attempt_at = None
 
 
 def _claim_batch(db: Session, limit: int, now: datetime) -> list[str]:

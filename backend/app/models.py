@@ -152,15 +152,25 @@ class Contact(TimeID, Base):
 
 class ContactInquiry(TimeID, Base):
     __tablename__='contact_inquiries'
+    ticket_reference: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    submission_key: Mapped[str | None] = mapped_column(String(36), unique=True, nullable=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), index=True, nullable=True)
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey('organizations.id', ondelete='SET NULL'), index=True, nullable=True)
     name: Mapped[str] = mapped_column(String(150))
     email: Mapped[str] = mapped_column(String(200), index=True)
     company: Mapped[str | None] = mapped_column(String(220), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     topic: Mapped[str] = mapped_column(String(40))
+    user_type: Mapped[str] = mapped_column(String(20), default='other', server_default='other')
+    category: Mapped[str] = mapped_column(String(40), default='general_inquiry', server_default='general_inquiry', index=True)
+    subject: Mapped[str] = mapped_column(String(200), default='General inquiry', server_default='General inquiry')
     message: Mapped[str] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(30), default='new', index=True)
+    internal_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default='new', server_default='new', index=True)
     handled_by: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
 
 class CompanyClaim(TimeID, Base):
     __tablename__='organization_claims'
@@ -516,6 +526,7 @@ Index('ix_organization_claims_reviewer', CompanyClaim.reviewer_id)
 Index('ix_verifications_reviewer', Verification.reviewer_id)
 Index('ix_contact_inquiries_handler', ContactInquiry.handled_by)
 Index('ix_outbox_events_recipient_user', Outbox.payload['user_id'].as_string())
+Index('ix_contact_inquiries_created_at', ContactInquiry.created_at)
 
 
 # All ORM account writers (CLI, administration and application routes) share identity parsing.

@@ -72,4 +72,4 @@ export default function LivePortal({role,current,entity}:{role:'buyer'|'supplier
 }
 
 function PlatformSettings(){
- const {t}=useLocale();const q=useApi<Record<string,unknown>>('admin/settings');return <><Heading title={t("Platform settings")} description="Current local configuration. Credentials are managed only on the backend."/><State {...q}/><DataTable rows={Object.entries(q.data||{}).map(([setting,value])=>({setting,value}))} columns={['setting','value']}/></>;}
+ const {t}=useLocale();const q=useApi<Record<string,unknown>>('admin/settings');return <><Heading title={t("Platform settings")} description="Current local configuration. Credentials are managed only on the backend."/><div className="panel"><h2>{t('Support contact')}</h2><p><a href="mailto:support@procumaterial.com">support@procumaterial.com</a></p><p><a href="tel:0501496516">0501496516</a></p></div><State {...q}/><DataTable rows={Object.entries(q.data||{}).map(([setting,value])=>({setting,value}))} columns={['setting','value']}/></>;}

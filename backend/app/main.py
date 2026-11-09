@@ -65,6 +65,20 @@ async def headers(request:Request,call_next):
     from time import perf_counter
     started=perf_counter()
     try:
+        if request.url.path == '/api/v1/contact':
+            if int(request.headers.get('content-length') or 0) > 16_384:
+                return JSONResponse(status_code=413,content={'detail':'Contact request is too large'})
+            original_receive=request._receive
+            received=0
+            async def bounded_contact_receive():
+                nonlocal received
+                message=await original_receive()
+                if message['type']=='http.request':
+                    received+=len(message.get('body',b''))
+                    if received>16_384:
+                        raise HTTPException(413,'Contact request is too large')
+                return message
+            request._receive=bounded_contact_receive
         if request.url.path.startswith('/api/'):
             cookie_mutation=request.method not in {'GET','HEAD','OPTIONS'} and (request.cookies.get('procura_access') or request.cookies.get('procura_refresh') or request.url.path.startswith('/api/v1/auth/browser/'))
             allowed_origins={s.strip() for s in settings.cors_origins.split(',') if s.strip()}
