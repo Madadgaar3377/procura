@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
-from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact
+from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,StoredFile
 from app.modules.auth.router import norm_phone, norm_email
 from app.identity import normalize_phone as normalize_business_phone
 from app.security import current_user,admin_user,org_member,audit
@@ -14,6 +14,8 @@ from app.schemas import OrgCreate,OrgUpdate,VerifyCreate,ClaimCreate,Decision,Ad
 from app.serializers import record
 from app.config import get_settings
 from app.profile_schema import missing_profile_columns
+from fastapi.responses import FileResponse,RedirectResponse
+from pathlib import Path
 
 from app.modules.organizations.public_profile import router as public_profile_router
 
@@ -123,7 +125,12 @@ def request_verification(org_id:str,payload:VerifyCreate,user:User=Depends(curre
     if db.scalar(select(Verification.id).where(Verification.org_id==org_id,Verification.status=='pending')):
         raise HTTPException(409,'A verification request is already pending')
     if payload.document_key:
-        if not payload.document_key.startswith(org_id+'/') or '/' in payload.document_key[len(org_id)+1:] or not os.path.isfile(os.path.join(get_settings().upload_dir,payload.document_key)):
+        if get_settings().r2_enabled:
+            stored=db.scalar(select(StoredFile).where(StoredFile.id==payload.document_key,
+                StoredFile.purpose=='verification_document',StoredFile.organization_id==org_id,
+                StoredFile.owner_user_id==user.id,StoredFile.status=='available',StoredFile.deleted_at.is_(None)))
+            if not stored:raise HTTPException(422,'Document must be uploaded for this organization')
+        elif not payload.document_key.startswith(org_id+'/') or '/' in payload.document_key[len(org_id)+1:] or not os.path.isfile(os.path.join(get_settings().upload_dir,payload.document_key)):
             raise HTTPException(422,'Document must be uploaded for this organization')
     ver=Verification(org_id=org_id,cr_number=payload.cr_number,document_key=payload.document_key)
     org.verified_status='pending';db.add(ver);audit(db,user,'verification.requested',org_id)
@@ -144,7 +151,30 @@ def upload_document(org_id:str,file:UploadFile=File(...),user:User=Depends(curre
     # Magic-byte check; production requires malware scan and configured private R2 storage.
     signatures={'application/pdf':content.startswith(b'%PDF'), 'image/jpeg':content.startswith(b'\xff\xd8\xff'), 'image/png':content.startswith(b'\x89PNG\r\n\x1a\n')}
     if not signatures[file.content_type]:raise HTTPException(422,'File content does not match declared type')
-    if get_settings().is_production: raise HTTPException(503,'Production document storage/scanning is not configured')
+    settings=get_settings()
+    if settings.r2_enabled:
+        from hashlib import sha256
+        from pathlib import PurePath
+        from app.storage import StorageUnavailable,upload_file as r2_upload
+        suffix=PurePath((file.filename or '').replace('\\','/')).suffix.lower()
+        if suffix not in {'.pdf','.png','.jpg','.jpeg'}:raise HTTPException(415,'Unsupported document type')
+        stored=StoredFile(bucket_type='private',object_key=f'private/verification/{org_id}/{uuid.uuid4()}',
+            original_filename=PurePath((file.filename or 'document').replace('\\','/')).name[:200],
+            safe_filename=PurePath((file.filename or 'document').replace('\\','/')).name[:200],
+            content_type=file.content_type,file_extension=suffix,size_bytes=len(content),visibility='private',
+            purpose='verification_document',status='available',owner_user_id=user.id,uploaded_by_user_id=user.id,
+            organization_id=org_id,entity_type='organization',entity_id=org_id,checksum_sha256=sha256(content).hexdigest())
+        db.add(stored)
+        try:
+            meta=r2_upload('private',stored.object_key,__import__('io').BytesIO(content),file.content_type,
+                max_bytes=settings.r2_max_document_bytes)
+            stored.size_bytes=meta['size_bytes'];stored.etag=meta['etag']
+            audit(db,user,'verification.document_uploaded',org_id,file_id=stored.id)
+            db.commit()
+        except StorageUnavailable as exc:
+            db.rollback();raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        return {'document_key':stored.id,'scan_status':'not_scanned'}
+    if settings.is_production: raise HTTPException(503,'Production document storage is not configured')
     os.makedirs(get_settings().upload_dir,exist_ok=True)
     key=f'{org_id}/{uuid.uuid4().hex}'
     os.makedirs(os.path.join(get_settings().upload_dir,org_id),exist_ok=True)
@@ -152,6 +182,35 @@ def upload_document(org_id:str,file:UploadFile=File(...),user:User=Depends(curre
     audit(db,user,'verification.document_uploaded',org_id,document_key=key)
     db.commit()
     return {'document_key':key,'scan_status':'not_scanned_development_only'}
+
+@router.get('/admin/review/verification/{verification_id}/document-url')
+def verification_document_url(verification_id:str,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    item=db.get(Verification,verification_id)
+    if not item or not item.document_key:raise HTTPException(404,'Verification document not found')
+    settings=get_settings()
+    if settings.r2_enabled:
+        stored=db.scalar(select(StoredFile).where(StoredFile.id==item.document_key,
+            StoredFile.purpose=='verification_document',StoredFile.organization_id==item.org_id,
+            StoredFile.status=='available',StoredFile.deleted_at.is_(None)))
+        if stored:
+            from app.storage import StorageUnavailable,generate_download_url
+            try:url=generate_download_url('private',stored.object_key,stored.safe_filename,stored.content_type)
+            except StorageUnavailable as exc:raise HTTPException(503,'File storage is temporarily unavailable') from exc
+            audit(db,admin,'verification.document_download_authorized',item.org_id,item.id)
+            db.commit()
+            return RedirectResponse(url,status_code=307,headers={'Cache-Control':'private, no-store'})
+    # Existing local evidence remains available to admins while old records are retained.
+    key=item.document_key
+    if not key.startswith(item.org_id+'/') or '/' in key[len(item.org_id)+1:]:
+        raise HTTPException(404,'Verification document not found')
+    root=Path(settings.upload_dir).resolve()
+    target=(root/key).resolve()
+    if root not in target.parents or not target.is_file():
+        raise HTTPException(404,'Verification document not found')
+    audit(db,admin,'verification.document_download_authorized',item.org_id,item.id)
+    db.commit()
+    return FileResponse(target,filename=target.name,media_type='application/octet-stream',
+        headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
 
 @router.post('/{org_id}/claims',response_model=ClaimOut)
 def claim(org_id:str,payload:ClaimCreate,user:User=Depends(current_user),db:Session=Depends(get_db)):

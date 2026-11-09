@@ -27,8 +27,10 @@ from app.modules.admin.router import router as admin
 from app.modules.database.router import router as database_status
 from app.modules.reports.router import router as reports
 from app.modules.contact.router import router as contact
+from app.modules.files.router import router as files
 
 settings=get_settings()
+settings.validate_r2()
 logger=logging.getLogger(__name__)
 if settings.is_production:
     if settings.jwt_secret in {'CHANGE_ME_FOR_LOCAL_ONLY',''} or len(settings.jwt_secret)<32:
@@ -134,7 +136,7 @@ async def headers(request:Request,call_next):
 
 app.add_middleware(CORSMiddleware,allow_origins=[s.strip() for s in settings.cors_origins.split(',') if s.strip()],allow_credentials=True,allow_methods=['GET','POST','PATCH','PUT','DELETE'],allow_headers=['Authorization','Content-Type','X-Request-ID'],expose_headers=['Retry-After','X-Request-ID','Server-Timing'])
 
-for r in (auth,phone_change,organizations,taxonomy,imports,capabilities,directory,rfqs,matching,pricebooks,quotations,notifications,memberships,admin,database_status,reports,contact):
+for r in (auth,phone_change,organizations,taxonomy,imports,capabilities,directory,rfqs,matching,pricebooks,quotations,notifications,memberships,admin,database_status,reports,contact,files):
     app.include_router(r,prefix='/api/v1')
 
 @app.get('/health/live',tags=['Health'])

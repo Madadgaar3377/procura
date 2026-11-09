@@ -72,4 +72,55 @@ class LocalImportStorage:
 
 
 def get_import_storage() -> LocalImportStorage:
+    from app.config import get_settings
+    if get_settings().r2_enabled:
+        return R2ImportStorage()
     return LocalImportStorage()
+
+
+class R2ImportStorage:
+    """Private R2 adapter matching the established import worker contract."""
+    def __init__(self):
+        from app.storage import bucket_for, get_storage_client
+        self.client = get_storage_client()
+        self.bucket = bucket_for('private')
+
+    def write(self, key: str, source: BinaryIO, max_bytes: int) -> tuple[int, bytes]:
+        import hashlib
+        from app.storage import StorageUnavailable
+        total = 0
+        digest = hashlib.sha256()
+        chunks = []
+        while chunk := source.read(64 * 1024):
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError('Maximum import size exceeded')
+            digest.update(chunk)
+            chunks.append(chunk)
+        try:
+            self.client.put_object(Bucket=self.bucket, Key=f'private/imports/{key}', Body=b''.join(chunks),
+                ContentType='application/octet-stream', CacheControl='private, no-store')
+        except Exception as exc:
+            from botocore.exceptions import BotoCoreError, ClientError
+            if isinstance(exc, (BotoCoreError, ClientError)):
+                raise StorageUnavailable('Object storage request failed') from exc
+            raise
+        return total, digest.digest()
+
+    def read(self, key: str) -> bytes:
+        from app.storage import StorageUnavailable
+        try:
+            return self.client.get_object(Bucket=self.bucket, Key=f'private/imports/{key}')['Body'].read()
+        except Exception as exc:
+            from botocore.exceptions import BotoCoreError, ClientError
+            if isinstance(exc, (BotoCoreError, ClientError)):
+                raise StorageUnavailable('Object storage request failed') from exc
+            raise
+
+    def exists(self, key: str) -> bool:
+        from app.storage import get_object_metadata
+        return get_object_metadata('private', f'private/imports/{key}') is not None
+
+    def delete(self, key: str) -> None:
+        from app.storage import delete_object
+        delete_object('private', f'private/imports/{key}')

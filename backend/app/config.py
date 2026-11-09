@@ -96,6 +96,20 @@ class Settings(BaseSettings):
     delivery_status_max_polls: int = Field(default=24,ge=1,le=100)
     upload_dir: str = './data/private'
     max_upload_bytes: int = 5_000_000
+    r2_enabled: bool = False
+    r2_account_id: str = ''
+    r2_access_key_id: str = ''
+    r2_secret_access_key: str = ''
+    r2_endpoint_url: str = ''
+    r2_region: str = 'auto'
+    r2_public_bucket: str = 'procumaterial-public'
+    r2_private_bucket: str = 'procumaterial-private'
+    r2_public_base_url: str = ''
+    r2_presigned_upload_ttl: int = Field(default=300, ge=60, le=900)
+    r2_presigned_download_ttl: int = Field(default=300, ge=60, le=900)
+    r2_max_image_bytes: int = Field(default=10_485_760, ge=1)
+    r2_max_document_bytes: int = Field(default=26_214_400, ge=1)
+    r2_allowed_origins: str = ''
     matching_batch_size: int = 5
     require_capability_approval: bool = False
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / '.env', extra='ignore')
@@ -107,6 +121,19 @@ class Settings(BaseSettings):
     @property
     def is_test(self) -> bool:
         return self.app_env.lower() == 'test'
+
+    def validate_r2(self) -> None:
+        if not self.r2_enabled:
+            return
+        required = (self.r2_account_id, self.r2_access_key_id, self.r2_secret_access_key,
+                    self.r2_endpoint_url, self.r2_public_bucket, self.r2_private_bucket)
+        if not all(value.strip() for value in required):
+            raise RuntimeError('R2 is enabled but required R2 configuration is incomplete')
+        expected = f'https://{self.r2_account_id}.r2.cloudflarestorage.com'
+        if self.r2_endpoint_url.rstrip('/') != expected:
+            raise RuntimeError('R2_ENDPOINT_URL must use the configured Cloudflare account endpoint')
+        if self.r2_region != 'auto':
+            raise RuntimeError('R2_REGION must be auto')
 
 
 def normalize_database_url(url: str) -> str:

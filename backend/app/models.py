@@ -269,6 +269,31 @@ class ImportBatch(TimeID, Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     initiated_by: Mapped[str] = mapped_column(ForeignKey('users.id'))
 
+class StoredFile(TimeID, Base):
+    __tablename__ = 'stored_files'
+    __table_args__ = (UniqueConstraint('object_key', name='uq_stored_files_object_key'),
+                      Index('ix_stored_files_status_created', 'status', 'created_at'),
+                      Index('ix_stored_files_purpose_entity', 'purpose', 'entity_id'))
+    bucket_type: Mapped[str] = mapped_column(String(12))
+    object_key: Mapped[str] = mapped_column(String(500))
+    original_filename: Mapped[str] = mapped_column(String(200))
+    safe_filename: Mapped[str] = mapped_column(String(200))
+    content_type: Mapped[str] = mapped_column(String(120))
+    file_extension: Mapped[str] = mapped_column(String(12))
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    etag: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(12), default='private')
+    purpose: Mapped[str] = mapped_column(String(40), index=True)
+    status: Mapped[str] = mapped_column(String(24), default='pending_upload', index=True)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True, index=True)
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey('organizations.id'), nullable=True, index=True)
+    uploaded_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    entity_type: Mapped[str] = mapped_column(String(24))
+    entity_id: Mapped[str] = mapped_column(String(36))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 class ImportedRow(TimeID, Base):
     __tablename__='import_rows'
     batch_id: Mapped[str] = mapped_column(ForeignKey('import_batches.id'), index=True)

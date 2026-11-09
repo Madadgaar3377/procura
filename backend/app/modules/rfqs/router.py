@@ -18,6 +18,10 @@ router=APIRouter(prefix='/rfqs',tags=['Buyer RFQs'])
 def contents(db,rfq):
     data=record(rfq)
     attachments=data.pop('attachment_records', []) or []
+    from app.models import StoredFile
+    attachments += [{'id':f.id,'filename':f.safe_filename,'content_type':f.content_type,'size':f.size_bytes}
+        for f in db.scalars(select(StoredFile).where(StoredFile.entity_type=='rfq',StoredFile.entity_id==rfq.id,
+            StoredFile.status=='available',StoredFile.deleted_at.is_(None))).all()]
     return {'rfq':data,'items':[record(i) for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id).order_by(RFQItem.created_at,RFQItem.id)).all()],
             'attachments':[{key:entry[key] for key in ('id','filename','content_type','size')} for entry in attachments]}
 
@@ -187,7 +191,7 @@ def remind_pending(rfq_id:str,request:Request,payload:RFQReminderIn|None=None,us
 
 
 @router.post('/{rfq_id}/attachments', status_code=201, response_model=RFQAttachmentOut)
-def upload_attachment(rfq_id:str, file:UploadFile=File(...), user:User=Depends(current_user), db:Session=Depends(get_db)):
+def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), user:User=Depends(current_user), db:Session=Depends(get_db)):
     """Private development attachments; production waits for storage/scanning integration."""
     import io
     from pathlib import Path
@@ -201,13 +205,37 @@ def upload_attachment(rfq_id:str, file:UploadFile=File(...), user:User=Depends(c
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status!='draft':raise HTTPException(409,'Only draft attachments may be changed')
     settings=get_settings()
-    if settings.is_production:raise HTTPException(503,'Private attachment storage and malware scanning are not configured')
+    if settings.is_production and not settings.r2_enabled:raise HTTPException(503,'Private attachment storage is not configured')
     if len(rfq.attachment_records or [])>=10:raise HTTPException(422,'At most 10 RFQ attachments are allowed')
     signatures={'application/pdf':b'%PDF', 'image/png':b'\x89PNG\r\n\x1a\n', 'image/jpeg':b'\xff\xd8\xff'}
     if file.content_type not in signatures:raise HTTPException(415,'Attach a PDF, PNG or JPEG')
     content=file.file.read(settings.max_upload_bytes+1)
     if len(content)>settings.max_upload_bytes:raise HTTPException(413,'Attachment too large')
     if not content.startswith(signatures[file.content_type]):raise HTTPException(422,'Attachment content does not match its type')
+    if settings.r2_enabled:
+        from pathlib import PurePath
+        from app.models import StoredFile
+        from app.storage import StorageUnavailable, upload_file as r2_upload
+        from app.rate_limit import enforce_rate_limit
+        enforce_rate_limit(request,scope='api-r2-upload',identity=user.id,limit=10,window_seconds=60)
+        suffix=PurePath((file.filename or '').replace('\\','/')).suffix.lower()
+        if suffix not in {'.pdf','.png','.jpg','.jpeg'}:raise HTTPException(415,'Attach a PDF, PNG or JPEG')
+        stored=StoredFile(bucket_type='private',object_key=f'private/rfq/{rfq.id}/{uuid4()}',
+            original_filename=filename,safe_filename=filename,content_type=file.content_type,file_extension=suffix,
+            size_bytes=len(content),visibility='private',purpose='rfq_attachment',status='pending_upload',
+            owner_user_id=user.id,uploaded_by_user_id=user.id,organization_id=rfq.buyer_org_id,
+            entity_type='rfq',entity_id=rfq.id)
+        db.add(stored)
+        try:
+            result=r2_upload('private',stored.object_key,io.BytesIO(content),file.content_type,
+                max_bytes=settings.max_upload_bytes)
+            stored.size_bytes=result['size_bytes'];stored.etag=result['etag'];stored.checksum_sha256=result['checksum_sha256']
+            stored.status='available'
+            audit(db,user,'rfq.attachment_uploaded',rfq.buyer_org_id,rfq.id,file_id=stored.id)
+            db.commit()
+        except StorageUnavailable as exc:
+            db.rollback();raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        return {'id':stored.id,'filename':stored.safe_filename,'content_type':stored.content_type,'size':stored.size_bytes}
     attachment_id=uuid4().hex
     storage=LocalImportStorage(str(Path(settings.upload_dir)/'rfq-attachments'))
     key=rfq.id+'/'+attachment_id
@@ -235,6 +263,16 @@ def download_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_u
     details(rfq_id,user,db)  # Same buyer/invited-supplier authorization as RFQ details.
     rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
+    from app.models import StoredFile
+    stored=db.scalar(select(StoredFile).where(StoredFile.id==attachment_id,StoredFile.entity_type=='rfq',
+        StoredFile.entity_id==rfq.id,StoredFile.status=='available',StoredFile.deleted_at.is_(None)))
+    if stored:
+        from fastapi.responses import RedirectResponse
+        from app.storage import StorageUnavailable,generate_download_url
+        try:url=generate_download_url('private',stored.object_key,stored.safe_filename,stored.content_type)
+        except StorageUnavailable as exc:raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        audit(db,user,'file.download_authorized',rfq.buyer_org_id,stored.id);db.commit()
+        return RedirectResponse(url,status_code=307,headers={'Cache-Control':'private, no-store'})
     entry=next((entry for entry in (rfq.attachment_records or []) if entry['id']==attachment_id),None)
     if not entry:raise HTTPException(404,'Attachment not found')
     settings=get_settings()
@@ -257,6 +295,16 @@ def remove_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_use
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status!='draft':raise HTTPException(409,'Only draft attachments may be changed')
+    from app.models import StoredFile
+    stored=db.scalar(select(StoredFile).where(StoredFile.id==attachment_id,StoredFile.entity_type=='rfq',StoredFile.entity_id==rfq.id))
+    if stored and stored.deleted_at is None:
+        from datetime import UTC,datetime
+        from app.storage import StorageUnavailable,delete_object
+        stored.status='deleted';stored.deleted_at=datetime.now(UTC)
+        audit(db,user,'rfq.attachment_removed',rfq.buyer_org_id,rfq.id,attachment_id=stored.id);db.commit()
+        try:delete_object('private',stored.object_key)
+        except StorageUnavailable:pass
+        return {'removed':True}
     entry=next((entry for entry in (rfq.attachment_records or []) if entry['id']==attachment_id),None)
     if not entry:raise HTTPException(404,'Attachment not found')
     rfq.attachment_records=[item for item in rfq.attachment_records if item['id']!=attachment_id]

@@ -1,0 +1,5 @@
+# Existing file migration
+
+No bulk migration is performed by the application or this change. Existing RFQ files remain in the configured local private directory, and their JSON associations remain unchanged. Existing rate imports retain their current storage keys and continue to be read from local storage while R2 is disabled.
+
+Before migrating, take a database and filesystem backup. Produce a dry-run inventory by joining RFQ `attachment_records` and import batch `source_storage_key` values to files under `UPLOAD_DIR`; report missing, unassociated, and duplicate files without changing records. Upload only files with verified associations to a dedicated migration prefix, compare size and SHA-256, then update references transactionally after verification. Preserve source files until a separate restore test confirms the migrated data. Resume by checking the destination key and checksum; never overwrite an existing object with mismatched content. A migration command and dry-run report are not included yet.

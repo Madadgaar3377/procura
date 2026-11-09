@@ -4,7 +4,7 @@ from io import BytesIO,StringIO
 from itertools import islice
 from zipfile import ZipFile
 from datetime import datetime,timezone
-from fastapi import APIRouter,Depends,File,UploadFile,HTTPException,Query
+from fastapi import APIRouter,Depends,File,UploadFile,HTTPException,Query,Request
 from sqlalchemy import select,or_,func
 from sqlalchemy.orm import Session
 from app.database import get_db
@@ -32,7 +32,7 @@ def progress(db,batch,limit=25,offset=0):
     return {'batch_id':batch.id,'status':batch.status,'rows':batch.rows,'valid':max(0,batch.rows-batch.errors),'errors':batch.errors,'saved':batch.created+batch.updated_count,'completed_rows':batch.completed_rows,'failure_reason':batch.failure_reason,'items':[{'row':r.row_number,'description':str(r.raw.get('description') or r.raw.get('code') or ''),'unit':str(r.raw.get('unit') or ''),'unit_price':str(r.raw.get('unit_price') or ''),'material_id':r.raw.get('_material_id'),'action':r.raw.get('_action','create'),'status':r.status,'issue':r.issue} for r in rows],'limit':limit,'offset':offset}
 
 @router.post('/{org_id}/bulk-import',response_model=RateImportOut)
-def upload(org_id:str,file:UploadFile=File(...),dry_run:bool=True,user:User=Depends(current_user),db:Session=Depends(get_db)):
+def upload(org_id:str,request:Request,file:UploadFile=File(...),dry_run:bool=True,user:User=Depends(current_user),db:Session=Depends(get_db)):
     supplier(db,user,org_id)
     if not dry_run:raise HTTPException(409,'Upload a preview and confirm its batch before saving rates')
     suffix='.csv' if (file.filename or '').lower().endswith('.csv') else '.xlsx' if (file.filename or '').lower().endswith('.xlsx') else None
@@ -41,6 +41,11 @@ def upload(org_id:str,file:UploadFile=File(...),dry_run:bool=True,user:User=Depe
     db.add(batch);db.flush();key=f'{org_id}/{batch.id}{suffix}'
     try:size,digest=get_import_storage().write(key,file.file,8_000_000)
     except ValueError as exc:raise HTTPException(413,'Import too large') from exc
+    except Exception as exc:
+        from app.storage import StorageUnavailable
+        if isinstance(exc,StorageUnavailable):
+            db.rollback();raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        raise
     batch.source_storage_key=key;batch.source_bytes=size;batch.source_sha256=digest.hex()
     audit(db,user,'price_book.import_uploaded',org_id,batch.id);db.commit();return progress(db,batch)
 
