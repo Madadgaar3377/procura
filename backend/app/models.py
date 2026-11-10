@@ -149,6 +149,11 @@ class Contact(TimeID, Base):
     name: Mapped[str | None] = mapped_column(String(150), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(80), nullable=True)
     email: Mapped[str | None] = mapped_column(String(220), nullable=True)
+    phone_normalized: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    fax: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    raw_phone: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    raw_email: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, server_default='false')
     permission_to_notify: Mapped[bool] = mapped_column(Boolean, default=False)
 
 class ContactInquiry(TimeID, Base):

@@ -1,5 +1,7 @@
 # Implementation status — 2026-10-20
 
+> Supplier import update (2026-11-10): supplier rows now persist organizations and contacts independently from capability rows; duplicate company rows reuse organizations; invalid/empty capabilities and unmapped categories produce warnings without failing suppliers. Multi-email, validated phone, fax, and raw contact review fields are supported. The additive contact migration `b71d2e9f4a60` was applied to the configured PostgreSQL database after confirming its prior revision was `a12f9c4d8e71`. Live categories were inspected read-only; requested Electrical/UPS and Low Current (ELV)/LC paths were not present, so those rows remain pending mapping. No supplier rows were imported because `KSA_MEP_Suppliers_Part_01_of_57.xlsx` was not available in the workspace. Verification: `DATABASE_URL=sqlite:///:memory: python -m pytest -q` — 34 passed, 1 skipped; frontend `npm run typecheck` — passed. The opt-in live PostgreSQL smoke test was not run because this configured database is not established as non-production.
+
 This is an audit and incremental hardening of the existing backend. Existing route families and workflow structure remain in place. No hosted database migration, real SMS/email, deployment, Git commit, or frontend change was performed.
 
 | Area | Implemented in this pass | Remaining |
