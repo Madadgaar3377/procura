@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.database import get_db
 from app.models import RFQ, Invitation, Member, Organization, Outbox, Quotation, RFQItem, RFQMatch, User
@@ -30,15 +30,46 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
-    items={item.id:item.description for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()}
+    rfq_items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()
+    items={item.id:item.description for item in rfq_items}
+    match_rows=db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id)
+        .where(RFQMatch.rfq_id==rfq.id).order_by(RFQMatch.score.desc(),Organization.name,Organization.id)
+        .limit(limit).offset(offset)).all()
     matches=[]
-    for match,name in db.execute(select(RFQMatch,Organization.name).join(Organization,Organization.id==RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id).order_by(RFQMatch.id).limit(limit).offset(offset)).all():
-        covered=[reason[5:] for reason in match.reasons if reason.startswith('item:')]
-        matches.append({**record(match),'supplier_name':name,'covered_items':[items[item_id] for item_id in covered if item_id in items],
-                        'coverage':next((reason[9:] for reason in match.reasons if reason.startswith('coverage:')),'Not recorded')})
+    supplier_ids=[org.id for match,org in match_rows]
+    service_cities={org_id:set() for org_id in supplier_ids}
+    category_labels={org_id:set() for org_id in supplier_ids}
+    if supplier_ids:
+        from app.models import Capability,Category
+        parent=aliased(Category)
+        for org_id,city in db.execute(select(Capability.org_id,Capability.city).where(Capability.org_id.in_(supplier_ids),Capability.city!='')).all():
+            service_cities[org_id].add(city)
+        for org_id,name,parent_name,parent_id in db.execute(select(Capability.org_id,Category.name_en,parent.name_en,Category.parent_id)
+            .join(Category,Category.id==Capability.category_id).outerjoin(parent,parent.id==Category.parent_id)
+            .where(Capability.org_id.in_(supplier_ids),Capability.confirmed.is_(True),Capability.accepts_rfqs.is_(True),Capability.eligibility_status=='enabled')).all():
+            category_labels[org_id].add(f'{parent_name} / {name}' if parent_id else name)
+    invitation_by_supplier={}
+    for invitation,org_name,quote_status in db.execute(select(Invitation,Organization.name,Quotation.status)
+        .outerjoin(Organization,Organization.id==Invitation.supplier_org_id)
+        .outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id)).all():
+        invitation_by_supplier[invitation.supplier_org_id]=(invitation.status,quote_status)
+    from app.modules.capabilities.public_details import published_details
+    for match,org in match_rows:
+        covered=[reason[5:] for reason in (match.reasons or []) if reason.startswith('item:')]
+        public=published_details(db,org.id)
+        invitation_status,quotation_status=invitation_by_supplier.get(org.id,(None,None))
+        matches.append({**record(match),'supplier_name':org.name,'covered_items':[items[item_id] for item_id in covered if item_id in items],
+            'coverage':next((reason[9:] for reason in (match.reasons or []) if reason.startswith('coverage:')),'Not recorded'),
+            'verification_status':org.verified_status,'description':public.get('description'),'website':public.get('website'),
+            'business_email':public.get('business_email'),'business_phone':public.get('business_phone'),
+            'service_locations':sorted(service_cities.get(org.id,set())),
+            'matched_categories':sorted(category_labels.get(org.id,set())),
+            'invitation_status':invitation_status,'quotation_status':quotation_status,'profile_url':f'/suppliers/{org.id}'})
     invitation_rows=db.execute(select(Invitation,Organization.name,Quotation.status).join(Organization,Organization.id==Invitation.supplier_org_id).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id).order_by(Invitation.id).limit(limit).offset(offset)).all()
     jobs={status:count for status,count in db.execute(select(Outbox.status,func.count()).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).group_by(Outbox.status)).all()}
-    matched=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id)) or 0)
+    matched=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id,RFQMatch.status.in_({'eligible','partial'}))) or 0)
+    evaluated=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id)) or 0)
+    status_counts={status:count for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
     invited=int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0)
     if rfq.status=='draft':progress='draft'
     elif rfq.status not in {'published','collecting_quotes'} or as_utc(rfq.response_deadline)<=datetime.now(UTC):progress='closed'
@@ -62,10 +93,23 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         deliveries[label]=deliveries.get(label,0)+count
     recent=db.scalar(select(func.max(Outbox.created_at)).where(Outbox.event=='rfq.deadline.reminder',Outbox.payload['rfq_id'].as_string()==rfq.id))
     available=(recent.replace(tzinfo=UTC) if recent and recent.tzinfo is None else recent)+timedelta(hours=24) if recent else None
+    explanation=None
+    if matched:
+        explanation=f'{matched} supplier(s) qualify based on approved category capability and configured eligibility; technical compliance remains subject to quotation review.'
+    elif status_counts.get('location_mismatch'):
+        explanation=f"{status_counts['location_mismatch']} supplier(s) match the requested category but do not cover delivery city {rfq.city}."
+    elif status_counts.get('pending_approval'):
+        explanation=f"{status_counts['pending_approval']} supplier(s) have a matching category pending approval."
+    elif progress in {'matching_queued','matching_in_progress'}:
+        explanation='Supplier matching is queued or processing. Results will refresh automatically.'
+    elif evaluated:
+        explanation='No evaluated supplier currently satisfies the RFQ eligibility requirements.'
+    elif progress=='no_eligible_suppliers':
+        explanation='No active supplier has an approved capability for the selected category and subcategory.'
     return {'matches':matches, 'invitations':[{**record(i),'supplier_name':name,'quotation_status':quote,'reminder_eligible':i.supplier_org_id in pending} for i,name,quote in invitation_rows], 'progress':progress,
             'pending_invitation_ids':[i.id for i,_,_ in invitation_rows if i.supplier_org_id in pending],
-            'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':len(pending),
-            'deliveries':deliveries,'reminder_available_at':available.isoformat() if available else None,'limit':limit,'offset':offset}
+            'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':len(pending),'suppliers_evaluated':evaluated,
+            'explanation':explanation,'deliveries':deliveries,'reminder_available_at':available.isoformat() if available else None,'limit':limit,'offset':offset}
 
 @router.get('/invitations',response_model=list[InvitationSummary])
 def my_invitations(search:ListSearch=Depends(),user:User=Depends(current_user),db:Session=Depends(get_db)):

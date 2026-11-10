@@ -490,7 +490,7 @@ class RFQLineIn(Model):
 class RFQIn(Model):
     buyer_org_id:str
     title:str=Field(min_length=3,max_length=250)
-    city:str=Field(min_length=2,max_length=120)
+    city:str=Field(default='',max_length=120)
     response_deadline:datetime
     items:list[RFQLineIn]=Field(min_length=1,max_length=100)
     required_qualifications:list[str]=Field(default_factory=list,max_length=50)

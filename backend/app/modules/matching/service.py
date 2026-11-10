@@ -67,7 +67,7 @@ def match_and_invite(
     if not item_scope:
         return {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
 
-    category_scopes = {sub or main for main, sub in item_scope.values()}
+    category_scopes = {category_id for main, sub in item_scope.values() for category_id in (main, sub) if category_id}
     category_parents = dict(
         db.execute(select(Category.id, Category.parent_id).where(Category.id.in_(category_scopes))).all()
     )
@@ -121,7 +121,9 @@ def match_and_invite(
 
     rfq_city_norm = (rfq.city or '').strip().casefold()
     required = {value.strip().casefold() for value in (rfq.required_qualifications or []) if value.strip()}
-    require_approval = get_settings().require_capability_approval
+    # RFQ invitations require an explicitly approved capability, regardless of
+    # the softer discovery-directory setting.
+    require_approval = True
 
     eligible_candidates: dict[str, dict] = {}
     ineligible_diagnostics: dict[str, dict] = {}
@@ -213,10 +215,18 @@ def match_and_invite(
 
         # Item coverage
         covered = set()
+        exact_subcategory_items = set()
+        main_category_items = set()
         for item_id, (main, sub) in item_scope.items():
             for c in approved_caps:
-                if c.category_id == (sub or main) and (not sub or category_parents.get(c.category_id) == main):
+                if sub and c.category_id == sub and category_parents.get(c.category_id) == main:
                     covered.add(item_id)
+                    exact_subcategory_items.add(item_id)
+                    break
+                if c.category_id == main:
+                    covered.add(item_id)
+                    main_category_items.add(item_id)
+                    break
 
         if not covered:
             ineligible_diagnostics[org_id] = {
@@ -236,6 +246,8 @@ def match_and_invite(
         eligible_candidates[org_id] = {
             'org': org,
             'covered': covered,
+            'exact_subcategory_items': exact_subcategory_items,
+            'main_category_items': main_category_items,
             'exact_materials': exact_materials,
             'has_exact_city': rfq_city_norm in covered_cities,
             'approved_caps': approved_caps,
@@ -246,6 +258,7 @@ def match_and_invite(
         eligible_candidates.values(),
         key=lambda cand: (
             -len(cand.get('exact_materials', set())),
+            -len(cand.get('exact_subcategory_items', set())),
             -len(cand['covered']),
             0 if cand.get('has_exact_city') else 1,
             cand['org'].name.casefold(),
@@ -264,16 +277,18 @@ def match_and_invite(
 
     for candidate in ranked:
         exact_count = len(candidate.get('exact_materials', set()))
-        score = min(100, 60 + 10 * len(candidate['covered']) + (10 if exact_count > 0 else 0) + (10 if candidate.get('has_exact_city') else 0))
+        score = min(100, 50 + 10 * len(candidate['covered']) + 10 * len(candidate.get('exact_subcategory_items', set())) + (10 if exact_count > 0 else 0) + (10 if candidate.get('has_exact_city') else 0))
         reasons = [
             'verified company',
-            ('approved exact main category + subcategory capability' if require_approval else 'self-declared exact main category + subcategory capability'),
-            f'delivery city match: {rfq.city}' if candidate.get('has_exact_city') else 'service coverage matches delivery requirement',
+            ('approved exact subcategory capability' if candidate.get('exact_subcategory_items') else 'approved main-category capability'),
+            f'delivery city match: {rfq.city}' if candidate.get('has_exact_city') else ('service coverage matches delivery requirement' if rfq_city_norm else 'delivery location not specified; city coverage not used'),
             f"coverage:{len(candidate['covered'])}/{len(item_scope)}",
         ]
         if exact_material_ids:
             reasons.append(f"exact_materials:{exact_count}/{len(exact_material_ids)}")
         reasons.extend([f'item:{item_id}' for item_id in sorted(candidate['covered'])])
+        reasons.extend([f'exact_subcategory_item:{item_id}' for item_id in sorted(candidate.get('exact_subcategory_items', set()))])
+        reasons.extend([f'main_category_item:{item_id}' for item_id in sorted(candidate.get('main_category_items', set()))])
         reasons.append('Category eligibility does not confirm technical compliance')
 
         status = 'eligible' if len(candidate['covered']) == len(item_scope) else 'partial'

@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.database import SessionLocal
-from app.models import Capability, Organization, RFQ
+from app.models import Capability, Organization, RFQ, RFQMatch
 from app.modules.matching.service import match_and_invite
 
 with SessionLocal() as db:
@@ -19,14 +19,14 @@ with SessionLocal() as db:
         eligibility_status='enabled'
     )
     db.add(ras_cap)
+    db.flush() # flush so SQL query can see it!
     
     # Run matching for RFQ with city 'RAS'
     res_ras = match_and_invite(db, rfq)
     print("With RAS capability & RFQ city 'RAS':", res_ras)
     
-    # Run matching for RFQ with city 'Jeddah'
-    rfq.city = 'Jeddah'
-    res_jeddah = match_and_invite(db, rfq)
-    print("With RFQ city 'Jeddah':", res_jeddah)
+    matches = db.query(RFQMatch).filter(RFQMatch.rfq_id == rfq.id).all()
+    for m in matches:
+        print("Match status:", m.status, "Reasons:", m.reasons)
     
     db.rollback()

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
@@ -14,6 +15,7 @@ from app.security import as_utc, audit, current_user, org_member
 from app.serializers import record
 
 router=APIRouter(prefix='/rfqs',tags=['Buyer RFQs'])
+log=logging.getLogger(__name__)
 
 def contents(db,rfq):
     data=record(rfq)
@@ -114,7 +116,30 @@ def publish(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db
     db.add(Outbox(event='rfq.published',payload={'rfq_id':rfq.id},dedupe_key=f'rfq-published:{rfq.id}'))
     audit(db,user,'rfq.published',rfq.buyer_org_id,rfq.id)
     db.commit()
-    return {'rfq_id':rfq.id,'status':'published','next':'Supplier matching queued'}
+
+    # The durable outbox remains the retry/continuation path. Also process one
+    # bounded batch here so a missing or delayed worker cannot leave a newly
+    # published RFQ with no initial matches or useful buyer feedback.
+    initial_matching=None
+    try:
+        from app.modules.matching.service import match_and_invite
+        published=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
+        if published:
+            initial_matching=match_and_invite(db,published,actor=user,bounded=True)
+            db.execute(
+                Outbox.__table__.update()
+                .where(Outbox.dedupe_key==f'rfq-published:{rfq_id}',Outbox.status.in_({'pending','retry'}))
+                .values(status='processed',lock_until=None,last_error=None)
+            )
+            db.commit()
+    except Exception as exc:
+        db.rollback()
+        log.exception('Initial RFQ matching fallback failed rfq_id=%s error_type=%s',rfq_id,type(exc).__name__)
+
+    return {'rfq_id':rfq_id,'status':'published','next':'Supplier matching queued',
+            'matching_status':'processed' if initial_matching is not None else 'queued',
+            'matched_suppliers':initial_matching['eligible_suppliers'] if initial_matching is not None else 0,
+            'invited_suppliers':initial_matching['new_invitations'] if initial_matching is not None else 0}
 
 @router.post('/{rfq_id}/close',response_model=RFQOut)
 def close(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
