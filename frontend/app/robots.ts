@@ -1,8 +1,8 @@
 import type {MetadataRoute} from 'next';
-import {configuredSiteURL} from '@/features/marketing/seo';
+import {CANONICAL_SITE_URL} from '@/features/marketing/seo';
 
 export default function robots(): MetadataRoute.Robots {
-  const base = configuredSiteURL();
+  const base = new URL(CANONICAL_SITE_URL);
   return {
     rules: {
       userAgent: '*',

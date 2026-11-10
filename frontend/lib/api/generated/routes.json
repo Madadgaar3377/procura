@@ -97,6 +97,9 @@
   "organizations/{org_id}/documents": [
     "POST"
   ],
+  "organizations/admin/review/verification/{verification_id}/document-url": [
+    "GET"
+  ],
   "organizations/{org_id}/claims": [
     "POST"
   ],
@@ -200,7 +203,25 @@
   "imports/batches": [
     "GET"
   ],
+  "imports/suppliers/{batch_id}": [
+    "GET"
+  ],
+  "imports/suppliers/{batch_id}/errors.csv": [
+    "GET"
+  ],
   "imports/suppliers/{batch_id}/confirm": [
+    "POST"
+  ],
+  "imports/supplier-trades": [
+    "GET"
+  ],
+  "imports/supplier-trades/{trade_id}/map": [
+    "POST"
+  ],
+  "capabilities/admin/pending": [
+    "GET"
+  ],
+  "capabilities/admin/{capability_id}/review": [
     "POST"
   ],
   "capabilities/selections": [
@@ -428,6 +449,9 @@
   "db/connect/status": [
     "GET"
   ],
+  "db/performance": [
+    "GET"
+  ],
   "reports/summary": [
     "GET"
   ],
@@ -438,10 +462,25 @@
     "GET"
   ],
   "contact/admin/inquiries/{inquiry_id}": [
-    "GET",
-    "PATCH"
+    "PATCH",
+    "GET"
   ],
   "contact/admin/inquiries/{inquiry_id}/notes": [
     "POST"
+  ],
+  "files/upload-url": [
+    "POST"
+  ],
+  "files/{file_id}/complete": [
+    "POST"
+  ],
+  "files/{file_id}/download-url": [
+    "GET"
+  ],
+  "files/{file_id}": [
+    "DELETE"
+  ],
+  "files/admin/summary": [
+    "GET"
   ]
 }

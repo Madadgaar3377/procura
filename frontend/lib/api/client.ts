@@ -91,4 +91,28 @@ export function upload<T>(path: string, body: FormData, onProgress: (percent: nu
   });
 }
 
+export function uploadStream<T>(path:string,body:FormData,onProgress:(percent:number)=>void,onEvent:(event:Record<string,unknown>)=>void,attempt=0):Promise<T>{
+  return new Promise((resolve,reject)=>{
+    const request=new XMLHttpRequest();let consumed=0;let pending='';let completed:T|undefined;
+    const parse=()=>{
+      const text=request.responseText.slice(consumed);consumed=request.responseText.length;pending+=text;
+      const lines=pending.split(/\r?\n/);pending=lines.pop()||'';
+      for(const line of lines){if(!line.trim())continue;try{const event=JSON.parse(line) as Record<string,unknown>;onEvent(event);if(event.type==='complete')completed=event as T;if(event.type==='error')reject(new Error(String(event.message||'The import failed while saving a batch.')));}catch(error){if(error instanceof SyntaxError)reject(new Error('The import returned an unreadable progress event.'));}}
+    };
+    request.open('POST',apiUrl(path));request.withCredentials=true;request.timeout=600_000;
+    request.setRequestHeader('Cache-Control','no-cache');
+    request.upload.addEventListener('progress',event=>{if(event.lengthComputable)onProgress(Math.min(100,Math.round(event.loaded/event.total*100)));});
+    request.addEventListener('progress',parse);
+    request.addEventListener('load',async()=>{
+      parse();if(pending.trim()){try{const event=JSON.parse(pending) as Record<string,unknown>;onEvent(event);if(event.type==='complete')completed=event as T;if(event.type==='error'){reject(new Error(String(event.message||'The import failed while saving a batch.')));return;}}catch{}}
+      if(request.status===401&&attempt===0&&await refreshBrowserSession()){try{resolve(await uploadStream<T>(path,body,onProgress,onEvent,1));}catch(error){reject(error);}return;}
+      if(request.status<200||request.status>=300){let data:unknown;try{data=JSON.parse(request.responseText);}catch{};reject(new ApiError(request.status,data&&typeof data==='object'&&'detail'in data?data.detail:null,request.getResponseHeader('Retry-After')));return;}
+      if(completed)resolve(completed);else reject(new Error('The server closed the import stream before confirming the final database result.'));
+    });
+    request.addEventListener('error',()=>reject(new Error('The upload could not reach the API. Check your connection and retry; committed batches are safe to retry.')));
+    request.addEventListener('timeout',()=>reject(new Error('The upload timed out. Completed batches remain saved; retrying will skip records already inserted.')));
+    request.send(body);
+  });
+}
+
 export const json = (data: unknown) => JSON.stringify(data);

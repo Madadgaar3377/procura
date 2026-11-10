@@ -3,7 +3,7 @@ import {useLocale} from '@/lib/locale';
 
 import { DragEvent, useEffect, useRef, useState } from 'react';
 import { IconCloudUpload, IconDownload, IconFileSpreadsheet } from '@tabler/icons-react';
-import { api, upload } from '@/lib/api/client';
+import { api, apiUrl, upload } from '@/lib/api/client';
 import { Button } from '@/components/ui/button';
 import { DataTable } from '@/features/shared/ui';
 import { useToast } from '@/features/shared/toast';
@@ -22,12 +22,33 @@ type Preview = {
 };
 type MappingProfile = { name: string; mapping: Record<string,string> };
 
+function clipboardTableToCsv(value:string):string {
+  const rows:string[][]=[];let row:string[]=[];let cell='';let quoted=false;
+  for(let i=0;i<value.length;i++){
+    const ch=value[i];
+    if(ch==='"'){
+      if(quoted&&value[i+1]==='"'){cell+='"';i++;}
+      else quoted=!quoted;
+    }else if(!quoted&&ch==='\t'){row.push(cell);cell='';}
+    else if(!quoted&&(ch==='\r'||ch==='\n')){
+      row.push(cell);cell='';
+      if(row.some(part=>part.trim()))rows.push(row);
+      row=[];if(ch==='\r'&&value[i+1]==='\n')i++;
+    }else cell+=ch;
+  }
+  row.push(cell);if(row.some(part=>part.trim()))rows.push(row);
+  if(rows.length<2||!rows.some(parts=>parts.length>1))throw new Error('Copy the header row and at least one data row from Excel, then paste them here.');
+  const escape=(part:string)=>`"${part.replaceAll('"','""')}"`;
+  return rows.map(parts=>parts.map(escape).join(',')).join('\r\n');
+}
+
 export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolean;onClose:()=>void;onDone?:()=>void}) {
  const {t}=useLocale();
   const materialImport = path === 'imports/materials';
   const toast = useToast();
   const input = useRef<HTMLInputElement>(null);
   const [file,setFile] = useState<File>();
+  const [pastedData,setPastedData] = useState('');
   const [result,setResult] = useState<Preview>();
   const [error,setError] = useState('');
   const [busy,setBusy] = useState(false);
@@ -40,7 +61,12 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
   const [mapping,setMapping] = useState<Record<string,string>>({});
   const [profiles,setProfiles] = useState<MappingProfile[]>([]);
   const [dragging,setDragging] = useState(false);
+  const [workerPending,setWorkerPending] = useState(false);
+  const workerStartedAt = useRef<number|null>(null);
+  const autoConfirmPaste = useRef(false);
   const dialog = useRef<HTMLDialogElement>(null);
+  const mappingChanged=!!result&&Object.entries(mapping).some(([key,value])=>(value||'')!==(result.mapping?.[key]||''));
+  const previewSettingsChanged=!!result&&(mappingChanged|| (!!discipline&&discipline!==result.discipline)|| (!!sheetName&&sheetName!==(result.selected_sheet||'')));
 
   useEffect(()=>{
     if(open&&!dialog.current?.open)dialog.current?.showModal();
@@ -60,13 +86,21 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
   useEffect(()=>{
     if(!materialImport||!result?.batch_id||!['uploaded','processing'].includes(result.status))return;
     let cancelled=false;let timer:number;
+    if(workerStartedAt.current===null)workerStartedAt.current=Date.now();
     const poll=async()=>{
       try{
         const next=await api<Preview>(`imports/materials/${result.batch_id}`);
         if(cancelled)return;
         setResult(next);
-        if(next.status==='preview')setPreviewed(true);
-        else if(!['uploaded','processing'].includes(next.status))setPreviewed(false);
+        setWorkerPending(['uploaded','queued'].includes(next.status)&&Date.now()-(workerStartedAt.current??Date.now())>10000);
+        if(next.status==='preview'){
+          setPreviewed(true);
+          if(autoConfirmPaste.current){
+            autoConfirmPaste.current=false;
+            if(next.valid){toast.info('Pasted rows validated','Saving valid rows to Material Master now. Rows needing review will be reported.');void confirm(true);}
+            else setError('No valid rows were found, so nothing was added. Review the column mapping and row errors below.');
+          }
+        }else if(!['uploaded','processing'].includes(next.status)){setPreviewed(false);autoConfirmPaste.current=false;}
         else timer=window.setTimeout(poll,1000);
       }catch(e){
         if(cancelled)return;
@@ -104,70 +138,101 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
   }
 
   function choose(next?:File) {
-    setFile(undefined); setResult(undefined); setConfirmed(false); setPreviewed(false); setMapping({}); setError(''); setSheetName(''); setDiscipline('');
+    setFile(undefined); setResult(undefined); setConfirmed(false); setPreviewed(false); setMapping({}); setError(''); setSheetName(''); setDiscipline('');setWorkerPending(false);workerStartedAt.current=null;
+    setPastedData('');
+    autoConfirmPaste.current=false;
     if (!next) return;
     if (next.size > 8_000_000) { setError('Maximum file size is 8 MB'); toast.error('File is too large','Choose an XLSX or CSV up to 8 MB.'); return; }
-    if (!/\.(xlsx|csv)$/i.test(next.name)) { setError('Choose an .xlsx or .csv file'); toast.error('Unsupported file','Choose an XLSX or CSV workbook.'); return; }
+    if (!/\.(xlsx|xls|csv)$/i.test(next.name)) { setError('Choose an .xlsx, .xls, or .csv file'); toast.error('Unsupported file','Choose an Excel or CSV workbook.'); return; }
     setFile(next);
   }
 
-  function payload() {
+  function payload(sourceFile=file) {
     const body = new FormData();
-    if (file) body.set('file',file);
+    if (sourceFile) body.set('file',sourceFile);
     if (discipline) body.set('discipline',discipline);
     if (sheetName) body.set('sheet_name',sheetName);
-    const selected = Object.fromEntries(Object.entries(mapping).filter(([,v])=>v));
-    if (Object.keys(selected).length) body.set('column_mapping',JSON.stringify(selected));
+    const selected = Object.fromEntries(Object.entries(mapping));
+    if (Object.keys(selected).length&&sheetName!=='__all__') body.set('column_mapping',JSON.stringify(selected));
     return body;
   }
 
-  async function preview() {
-    if ((!file&&!result?.batch_id) || busy) return;
+  async function preview(sourceFile?:File) {
+    const selectedFile=sourceFile||file;
+    if ((!selectedFile&&!result?.batch_id) || busy) return;
     setBusy(true); setError(''); setResult(undefined); setConfirmed(false);
+    if(sourceFile){setFile(sourceFile);setPastedData('');setMapping({});setSheetName('');}
     setUploadProgress(0); setValidating(false);
     try {
-      const needsOptions=materialImport&&!!result?.batch_id&&['needs_review','needs_discipline','needs_sheet_selection','failed'].includes(result.status);
+      const needsOptions=materialImport&&!sourceFile&&!!result?.batch_id&&(['needs_review','needs_discipline','needs_sheet_selection','failed'].includes(result.status)||(result.status==='preview'&&previewSettingsChanged));
       let next:Preview;
       if(needsOptions){
         const body=new FormData();if(discipline)body.set('discipline',discipline);if(sheetName)body.set('sheet_name',sheetName);
-        const selected=Object.fromEntries(Object.entries(mapping).filter(([,v])=>v));if(Object.keys(selected).length)body.set('column_mapping',JSON.stringify(selected));
+        const selected=Object.fromEntries(Object.entries(mapping));if(Object.keys(selected).length&&sheetName!=='__all__')body.set('column_mapping',JSON.stringify(selected));
         next=await api<Preview>(`imports/materials/${result.batch_id}/preview-options`,{method:'POST',body});
       }else{
-        next = await upload<Preview>(materialImport?'imports/materials/preview':`${path}?dry_run=true&column_mapping=${encodeURIComponent(JSON.stringify(Object.fromEntries(Object.entries(mapping).filter(([,v])=>v))))}`,materialImport?payload():supplierPayload(),setUploadProgress,()=>setValidating(true));
+        const mapped=Object.fromEntries(Object.entries(mapping).filter(([,v])=>v));
+        const mappingQuery=sheetName==='__all__'?'':`&column_mapping=${encodeURIComponent(JSON.stringify(mapped))}`;
+        next = await upload<Preview>(materialImport?'imports/materials/preview':`${path}?dry_run=true${mappingQuery}`,materialImport?payload(selectedFile):supplierPayload(),setUploadProgress,()=>setValidating(true));
       }
       setResult(next); setPreviewed(true);
+      workerStartedAt.current=['uploaded','queued','processing'].includes(next.status)?Date.now():null;setWorkerPending(false);
       if (materialImport && next.status === 'preview') toast.success('Import preview ready',`${next.valid ?? 0} valid rows are ready for review.`);
       else if (materialImport) toast.info('Workbook staged','The server is processing your private upload. Progress will update here automatically.');
       else if(next.status==='needs_sheet_selection')toast.info('Choose a worksheet','Select the supplier data worksheet, then validate again.');
       else toast.success('Validation complete',`${next.rows ?? 0} spreadsheet rows were checked.`);
     } catch(e) {
+      autoConfirmPaste.current=false;
       const message=e instanceof Error?e.message:'Import preview failed'; setError(message); toast.error('Could not validate spreadsheet',message);
     } finally { setBusy(false); setUploadProgress(null); setValidating(false); }
   }
 
+  function analyzePastedData(){
+    try{
+      const csv=clipboardTableToCsv(pastedData);
+      autoConfirmPaste.current=true;
+      void preview(new File([csv],'pasted-materials.csv',{type:'text/csv;charset=utf-8'}));
+    }catch(e){const message=e instanceof Error?e.message:'Could not read the pasted table';setError(message);toast.error('Paste material rows',message);}
+  }
+
   function supplierPayload() { const body=new FormData(); if(file)body.set('file',file); if(sheetName)body.set('sheet_name',sheetName); return body; }
 
-  async function confirm() {
-    if (busy || confirmed) return;
+  async function confirm(autoConfirm=false) {
+    if ((busy&&!autoConfirm) || confirmed) return;
     if (!materialImport) {
       if (!result?.batch_id || result.status!=='preview' || !previewed || !result.valid) return;
       if (!window.confirm('Import the validated rows? Imported supplier contacts will not be messaged.')) return;
       setBusy(true); setError('');
       try {
-        const outcome=await api<Preview>(`imports/suppliers/${result.batch_id}/confirm`,{method:'POST'});
-        setResult(outcome); setConfirmed(true); onDone?.();
-        toast.success('Spreadsheet import complete',`${outcome.created??0} companies created, ${outcome.unchanged??0} rows unchanged, ${outcome.errors??0} rows need review. No messages were sent.`);
+        const batchId=result.batch_id;
+        const outcome=await api<Preview>(`imports/suppliers/${batchId}/confirm`,{method:'POST'});
+        setResult({...result,...outcome});onDone?.();
+        toast.info('Supplier import queued','Confirmed supplier rows are being saved in background batches. No messages will be sent.');
+        for(let attempt=0;attempt<240;attempt++){
+          await new Promise(resolve=>window.setTimeout(resolve,1500));
+          const progress=await api<Preview>(`imports/suppliers/${batchId}`);setResult(progress);
+          if(['completed','completed_with_errors','failed'].includes(progress.status)){
+            setConfirmed(progress.status!=='failed');onDone?.();
+            if(progress.status==='failed'){
+              const message=progress.failure_reason||'The supplier import stopped. Review the failed rows before retrying.';
+              setError(message);toast.error('Supplier import needs attention',message);
+            }else toast.success('Supplier import complete',`${progress.created??0} companies created, ${progress.unchanged_count??progress.unchanged??0} rows unchanged, ${progress.errors??0} rows need review. No messages were sent.`);
+            return;
+          }
+        }
+        toast.info('Supplier import is still running','Progress is saved. You can leave this screen and return to import history later.');
       } catch(e) { const message=e instanceof Error?e.message:'Import could not be completed';setError(message);toast.error('Import was not completed',message); }
       finally { setBusy(false); }
       return;
     }
     if (!result?.batch_id) return;
-    if (!window.confirm(`Create ${result.create ?? 0} new materials and leave ${result.unchanged ?? 0} exact matches unchanged? Invalid rows will be retained in the error report.`)) return;
+    if (!autoConfirm&&!window.confirm(`Create ${result.create ?? 0} new materials and leave ${result.unchanged ?? 0} exact matches unchanged? Invalid rows will be retained in the error report.`)) return;
     setBusy(true); setError('');
     try {
       const batchId=result.batch_id;
       const outcome=await api<{status:string;created:number;updated:number;unchanged:number;errors:number;categories_created:number}>(`imports/materials/${batchId}/confirm`,{method:'POST'});
       if(outcome.status==='queued'||outcome.status==='processing'){
+        workerStartedAt.current=Date.now();setWorkerPending(false);
         setResult({...result,status:outcome.status});
         toast.info('Import queued','Large workbooks are processed in the background. You can keep using the platform while progress updates.');
         onDone?.();
@@ -175,6 +240,7 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
           await new Promise(resolve=>window.setTimeout(resolve,1500));
           const progress=await api<Preview>(`imports/materials/${batchId}`);
           setResult(progress);
+          setWorkerPending(['queued','processing'].includes(progress.status)&&Date.now()-(workerStartedAt.current??Date.now())>10000&&progress.completed_rows===0);
           if(['completed','completed_with_errors','failed'].includes(progress.status)){
             setConfirmed(progress.status!=='failed');
             if(progress.status==='failed'){
@@ -200,10 +266,19 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
 
   function drop(event:DragEvent<HTMLLabelElement>) { event.preventDefault(); setDragging(false); choose(event.dataTransfer.files[0]); }
 
-  function downloadErrors() {
+  async function downloadErrors() {
+    if(!materialImport&&result?.batch_id){
+      try{
+        const response=await fetch(apiUrl(`imports/suppliers/${result.batch_id}/errors.csv`),{credentials:'include',cache:'no-store'});
+        if(!response.ok)throw new Error('Could not download the complete failed-row report.');
+        const blob=await response.blob();const url=URL.createObjectURL(blob);const anchor=document.createElement('a');
+        anchor.href=url;anchor.download=`supplier-import-${result.batch_id}-errors.csv`;anchor.click();URL.revokeObjectURL(url);
+        toast.info('Error report downloaded','The complete failed-row report includes source worksheet and row details.');return;
+      }catch(e){toast.error('Could not download error report',e instanceof Error?e.message:'Please try again.');return;}
+    }
     const rows=result?.issues||[];
     if(!rows.length)return;
-    const quote=(v:unknown)=>`"${String(v??'').replaceAll('"','""')}"`;
+    const quote=(v:unknown)=>{const value=String(v??'');const safe=/^\s*[=+\-@\t\r]/.test(value)?`'${value}`:value;return `"${safe.replaceAll('"','""')}"`;};
     const csv=['row,reason',...rows.map(r=>`${quote(r.row)},${quote(r.reason)}`)].join('\r\n');
     const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
     const anchor=document.createElement('a'); anchor.href=url; anchor.download='material-import-errors.csv'; anchor.click(); URL.revokeObjectURL(url);
@@ -212,23 +287,25 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
 
   return <dialog ref={dialog} className="upload-dialog import-upload-dialog" aria-labelledby="spreadsheet-upload-title" onCancel={event=>{event.preventDefault();onClose();}} onClick={event=>{if(event.target===event.currentTarget)onClose();}}>
     <div className="upload-dialog-body live-form import-panel procurement-workflow">
-    <div className="panel-title"><div><h2 id="spreadsheet-upload-title">{materialImport?t('Import materials'):t('Spreadsheet import')}</h2><p>{materialImport?t('Upload Civil, Electrical or Mechanical materials. Review the four fields, then confirm.'):t('CSV or XLSX, maximum 8 MB. Preview before importing.')}</p></div><Button type="button" variant="outline" onClick={onClose}>{t("Close")}</Button></div>
+    <div className="panel-title"><div><h2 id="spreadsheet-upload-title">{materialImport?t('Material Master import'):t('Supplier Database import')}</h2><p>{materialImport?t('Upload materials, preview category creation, and confirm the import.'):t('Upload supplier workbooks, review the detected records, and confirm the import.')}</p></div><Button type="button" variant="outline" onClick={onClose}>{t("Close")}</Button></div>
     {materialImport&&<div className="import-note"><strong>{t("Source safe import")}</strong><span>{t("Reference and suggested worksheets are excluded. The import does not execute workbook formulas or send notifications. Categories and materials are created only after you confirm.")}</span></div>}
     {materialImport&&<label className="field import-discipline">{t("Workbook type (optional)")}<select value={discipline} disabled={busy} onChange={e=>{setDiscipline(e.target.value);setPreviewed(false);setConfirmed(false);}}><option value="">{t("Detect from workbook or choose…")}</option><option value="Civil">{t("Civil")}</option><option value="Electrical">{t("Electrical")}</option><option value="Mechanical">{t("Mechanical")}</option></select></label>}
+    {materialImport&&<label className="field">Paste rows copied from Excel<textarea rows={6} value={pastedData} disabled={busy} onChange={e=>{setPastedData(e.target.value);if(e.target.value.trim()){setFile(undefined);setResult(undefined);setConfirmed(false);setPreviewed(false);setError('');}}} placeholder="Copy the header row and material rows in Excel, then paste here. Tab-separated columns are detected automatically."/><small>Include Main Category, Sub Category, Description and Unit/UOM columns. Valid rows are imported after background validation; invalid rows are reported for review.</small><Button type="button" variant="outline" disabled={busy||!pastedData.trim()} onClick={analyzePastedData}>Validate and add pasted rows</Button></label>}
     <label className={`import-drop${dragging?' is-dragging':''}`} onDragOver={e=>{e.preventDefault();setDragging(true);}} onDragLeave={()=>setDragging(false)} onDrop={drop}>
-      <input ref={input} type="file" accept=".csv,.xlsx" disabled={busy} onChange={e=>choose(e.target.files?.[0])}/>
+      <input ref={input} type="file" accept=".csv,.xlsx,.xls" disabled={busy} onChange={e=>choose(e.target.files?.[0])}/>
       <span className="import-drop-icon"><IconCloudUpload size={23}/></span><strong>{file?.name||t('Drop a workbook here or browse files')}</strong>
-      <small>{file?`${(file.size/1024).toFixed(0)} KB · Ready to validate`:t('XLSX or UTF-8 CSV · Maximum 8 MB')}</small>
+      <small>{file?`${(file.size/1024).toFixed(0)} KB · Ready to validate`:t('XLS, XLSX or UTF-8 CSV · Maximum 8 MB')}</small>
       <span className="import-browse">{t("Browse files")}</span>
     </label>
-    {materialImport&&result?.sheets?.some(s=>s.eligible)&&result?.status!=='preview'&&<label className="field">{t("Material worksheet")}<select value={sheetName||result?.selected_sheet||''} onChange={e=>{setSheetName(e.target.value);setPreviewed(false);}}><option value="">{t("Choose active material worksheet…")}</option>{result?.sheets?.filter(s=>s.eligible).map(s=><option key={s.name} value={s.name}>{s.name} · {s.row_count} {t("rows")}</option>)}</select><small>{t("Reference and suggested classification worksheets are not selectable.")}</small></label>}
-    {materialImport&&!!result?.headers?.length&&<details className="import-mapping"><summary>{t("Adjust detected columns (optional)")}</summary><div className="form-grid">{['main_category','subcategory','material_name','unit'].map(key=><label className="field" key={key}>{key.replaceAll('_',' ')}<select value={mapping[key]||result?.mapping?.[key]||''} onChange={e=>{setMapping({...mapping,[key]:e.target.value});setPreviewed(false);setConfirmed(false);}}><option value="">{t("Not provided")}</option>{result?.headers?.map(h=><option value={h} key={h}>{h}</option>)}</select></label>)}</div></details>}
-    {!materialImport&&result?.status==='needs_sheet_selection'&&<label className="field">{t("Supplier worksheet")}<select value={sheetName} onChange={e=>{setSheetName(e.target.value);setResult(undefined);setPreviewed(false);}}><option value="">{t("Choose supplier data worksheet…")}</option>{result.sheets?.filter(sheet=>sheet.eligible).map(sheet=><option value={sheet.name} key={sheet.name}>{sheet.name} · {sheet.row_count} {t("rows")}</option>)}</select><small>{t("Reference and expenditure worksheets are excluded.")}</small></label>}
-    {!materialImport&&!!result?.headers?.length&&!path.startsWith('pricebooks')&&<fieldset className="import-mapping"><legend>{t("Column mapping")}</legend><div className="form-grid">{(path.endsWith('materials')?['material_code','material_name','category_code','unit']:['supplier_name','trade','contact_name','phone','email','city','brands','website']).map(key=><label className="field" key={key}>{key.replaceAll('_',' ')}<select value={mapping[key]||result?.mapping?.[key]||''} onChange={e=>{setMapping({...mapping,[key]:e.target.value});setPreviewed(false);setConfirmed(false);}}><option value="">{t("Use detected column")}</option>{result?.headers?.map(h=><option value={h} key={h}>{h}</option>)}</select></label>)}</div></fieldset>}
+    {materialImport&&result?.sheets?.some(s=>s.eligible)&&result?.status!=='preview'&&<label className="field">{t("Material worksheet")}<select value={sheetName||result?.selected_sheet||''} onChange={e=>{setSheetName(e.target.value);setPreviewed(false);}}><option value="">{t("Choose active material worksheet…")}</option><option value="__all__">{t("Import all eligible worksheets")}</option>{result?.sheets?.filter(s=>s.eligible&&!s.name.startsWith('All eligible')).map(s=><option key={s.name} value={s.name}>{s.name} · {s.row_count} {t("rows")}</option>)}</select><small>{t("Reference and suggested classification worksheets are not selectable.")}</small></label>}
+    {materialImport&&sheetName!=='__all__'&&result?.selected_sheet!=='__all__'&&!!result?.headers?.length&&<details className="import-mapping"><summary>{t("Adjust detected columns (optional)")}</summary><div className="form-grid">{['main_category','subcategory','material_name','unit'].map(key=><label className="field" key={key}>{key.replaceAll('_',' ')}<select value={Object.hasOwn(mapping,key)?mapping[key]:result?.mapping?.[key]||''} onChange={e=>{setMapping({...mapping,[key]:e.target.value});setPreviewed(false);setConfirmed(false);}}><option value="">{t("Not provided")}</option>{result?.headers?.map(h=><option value={h} key={h}>{h}</option>)}</select></label>)}</div></details>}
+    {!materialImport&&result?.status==='needs_sheet_selection'&&<label className="field">{t("Supplier worksheets")}<select value={sheetName} onChange={e=>{setSheetName(e.target.value);setResult(undefined);setPreviewed(false);}}><option value="">{t("Choose a worksheet")}</option><option value="__all__">{t("Import all eligible worksheets")}</option>{result.sheets?.filter(sheet=>sheet.eligible).map(sheet=><option value={sheet.name} key={sheet.name}>{sheet.name} · {sheet.row_count} {t("rows")}</option>)}</select><small>{t("Reference and expenditure worksheets are excluded. Choose all to include every eligible data worksheet.")}</small></label>}
+    {!materialImport&&sheetName!=='__all__'&&!!result?.headers?.length&&!path.startsWith('pricebooks')&&<fieldset className="import-mapping"><legend>{t("Column mapping")}</legend><div className="form-grid">{(path.endsWith('materials')?['material_code','material_name','category_code','unit']:['supplier_name','trade','contact_name','phone','email','city','brands','website']).map(key=><label className="field" key={key}>{key.replaceAll('_',' ')}<select value={mapping[key]||result?.mapping?.[key]||''} onChange={e=>{setMapping({...mapping,[key]:e.target.value});setPreviewed(false);setConfirmed(false);}}><option value="">{t("Use detected column")}</option>{result?.headers?.map(h=><option value={h} key={h}>{h}</option>)}</select></label>)}</div></fieldset>}
     {!!result?.headers?.length&&<div className="live-actions"><label className="field">{t("Saved mapping profiles")}<select value="" onChange={e=>applyProfile(e.target.value)}><option value="">{t("Choose a saved profile")}</option>{profiles.map(profile=><option key={profile.name} value={profile.name}>{profile.name}</option>)}</select></label><Button type="button" variant="outline" onClick={saveProfile}>{t("Save mapping profile")}</Button>{profiles.length>0&&<Button type="button" variant="outline" onClick={()=>{const name=window.prompt('Enter the saved profile name to remove');if(name)storeProfiles(profiles.filter(profile=>profile.name!==name));}}>{t("Remove profile")}</Button>}</div>}
-    <div className="live-actions"><Button type="button" disabled={busy||(!file&&!result?.batch_id)||(!!result?.batch_id&&!['needs_review','needs_discipline','needs_sheet_selection','failed'].includes(result.status))} onClick={()=>void preview()}>{busy?t('Uploading…'):result?.batch_id?t('Recheck preview'):t('Upload and analyze')}</Button>{materialImport&&<Button type="button" variant="outline" disabled={!result?.batch_id||result.status!=='preview'||!previewed||busy||confirmed||!result.valid} onClick={()=>void confirm()}>{busy?t('Importing…'):t('Confirm material import')}</Button>}</div>
+    <div className="live-actions"><Button type="button" disabled={busy||(!file&&!result?.batch_id)||(!!result?.batch_id&&!['needs_review','needs_discipline','needs_sheet_selection','failed'].includes(result.status)&&!(result.status==='preview'&&previewSettingsChanged))} onClick={()=>void preview()}>{busy?t('Uploading…'):result?.batch_id?t('Recheck preview'):t('Upload and analyze')}</Button>{materialImport&&<Button type="button" variant="outline" disabled={!result?.batch_id||result.status!=='preview'||!previewed||busy||confirmed||!result.valid} onClick={()=>void confirm()}>{busy?t('Importing…'):t('Confirm material import')}</Button>}</div>
     {busy&&uploadProgress!==null&&<div className={`category-upload-status${validating?' is-validating':''}`} role="status" aria-live="polite"><div className="category-upload-copy"><span className="category-upload-orb"><i/></span><div><strong>{validating?t('Workbook received'):t('Uploading workbook')}</strong><small>{validating?t('Staging a private copy and starting background worksheet analysis…'):t('Keep this window open while your workbook uploads.')}</small></div><b>{validating?t('Starting…'):`${uploadProgress}%`}</b></div><div className={`category-upload-track${validating?' is-indeterminate':''}`}><i style={validating?undefined:{width:`${uploadProgress}%`}}/></div></div>}
     {(busy&&uploadProgress===null||materialImport&&!!result&&['uploaded','processing'].includes(result.status))&&<div className="import-progress" role="status" aria-live="polite"><i/><span>{result?.stage==='apply'?`Saving ${result.completed_rows??0} of ${result.rows??0} material rows (${result.progress_percent??0}%).`:result?.rows?`Analyzing ${result.completed_rows??0} of ${result.rows} worksheet rows…`:t('Workbook staged privately. Detecting worksheet structure and columns…')}</span></div>}
+    {materialImport&&workerPending&&<p className="notice warn" role="status">This workbook is still waiting in the import queue. Keep the API running and check its terminal for database or earlier import errors.</p>}
     {error&&<p className="import-error" role="alert">{error}</p>}
     {materialImport&&result&&<>
       <div className="import-summary" role="status"><IconFileSpreadsheet size={19}/><div><strong>{result.status==='preview'?t('Ready for confirmation'):result.status.replaceAll('_',' ')}</strong><small>{result.rows??0} {t("source rows ·")} {result.valid??0} {t("valid ·")} {result.invalid??0} {t("invalid ·")} {result.duplicate_rows??0} {t("duplicate")}</small></div><span>{result.discipline||t('Material Master')}{result.selected_sheet?` · ${result.selected_sheet}`:''}</span></div>
@@ -236,6 +313,8 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
       {result.status==='needs_sheet_selection'&&<p className="notice">{t("More than one material worksheet was detected. Choose the active material data worksheet above; suggested/reference sheets remain excluded.")}</p>}
       {result.status==='needs_review'&&<p className="notice warn">{t("No eligible material worksheet was detected. Confirm the workbook contains a description column and a main category or subcategory column.")}</p>}
       {result.status==='failed'&&<p className="notice warn" role="alert">{result.failure_reason||t('The import worker could not process this workbook. Correct the source or preview settings, then retry.')}</p>}
+      {result.status==='preview'&&!!result.sample?.length&&result.sample.every(row=>!row.category&&!!row.subcategory&&!row.name)&&<p className="notice warn">The detected headers do not line up with these row values. In “Adjust detected columns”, map Main Category from “Sub Category”, Sub Category from “Description/Pacification”, and Description from “UNIT”, then validate again. Add a separate Unit/UOM column with the correct unit for each item before confirming.</p>}
+      {result.status==='preview'&&!result.mapping?.unit&&<p className="notice warn">No Unit/UOM column was detected. Add a Unit column with a value for each material row, then upload again. Units are required for material search and RFQ quantities; this importer will not guess them.</p>}
       {!!result.sample?.length&&<><h3>{t("Material row and category preview")}</h3><DataTable rows={result.sample} columns={['category','subcategory','name','unit']} searchable={false} labels={{category:'Main category',subcategory:'Subcategory',name:'Description',unit:'Unit'}}/></>}
       {!!result.new_categories?.length&&<><h3>{t("Categories that will be added after confirmation")}</h3><DataTable rows={result.new_categories} columns={['path']} searchable={false} labels={{path:'Category / Subcategory'}}/></>}
       {!!result.warnings?.length&&<><h3>{t("Duplicate and unchanged rows")}</h3><DataTable rows={result.warnings} columns={['row','reason']}/></>}
@@ -243,7 +322,7 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
       {!!result.issues?.length&&<DataTable rows={result.issues.slice(0,100)} columns={['row','reason']}/ >}
     </>}
     {!materialImport&&<div className="live-actions"><Button type="button" variant="outline" disabled={!result?.batch_id||result.status!=='preview'||!previewed||!result.valid||busy||confirmed} onClick={()=>void confirm()}>{busy?t('Importing…'):t('Confirm import')}</Button></div>}
-    {!materialImport&&result&&<><p role="status">{confirmed?t('Import complete'):t('Preview complete')} {t("· Rows:")} {String(result.rows??0)} {t("· Created:")} {confirmed?String(result.created??0):'—'}</p>{Array.isArray(result.preview)&&<DataTable rows={result.preview} columns={['row','name','status','issue']}/>}</>}
+    {!materialImport&&result&&<><div className="import-summary" role="status"><IconFileSpreadsheet size={19}/><div><strong>{t(result.status.replaceAll('_',' '))}</strong><small>{result.rows??0} {t('rows')} · {result.completed_rows??0} {t('processed')} · {result.valid??0} {t('valid')} · {result.invalid??result.errors??0} {t('need review')}</small></div><span>{result.progress_percent??(confirmed?100:0)}%</span></div>{['queued','processing'].includes(result.status)&&<div className="import-progress" role="status" aria-live="polite"><i/><span>{t('Saving supplier records in background batches')} · {result.completed_rows??0} / {result.rows??0}</span></div>}{!!result.issues?.length&&<div className="import-issues-head"><h3>{t('Rows needing review')}</h3><Button type="button" variant="outline" onClick={()=>void downloadErrors()}><IconDownload size={15}/>{t('Download failed rows')}</Button></div>}{Array.isArray(result.preview)&&<DataTable rows={result.preview} columns={['row','name','status','issue','sheet']}/>}</>}
     </div>
   </dialog>;
 }

@@ -19,18 +19,18 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from openpyxl import load_workbook
-from sqlalchemy import case, func, insert, or_, select
+from sqlalchemy import case, delete, func, insert, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app import catalog_cache
 from app.database import get_db
 from app.import_storage import get_import_storage
-from app.models import Category, ImportBatch, ImportedRow, Material, Member, Organization, User, MeasurementUnit
+from app.models import Category, ImportBatch, ImportedRow, Material, Member, Organization, User
 from app.schemas import MaterialImportPreview, MaterialImportResult, MaterialSearchPage
 from app.security import admin_user, audit, current_user
 from app.serializers import record
 from app.modules.materials.service import (
-    UNIT_NAMES, create_material_record, material_identity,
+    create_material_record, material_identity,
     normalize_category_name, normalize_unit, resolve_category,
 )
 
@@ -43,7 +43,7 @@ DISCIPLINES = {'civil': 'Civil', 'electrical': 'Electrical', 'mechanical': 'Mech
 FIELD_ALIASES: dict[str, set[str]] = {
     'material_name': {'material name', 'description', 'description/pacification', 'description / pacification',
                       'description/specification', 'description / specification', 'item description', 'material description', 'name', 'item name'},
-    'main_category': {'main category', 'category', 'category name', 'level 1', 'division'},
+    'main_category': {'main category', 'category', 'main', 'category name', 'level 1', 'division'},
     'subcategory': {'subcategory', 'sub category', 'sub-category', 'sub category name', 'level 2', 'group'},
     'source_code': {'sn', 's no', 'serial no', 'serial number', 'material id', 'material code', 'source material id', 'source material code', 'material source id', 'item code', 'source code', 'item number', 'material number'},
     'expenditure_code': {'expenditure', 'expenditures', 'expenditure code', 'expenditure classification', 'expenditure classification code', 'classification code'},
@@ -57,6 +57,8 @@ REFERENCE_SHEET = re.compile(r'(^|[^a-z])(reference|suggested|proposal|lookup|le
 def _clean(value: object) -> str:
     if value is None:
         return ''
+    if isinstance(value,float) and value.is_integer():
+        value=int(value)
     value = str(value).strip()
     if len(value) > MAX_CELL_LENGTH:
         return value[:MAX_CELL_LENGTH]
@@ -81,8 +83,10 @@ def _column_map(headers: list[str], explicit: dict[str, str] | None = None) -> d
     result: dict[str, str] = {}
     explicit = explicit or {}
     for field, aliases in FIELD_ALIASES.items():
-        chosen = explicit.get(field)
-        if chosen:
+        if field in explicit:
+            chosen = explicit[field]
+            if not chosen:
+                continue
             if _header(chosen) not in normalized:
                 raise HTTPException(422, f'Column mapping for {field} does not match a workbook header')
             result[field] = normalized[_header(chosen)]
@@ -93,25 +97,47 @@ def _column_map(headers: list[str], explicit: dict[str, str] | None = None) -> d
     return result
 
 
+class _XlsSheetAdapter:
+    def __init__(self,sheet):
+        self._sheet=sheet;self.title=sheet.name;self.max_row=sheet.nrows;self.max_column=sheet.ncols
+    def iter_rows(self,min_row=1,max_row=None,max_col=None,values_only=True):
+        del values_only
+        stop=min(self.max_row,max_row if max_row is not None else self.max_row)
+        width=min(self.max_column,max_col if max_col is not None else self.max_column)
+        for row_idx in range(min_row-1,stop):
+            yield tuple(self._sheet.cell_value(row_idx,col) for col in range(width))
+
+
 def _read_xlsx(content: bytes, selected_name: str | None = None, explicit: dict[str, str] | None = None,
-               progress=None) -> tuple[list[dict], list[dict]]:
-    try:
-        with ZipFile(BytesIO(content)) as archive:
-            entries = archive.infolist()
-            if len(entries) > 3_000 or sum(entry.file_size for entry in entries) > 128_000_000:
-                raise HTTPException(413, 'Workbook expands beyond the safe parsing limit')
-            if any(entry.file_size > 64_000_000 for entry in entries):
-                raise HTTPException(413, 'Workbook contains an oversized worksheet or asset')
-    except BadZipFile as exc:
-        raise HTTPException(422, 'The uploaded XLSX file is not a valid workbook') from exc
-    try:
-        book = load_workbook(BytesIO(content), read_only=True, data_only=True, keep_links=False)
-    except Exception as exc:
-        raise HTTPException(422, 'The uploaded XLSX workbook could not be read') from exc
+               progress=None, legacy_xls: bool = False) -> tuple[list[dict], list[dict]]:
+    if legacy_xls:
+        try:
+            import xlrd
+            book=xlrd.open_workbook(file_contents=content,on_demand=True)
+            worksheets=[_XlsSheetAdapter(sheet) for sheet in book.sheets()]
+        except ImportError as exc:
+            raise HTTPException(503,'Legacy XLS support is not installed on this server') from exc
+        except Exception as exc:
+            raise HTTPException(422,'The uploaded XLS workbook could not be read') from exc
+    else:
+        try:
+            with ZipFile(BytesIO(content)) as archive:
+                entries = archive.infolist()
+                if len(entries) > 3_000 or sum(entry.file_size for entry in entries) > 128_000_000:
+                    raise HTTPException(413, 'Workbook expands beyond the safe parsing limit')
+                if any(entry.file_size > 64_000_000 for entry in entries):
+                    raise HTTPException(413, 'Workbook contains an oversized worksheet or asset')
+        except BadZipFile as exc:
+            raise HTTPException(422, 'The uploaded XLSX file is not a valid workbook') from exc
+        try:
+            book = load_workbook(BytesIO(content), read_only=True, data_only=True, keep_links=False)
+            worksheets=book.worksheets
+        except Exception as exc:
+            raise HTTPException(422, 'The uploaded XLSX workbook could not be read') from exc
     details: list[dict] = []
     sheets: list[dict] = []
     try:
-        for sheet in book.worksheets:
+        for sheet in worksheets:
             header_row = None
             headers: list[str] = []
             selected_map: dict[str, str] = {}
@@ -148,11 +174,39 @@ def _read_xlsx(content: bytes, selected_name: str | None = None, explicit: dict[
                 detail['headers'] = [x for row in sheet.iter_rows(min_row=1, max_row=5, max_col=20, values_only=True) for x in [_clean(c) for c in row] if x][:30]
             sheets.append(detail)
         eligible_sheets=[item for item in sheets if item['eligible']]
-        target=next((item for item in eligible_sheets if item['name']==selected_name),None) if selected_name else (eligible_sheets[0] if len(eligible_sheets)==1 else None)
+        targets=eligible_sheets if selected_name=='__all__' else ([next((item for item in eligible_sheets if item['name']==selected_name),None)] if selected_name else ([eligible_sheets[0]] if len(eligible_sheets)==1 else []))
+        target=targets[0] if len(targets)==1 and selected_name!='__all__' else None
         if selected_name and target is None:
-            raise HTTPException(422,'Selected worksheet is not an eligible material data sheet')
-        if target:
-            sheet=next(item for item in book.worksheets if item.title==target['name'])
+            if selected_name!='__all__' or not targets:
+                raise HTTPException(422,'Selected worksheet is not an eligible material data sheet')
+        if selected_name=='__all__':
+            combined=[];source_headers=[];total=0
+            for item in targets:
+                sheet=next(sheet for sheet in worksheets if sheet.title==item['name'])
+                max_row=sheet.max_row;mapping=_column_map(item['headers'],explicit)
+                if 'material_name' not in mapping or not ({'main_category','subcategory'}&mapping.keys()):continue
+                source_headers.extend(header for header in item['headers'] if header and header not in source_headers)
+                if max_row and max_row-item['header_row']>MAX_ROWS:
+                    raise HTTPException(413,f'Worksheet {sheet.title} exceeds the {MAX_ROWS:,} row limit')
+                nonempty=0
+                for row_number,cells in enumerate(sheet.iter_rows(min_row=item['header_row']+1,max_row=max_row,max_col=item['_column_count'],values_only=True),start=item['header_row']+1):
+                    values=['' if c is None else str(c) for c in cells]
+                    raw={item['headers'][i]:values[i] for i in range(min(len(item['headers']),len(values))) if item['headers'][i]}
+                    if not any(raw.values()):continue
+                    row={field:raw.get(header,'') for field,header in mapping.items()}
+                    row['_row']=row_number;row['_sheet']=sheet.title;combined.append(row);nonempty+=1;total+=1
+                    if total>MAX_ROWS*10:raise HTTPException(413,'Combined worksheets exceed the 300,000-row import limit')
+                    if progress and total%500==0:progress(total,total)
+                item['row_count']=nonempty
+            if not combined:raise HTTPException(422,'No eligible material rows were found in the selected worksheets')
+            aggregate={'name':'All eligible worksheets','eligible':True,'header_row':1,
+                'headers':list(dict.fromkeys(key for row in combined for key in row if not key.startswith('_'))),
+                'row_count':len(combined),'_rows':combined,'_map':{key:key for key in FIELD_ALIASES if any(key in row for row in combined)}}
+            sheets.append(aggregate)
+            details.append(aggregate)
+            if progress:progress(total,total)
+        elif target:
+            sheet=next(item for item in worksheets if item.title==target['name'])
             max_row=sheet.max_row
             if max_row and max_row-target['header_row']>MAX_ROWS:
                 raise HTTPException(413,f'Worksheet {sheet.title} exceeds the {MAX_ROWS:,} row limit')
@@ -171,7 +225,8 @@ def _read_xlsx(content: bytes, selected_name: str | None = None, explicit: dict[
             target['row_count']=nonempty;target['_rows']=rows
             if progress:progress(max(0,max_row-target['header_row']) if max_row else nonempty,max(0,max_row-target['header_row']) if max_row else 0)
     finally:
-        book.close()
+        if legacy_xls:book.release_resources()
+        else:book.close()
     return sheets, details
 
 
@@ -197,13 +252,13 @@ def _read_csv(content: bytes, explicit: dict[str,str] | None = None) -> tuple[li
 
 def _discover(content: bytes, filename: str, sheet_name: str | None = None,
               explicit: dict[str,str] | None = None, progress=None) -> list[dict]:
-    if filename.casefold().endswith('.xlsx'):
-        sheets, _ = _read_xlsx(content,sheet_name,explicit,progress)
+    if filename.casefold().endswith(('.xlsx','.xls')):
+        sheets, _ = _read_xlsx(content,sheet_name,explicit,progress,filename.casefold().endswith('.xls'))
         return sheets
     if filename.casefold().endswith('.csv'):
         sheets, _ = _read_csv(content,explicit)
         return sheets
-    raise HTTPException(415, 'Upload an .xlsx or UTF-8 .csv file')
+    raise HTTPException(415, 'Upload an .xlsx, .xls, or UTF-8 .csv file')
 
 
 def _resolve_discipline(value: str | None, filename: str, sheet_name: str | None) -> str | None:
@@ -273,9 +328,7 @@ def _row_value(row: dict, mapping: dict[str, str], key: str) -> str:
     return _clean(row.get(mapping.get(key, ''), ''))
 
 
-def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str,
-              known_units: set[str] | None = None) -> list[dict]:
-    known_units = set(UNIT_NAMES) | (known_units or set())
+def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str) -> list[dict]:
     output = []
     for row in rows:
         name = str(row.get(mapping.get('material_name',''), '') or '')
@@ -306,8 +359,8 @@ def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str,
         elif any(len(v) > cap for v, cap in ((name, 250), (main, 180), (sub, 180), (unit, 30), (source, 120), (expenditure, 120))):
             issue = 'A mapped value exceeds the supported field length'
         canonical_unit=normalize_unit(unit)
-        if not issue and canonical_unit not in known_units:
-            issue=f'Unit {canonical_unit} is not configured. Add or map this unit in Material Master before importing.'
+        if not issue and (not canonical_unit or not re.fullmatch(r'[\w./%-]+',canonical_unit,flags=re.UNICODE)):
+            issue='Unit contains unsupported characters; preserve/correct the unit value before importing.'
         if issue:
             output.append({'row': row['_row'], 'status': 'invalid', 'issue': issue, 'raw': row})
             continue
@@ -403,7 +456,7 @@ def _apply_row(db: Session, item: ImportedRow, identity_map: dict[str, Material]
                      description=name,unit=unit,source_unit=raw.get('_source_unit') or unit,specifications=specs,
                      arabic_description=raw.get('_arabic_description',''),source_sn=source_code,
                      expenditure_code=expenditure,discipline=discipline,import_batch_id=batch_id,
-                     import_row_number=item.row_number,unit_cache=unit_cache)
+                     import_row_number=item.row_number,unit_cache=unit_cache,create_unknown_unit=True)
         identity_map[identity] = material
         item.status = 'created' if created else 'unchanged'
         item.issue = None
@@ -417,6 +470,11 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
     storage=get_import_storage()
     if not batch.source_storage_key or not storage.exists(batch.source_storage_key):
         raise ValueError('The private staged workbook is missing')
+    # A parse can be retried after a worker restart. Remove any preview rows
+    # committed by an interrupted attempt before starting a clean parse.
+    db.execute(delete(ImportedRow).where(ImportedRow.batch_id==batch.id))
+    batch.completed_rows=0
+    db.commit()
     content=storage.read(batch.source_storage_key)
     if batch.source_sha256 and sha256(content).hexdigest()!=batch.source_sha256:
         raise ValueError('The staged workbook checksum does not match')
@@ -441,16 +499,16 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
     selected=next((item for item in eligible if item.get('_rows') is not None),None)
     if selected is None:
         raise ValueError('The selected worksheet could not be parsed')
-    mapping=_column_map(selected['headers'],explicit)
+    mapping=selected.get('_map') or _column_map(selected['headers'],explicit)
     if 'material_name' not in mapping or not ({'main_category','subcategory'}&mapping.keys()):
         metadata.update({'headers':selected['headers'],'mapping':mapping,'selected_sheet':selected['name']})
         batch.status='needs_review';batch.preview_metadata=metadata;batch.rows=selected['row_count'];batch.stage='preview'
         batch.parse_duration_ms=int((perf_counter()-started)*1000);batch.updated_at=datetime.now(UTC);db.commit();return
     discipline=_resolve_discipline(options.get('discipline'),batch.filename,selected['name'])
-    metadata.update({'headers':selected['headers'],'mapping':mapping,'selected_sheet':selected['name'],'discipline':discipline})
+    metadata.update({'headers':selected['headers'],'mapping':mapping,
+        'selected_sheet':'__all__' if selected_name=='__all__' else selected['name'],'discipline':discipline})
     discipline = discipline or ''
-    known_units=set(db.scalars(select(MeasurementUnit.code).where(MeasurementUnit.active.is_(True))).all())
-    prepared=_prepared(selected['_rows'],mapping,discipline,known_units)
+    prepared=_prepared(selected['_rows'],mapping,discipline)
     seen:set[str]=set()
     existing_materials=_materials_by_identity(db,[item['identity'] for item in prepared if item.get('identity')],
                                                 [item['name'] for item in prepared if item.get('name')])
@@ -486,7 +544,7 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
     row_values=[]
     for item in prepared:
         raw=dict(item.get('raw',{}))
-        raw.update({'_discipline':discipline,'_mapping':mapping,'_sheet':selected['name'],
+        raw.update({'_discipline':discipline,'_mapping':mapping,'_sheet':raw.get('_sheet') or selected['name'],
                     '_identity':item.get('identity'),'_name':item.get('name',''),
                     '_category':item.get('main',''),'_subcategory':item.get('subcategory',''),
                     '_unit':item.get('unit',''),'_source_unit':item.get('source_unit',''),
@@ -494,9 +552,17 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
                     '_expenditure_code':item.get('expenditure_code')})
         row_values.append({'batch_id':batch.id,'row_number':item['row'],'raw':raw,
                            'status':item['status'],'issue':item['issue'] or None})
-    if row_values:db.execute(insert(ImportedRow),row_values)
     errors=sum(row['status'] in {'invalid','duplicate'} for row in row_values)
-    batch.rows=len(row_values);batch.errors=errors;batch.completed_rows=0
+    batch.rows=len(row_values);batch.errors=errors;batch.completed_rows=0;batch.updated_at=datetime.now(UTC)
+    db.commit()
+    # Keep each JSONB/JSON executemany small for hosted PostgreSQL connections.
+    # Commits also make real progress visible while the full preview is stored.
+    for offset in range(0,len(row_values),100):
+        chunk=row_values[offset:offset+100]
+        db.execute(insert(ImportedRow),chunk)
+        batch.completed_rows=offset+len(chunk)
+        batch.updated_at=datetime.now(UTC)
+        db.commit()
     batch.status='preview';batch.stage='preview';batch.preview_metadata={**metadata,'new_categories':new_categories}
     batch.parse_duration_ms=int((perf_counter()-started)*1000);batch.updated_at=datetime.now(UTC)
     audit(db,db.get(User,batch.initiated_by),'material_import.previewed',entity_id=batch.id,rows=batch.rows,errors=errors)
@@ -610,8 +676,8 @@ def preview(
             raise HTTPException(422, 'Column mapping must map supported fields to header names') from exc
     filename = Path(file.filename or 'material-import').name
     suffix = Path(filename).suffix.casefold()
-    if suffix not in {'.xlsx', '.csv'}:
-        raise HTTPException(415, 'Upload an .xlsx or UTF-8 .csv file')
+    if suffix not in {'.xlsx', '.xls', '.csv'}:
+        raise HTTPException(415, 'Upload an .xlsx, .xls, or UTF-8 .csv file')
     storage = get_import_storage()
     job_id = str(uuid4())
     key = f'{job_id}/source{suffix}'
@@ -627,6 +693,9 @@ def preview(
     if suffix == '.xlsx' and not content_prefix.startswith(b'PK'):
         storage.delete(key)
         raise HTTPException(422, 'The uploaded XLSX file is not a valid workbook')
+    if suffix == '.xls' and not content_prefix.startswith(bytes.fromhex('D0CF11E0A1B11AE1')):
+        storage.delete(key)
+        raise HTTPException(422, 'The uploaded XLS file is not a valid legacy workbook')
     if suffix == '.csv':
         try:
             storage.read(key).decode('utf-8-sig')
@@ -655,7 +724,7 @@ def update_preview_options(batch_id: str, discipline: str | None = Form(default=
         raise HTTPException(404, 'Material import not found')
     if batch.initiated_by != user.id:
         raise HTTPException(403, 'Only the administrator who uploaded this workbook may change its preview')
-    if batch.status not in {'needs_review', 'needs_discipline', 'needs_sheet_selection', 'failed'} or not batch.source_storage_key:
+    if batch.status not in {'needs_review', 'needs_discipline', 'needs_sheet_selection', 'failed', 'preview'} or not batch.source_storage_key:
         raise HTTPException(409, 'This workbook is not waiting for preview changes')
     explicit: dict[str, str] = {}
     if column_mapping:

@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import re
 import uuid
+from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -8,13 +10,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, TimeoutError as PoolTimeoutError, DBAPIError
 from app.config import get_settings
-from app.database import engine
+from app.database import SessionLocal, engine
 from app.rate_limit import enforce_rate_limit, ping_redis
 from app.modules.auth.router import router as auth
 from app.modules.auth.phone_change import router as phone_change
 from app.modules.organizations.router import router as organizations
 from app.modules.taxonomy.router import router as taxonomy
-from app.modules.imports.router import router as imports
+from app.modules.imports.router import process_queued_supplier_imports, router as imports
+from app.modules.imports.materials import process_queued_material_imports
 from app.modules.capabilities.router import router as capabilities
 from app.modules.capabilities.directory import router as directory
 from app.modules.rfqs.router import router as rfqs
@@ -49,7 +52,37 @@ if settings.is_production:
     # scanning, admin MFA, legal controls, and multi-worker failure behavior.
     raise RuntimeError('Production readiness gate: private R2 storage, malware scanning, admin MFA, legal review and production concurrency testing remain incomplete')
 
-app=FastAPI(title='Saudi B2B Procurement RFQ API',version='0.1.0',description='Working development MVP: buyer, supplier, RFQ, matching, quotes, admin. No production guarantees.')
+def _process_import_queue_once() -> None:
+    with SessionLocal() as db:
+        process_queued_material_imports(db)
+        process_queued_supplier_imports(db)
+
+
+async def _development_import_worker() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_process_import_queue_once)
+        except Exception:
+            logger.exception('Development import worker poll failed')
+        await asyncio.sleep(2)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    worker = None
+    if settings.app_env.casefold() == 'development':
+        worker = asyncio.create_task(_development_import_worker(), name='development-import-worker')
+        logger.info('Development material and supplier import worker started with the API')
+    try:
+        yield
+    finally:
+        if worker:
+            worker.cancel()
+            with suppress(asyncio.CancelledError):
+                await worker
+
+
+app=FastAPI(title='Saudi B2B Procurement RFQ API',version='0.1.0',description='Working development MVP: buyer, supplier, RFQ, matching, quotes, admin. No production guarantees.',lifespan=lifespan)
 
 
 @app.exception_handler(RequestValidationError)
@@ -134,7 +167,7 @@ async def headers(request:Request,call_next):
     response.headers['Cache-Control']='no-store'
     return response
 
-app.add_middleware(CORSMiddleware,allow_origins=[s.strip() for s in settings.cors_origins.split(',') if s.strip()],allow_credentials=True,allow_methods=['GET','POST','PATCH','PUT','DELETE'],allow_headers=['Authorization','Content-Type','X-Request-ID'],expose_headers=['Retry-After','X-Request-ID','Server-Timing'])
+app.add_middleware(CORSMiddleware,allow_origins=[s.strip() for s in settings.cors_origins.split(',') if s.strip()],allow_credentials=True,allow_methods=['GET','POST','PATCH','PUT','DELETE'],allow_headers=['Authorization','Content-Type','X-Request-ID','Cache-Control'],expose_headers=['Retry-After','X-Request-ID','Server-Timing'])
 
 for r in (auth,phone_change,organizations,taxonomy,imports,capabilities,directory,rfqs,matching,pricebooks,quotations,notifications,memberships,admin,database_status,reports,contact,files):
     app.include_router(r,prefix='/api/v1')

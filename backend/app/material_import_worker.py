@@ -8,6 +8,7 @@ import time
 
 from app.database import SessionLocal
 from app.modules.imports.materials import process_queued_material_imports
+from app.modules.imports.router import process_queued_supplier_imports
 
 
 def main() -> None:
@@ -20,8 +21,11 @@ def main() -> None:
     while True:
         with SessionLocal() as db:
             completed = process_queued_material_imports(db)
+            supplier_completed = process_queued_supplier_imports(db)
         if completed:
             logger.info('Completed Material Master import batches: %s', ', '.join(completed))
+        if supplier_completed:
+            logger.info('Completed supplier import batches: %s', ', '.join(supplier_completed))
         if args.once:
             return
         time.sleep(max(0.25, args.interval))

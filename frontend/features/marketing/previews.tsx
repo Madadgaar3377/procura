@@ -5,7 +5,7 @@ import {IconArrowRight, IconBuilding, IconCheck, IconChevronDown, IconClock, Ico
 import {marketingCopy,type MarketingLocale} from './copy';
 
 function PreviewLabel({locale}:{locale:MarketingLocale}){return <span className="pm-sample-label"><i aria-hidden="true"/>{marketingCopy[locale].illustrative}</span>;}
-function PreviewTop({locale,supplier=false}:{locale:MarketingLocale;supplier?:boolean}){const p=marketingCopy[locale].preview;return <div className="pm-preview-top"><span className="pm-preview-wordmark">Procura</span><span>{supplier?p.supplierWorkspace:p.workspace}</span><span className="pm-preview-avatar" aria-hidden="true">{supplier?'S':'B'}</span></div>;}
+function PreviewTop({locale,supplier=false}:{locale:MarketingLocale;supplier?:boolean}){const p=marketingCopy[locale].preview;return <div className="pm-preview-top"><span className="pm-preview-wordmark">Procurement</span><span>{supplier?p.supplierWorkspace:p.workspace}</span><span className="pm-preview-avatar" aria-hidden="true">{supplier?'S':'B'}</span></div>;}
 function ItemTable({locale}:{locale:MarketingLocale}){const p=marketingCopy[locale].preview;return <div className="pm-mini-items"><div className="pm-mini-items-heading"><span>{p.description}</span><span>{p.quantity}</span><span>{p.unit}</span></div>{[[p.material,'12'],[p.materialTwo,'24']].map(([name,quantity])=><div className="pm-mini-item" key={name}><span>{name}</span><b dir="ltr">{quantity}</b><span>{p.pcs}</span></div>)}</div>;}
 
 export function WorkflowPreview({locale}:{locale:MarketingLocale}){

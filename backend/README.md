@@ -42,7 +42,7 @@ In another terminal, to automatically dispatch RFQs in **development**:
 python -m app.notification_worker
 ```
 
-Run the Material Master queue worker alongside the API. It parses staged uploads, builds previews, and applies confirmed imports for workbooks of every size:
+When `APP_ENV=development` (the local default), the API starts the Material Master and supplier import queue worker automatically. Keep the API process running while uploads are parsed and confirmed imports are applied. In deployments that run the API outside development mode, run the worker as a separate service:
 
 ```bash
 python -m app.material_import_worker

@@ -10,6 +10,7 @@
     "api:generate": "node scripts/generate-api.mjs",
     "typecheck": "tsc --noEmit --incremental false",
     "test:api": "node --test tests/*.test.cjs",
+    "test:sitemap": "node --test tests/sitemap.test.cjs",
     "test:http": "node tests/http-smoke.mjs",
     "test:browser": "node tests/http-smoke.mjs --browser",
     "test:directory": "node tests/directory-browser.mjs",

@@ -120,8 +120,9 @@ def material_snapshot(material: Material) -> dict[str, Any]:
 
 
 def material_identity(*, main_category: str, subcategory: str, description: str, unit: str,
-                      specifications: str) -> str:
-    normalized = '\x1f'.join(map(normalize_text, (main_category, subcategory, description, unit)))
+                      specifications: str, discipline: str | None = None) -> str:
+    values = (main_category, subcategory, description, unit, discipline) if discipline else (main_category, subcategory, description, unit)
+    normalized = '\x1f'.join(map(normalize_text, values))
     return sha256(normalized.encode('utf-8')).hexdigest()
 
 
@@ -144,9 +145,12 @@ def create_material_record(db: Session, *, actor: User | None, main_category: Ca
                            discipline: str | None = None, code: str | None = None,
                            import_batch_id: str | None = None, import_row_number: int | None = None,
                            metadata: dict[str, Any] | None = None,
-                           unit_cache: dict[str,str] | None = None) -> tuple[Material, bool]:
+                           unit_cache: dict[str,str] | None = None,
+                           create_unknown_unit: bool = False) -> tuple[Material, bool]:
     leaf = subcategory or main_category
-    canonical_unit, original_unit = ensure_unit(db, unit or source_unit, create_unknown=False,cache=unit_cache)
+    canonical_unit, original_unit = ensure_unit(db, unit or source_unit, create_unknown=create_unknown_unit,cache=unit_cache)
+    if source_unit.strip():
+        original_unit=source_unit.strip()
     normalized_description = normalize_text(description)
     if len(normalized_description) < 3 or len(description.strip()) > 250:
         raise HTTPException(422, 'Material description must contain 3 to 250 characters')
@@ -154,7 +158,7 @@ def create_material_record(db: Session, *, actor: User | None, main_category: Ca
     identity = material_identity(main_category=main_category.normalized_name or main_category.name_en,
                                  subcategory=(subcategory.normalized_name or subcategory.name_en) if subcategory else '',
                                  description=description.strip(), unit=canonical_unit,
-                                 specifications=specifications)
+                                 specifications=specifications, discipline=discipline)
     material_code = (code or 'MAT-' + identity[:28].upper()).strip().upper()
     code_owner = db.scalar(select(Material.id).where(Material.code == material_code))
     if code_owner:

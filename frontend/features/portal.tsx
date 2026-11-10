@@ -64,6 +64,7 @@ export default function LivePortal({role,current,entity}:{role:'buyer'|'supplier
   if(current==='buyers'||current==='suppliers')return <AdminCompanies type={current}/>;
   if(current==='verification'||current==='claims')return <Verification/>;
   if(current==='materials'||current==='categories')return <Taxonomy kind={current}/>;
+  if(current==='bulk-import')return <Imports kind="all"/>;
   if(current==='supplier-import'||current==='material-import')return <Imports kind={current==='supplier-import'?'suppliers':'materials'}/>;
   if(current==='membership')return <AdminMembership/>;
   if(current==='audit')return <Audit/>;

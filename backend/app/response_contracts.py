@@ -139,11 +139,12 @@ OutboxOut = contract('OutboxOut', models.Outbox, ('secret_ciphertext',))
 
 class SupplierImportConfirmation(ResponseModel):
     batch_id: str
-    status: Literal['completed']
+    status: Literal['queued']
     rows: int
     created: int
     unchanged: int
     errors: int
+    completed_rows: int
 
 class TokenPair(ResponseModel):
     access_token: str
