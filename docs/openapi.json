@@ -1290,6 +1290,495 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Delete Supplier Contact",
+        "operationId": "admin_delete_supplier_contact_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactActionConfirmation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/deduplication-preview": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Preview Supplier Contact Deduplication",
+        "operationId": "admin_preview_supplier_contact_deduplication_api_v1_organizations_admin_suppliers__org_id__contacts_deduplication_preview_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/deduplication": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Execute Supplier Contact Deduplication",
+        "operationId": "admin_execute_supplier_contact_deduplication_api_v1_organizations_admin_suppliers__org_id__contacts_deduplication_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactActionConfirmation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/channels": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Add Supplier Contact Channel",
+        "operationId": "admin_add_supplier_contact_channel_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__channels_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactChannelAdminInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/channels/{channel_id}": {
+      "delete": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Remove Supplier Contact Channel",
+        "operationId": "admin_remove_supplier_contact_channel_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__channels__channel_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Channel Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactActionConfirmation"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Update Supplier Contact Channel",
+        "operationId": "admin_update_supplier_contact_channel_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__channels__channel_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          },
+          {
+            "name": "channel_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Channel Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactChannelUpdateInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/review": {
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Mark Supplier Contact Review",
+        "operationId": "admin_mark_supplier_contact_review_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__review_patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactReviewInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/merge": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Merge Supplier Contacts",
+        "operationId": "admin_merge_supplier_contacts_api_v1_organizations_admin_suppliers__org_id__contacts_merge_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactMergeInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/organizations/admin/suppliers/{org_id}/capabilities": {
@@ -12538,6 +13027,86 @@
         ],
         "title": "Comparison"
       },
+      "ContactActionConfirmation": {
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "title": "Confirm"
+          }
+        },
+        "type": "object",
+        "required": [
+          "confirm"
+        ],
+        "title": "ContactActionConfirmation"
+      },
+      "ContactChannelAdminInput": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "pattern": "^(email|phone|fax)$",
+            "title": "Kind"
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 300,
+            "minLength": 3,
+            "title": "Value"
+          },
+          "label": {
+            "type": "string",
+            "pattern": "^(mobile|office|other|fax)$",
+            "title": "Label",
+            "default": "other"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "value"
+        ],
+        "title": "ContactChannelAdminInput"
+      },
+      "ContactChannelUpdateInput": {
+        "properties": {
+          "is_primary": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Primary"
+          },
+          "needs_review": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Needs Review"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(mobile|office|other|fax)$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "type": "object",
+        "title": "ContactChannelUpdateInput"
+      },
       "ContactInquiryCreate": {
         "properties": {
           "name": {
@@ -12880,6 +13449,41 @@
         ],
         "title": "ContactInquiryStatus"
       },
+      "ContactMergeInput": {
+        "properties": {
+          "canonical_contact_id": {
+            "type": "string",
+            "title": "Canonical Contact Id"
+          },
+          "duplicate_contact_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "minItems": 1,
+            "title": "Duplicate Contact Ids"
+          },
+          "confirm": {
+            "type": "boolean",
+            "title": "Confirm"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 4,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canonical_contact_id",
+          "duplicate_contact_ids",
+          "confirm",
+          "reason"
+        ],
+        "title": "ContactMergeInput"
+      },
       "ContactReceipt": {
         "properties": {
           "reference": {
@@ -12897,6 +13501,19 @@
           "message"
         ],
         "title": "ContactReceipt"
+      },
+      "ContactReviewInput": {
+        "properties": {
+          "needs_review": {
+            "type": "boolean",
+            "title": "Needs Review"
+          }
+        },
+        "type": "object",
+        "required": [
+          "needs_review"
+        ],
+        "title": "ContactReviewInput"
       },
       "DatabaseConnectStatus": {
         "properties": {

@@ -33,6 +33,7 @@ from app.response_contracts import ImportBatchOut, SupplierImportConfirmation
 from app.schemas import SupplierTradeMappingIn
 from app.security import admin_user, audit
 from app.serializers import record
+from app.modules.organizations.contact_import import import_contact_row
 
 router=APIRouter(prefix='/imports',tags=['Supplier & Material Imports'])
 from app.modules.imports.materials import router as material_imports
@@ -241,14 +242,10 @@ def _apply_supplier_rows(db:Session,user:User,batch:ImportBatch,rows:Sequence[Im
     company_by_name={company.name_normalized:company for company in companies}
     org_ids=[company.id for company in companies]
     trade_keys:dict[str,set[tuple[str,...]]]={}
-    contact_keys:dict[str,set[tuple[str,str]]]={}
     if org_ids:
         for trade in db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id.in_(org_ids))).all():
             trade_keys.setdefault(trade.org_id,set()).add(tuple(supplier_norm(v) for v in
                 (trade.raw_trade,trade.raw_brands,trade.raw_type,trade.raw_location)))
-        for contact in db.scalars(select(Contact).where(Contact.org_id.in_(org_ids))).all():
-            key=('email',supplier_norm(contact.email)) if contact.email else ('phone',re.sub(r'[^0-9]','',contact.phone or '')) if contact.phone else ('name',supplier_norm(contact.name)) if contact.name else None
-            if key:contact_keys.setdefault(contact.org_id,set()).add(key)
     created=unchanged=errors=0
     for item in rows:
         if item.status!='valid':
@@ -277,15 +274,9 @@ def _apply_supplier_rows(db:Session,user:User,batch:ImportBatch,rows:Sequence[Im
             trade=db.scalar(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==company.id,
                 ImportedSupplierTrade.raw_trade==field(row,'trade'),ImportedSupplierTrade.raw_brands==field(row,'brands'),
                 ImportedSupplierTrade.raw_type==field(row,'type'),ImportedSupplierTrade.raw_location==field(row,'city')).limit(1))
-        contact_key=supplier_contact_key(row)
-        if contact_key:
-            known_contacts=contact_keys.setdefault(company.id,set())
-            if contact_key not in known_contacts:
-                db.add(Contact(org_id=company.id,name=field(row,'contact_name') or None,
-                        phone=(field(row,'phone') or None) if row.get('_phone_valid') is not False else None,
-                        email=(field(row,'email') or None) if row.get('_email_valid') is not False else None,
-                        permission_to_notify=False))
-                known_contacts.add(contact_key);made_any=True
+        contacts_created, _ = import_contact_row(db,company.id,field(row,'contact_name'),field(row,'email'),
+            field(row,'phone'),'SA',f'{batch.id}:{item.row_number}')
+        made_any=made_any or contacts_created>0
         if not made_any:unchanged+=1
         if company.source=='imported':
             ensure_import_verification(db,company,user)
@@ -481,7 +472,6 @@ def upload(kind:str,file:UploadFile=File(...),dry_run:bool=True,column_mapping:s
     if not dry_run or staged_supplier_preview:db.add(batch);db.flush()
     supplier_by_name:dict[str,Organization]={}
     trade_keys_by_org:dict[str,set[tuple[str,...]]]={}
-    contact_keys_by_org:dict[str,set[tuple[str,str]]]={}
     if kind=='suppliers':
         supplier_names={supplier_norm(field(row,'supplier_name')) for row in rows if field(row,'supplier_name')}
         if supplier_names:
@@ -491,9 +481,6 @@ def upload(kind:str,file:UploadFile=File(...),dry_run:bool=True,column_mapping:s
             if org_ids:
                 for trade in db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id.in_(org_ids))).all():
                     trade_keys_by_org.setdefault(trade.org_id,set()).add(tuple(supplier_norm(v) for v in (trade.raw_trade,trade.raw_brands,trade.raw_type,trade.raw_location)))
-                for contact in db.scalars(select(Contact).where(Contact.org_id.in_(org_ids))).all():
-                    key=('email',supplier_norm(contact.email)) if contact.email else ('phone',re.sub(r'[^0-9]','',contact.phone or '')) if contact.phone else ('name',supplier_norm(contact.name)) if contact.name else None
-                    if key: contact_keys_by_org.setdefault(contact.org_id,set()).add(key)
     for index,row in enumerate(rows,2):
         name=field(row,'supplier_name') if kind=='suppliers' else field(row,'material_name')
         code=field(row,'material_code') if kind=='materials' else ''
@@ -535,12 +522,8 @@ def upload(kind:str,file:UploadFile=File(...),dry_run:bool=True,column_mapping:s
                 if trade_key not in org_trade_keys:
                     db.add(ImportedSupplierTrade(org_id=company.id,import_batch_id=batch.id,raw_trade=field(row,'trade'),raw_brands=field(row,'brands'),raw_type=field(row,'type'),raw_location=field(row,'city')))
                     org_trade_keys.add(trade_key);made_any=True
-                contact_key=supplier_contact_key(row)
-                if contact_key:
-                    org_contact_keys=contact_keys_by_org.setdefault(company.id,set())
-                    if contact_key not in org_contact_keys:
-                        db.add(Contact(org_id=company.id,name=field(row,'contact_name') or None,phone=field(row,'phone') or None,email=field(row,'email') or None,permission_to_notify=False))
-                        org_contact_keys.add(contact_key);made_any=True
+                contacts_created,_=import_contact_row(db,company.id,field(row,'contact_name'),field(row,'email'),field(row,'phone'),'SA',f'{batch.id}:{index}')
+                made_any=made_any or contacts_created>0
                 if not made_any: unchanged+=1
             else:
                 cat=db.scalar(select(Category).where(Category.code==field(row,'category_code').upper()))

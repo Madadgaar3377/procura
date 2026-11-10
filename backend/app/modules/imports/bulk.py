@@ -10,20 +10,22 @@ from math import ceil
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook, load_workbook
+from openpyxl.worksheet.datavalidation import DataValidation
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import catalog_cache
 from app.database import SessionLocal, get_db
-from app.models import Capability, Category, Contact, ImportBatch, ImportedRow, ImportedSupplierTrade, Material, Organization, User
+from app.models import Capability, Category, Contact, ContactCapability, ContactChannel, ImportBatch, ImportedRow, ImportedSupplierTrade, Material, Organization, User
 from app.modules.materials.service import create_material_record, normalize_text, normalize_unit, resolve_category
 from app.modules.imports.supplier_mapping import apply_supplier_trade_mapping, ensure_import_verification, ensure_trade_record, extract_website
+from app.modules.organizations.contact_import import import_contact_row, parse_phones
 from app.security import admin_user, audit
 
 router = APIRouter(prefix="/bulk", tags=["Bulk Materials and Suppliers"])
 MATERIAL_HEADERS = ["Discipline", "Main Category", "Subcategory", "Description", "Unit"]
-SUPPLIER_HEADERS = ["Company Name", "Contact Person", "Email", "Phone", "Country", "City", "Address", "Main Category", "Subcategory", "Material Description", "Unit", "Discipline", "Trade", "Type", "Website", "Brands", "CR Number", "VAT Number", "Company Description"]
+SUPPLIER_HEADERS = ["Company Name","Country","City","Address","Website","CR Number","VAT Number","Company Description","Contact Person","Contact Designation","Contact Email","Contact Phone","Category","Material","Is Primary Contact"]
 DISCIPLINES = {"civil": "Civil", "electrical": "Electrical", "mechanical": "Mechanical"}
 BATCH_SIZE = 35
 
@@ -59,10 +61,13 @@ def _read(content: bytes, filename: str, headers: list[str]):
         aliases={
             "company name":{"company name","supplier name","suppliers name","supplier company","supplier company name","legal company name","company","supplier"},
             "contact person":{"contact person","contact name","contact person name","representative","sales contact"},
+            "contact designation":{"contact designation","designation","job title","contact title","role"},
             "email":{"email","email address","e-mail","contact email"},
-            "phone":{"phone","mobile","mobile phone","mobile phone number","telephone","telephone number","phone number","contact number","tel"},
+            "phone":{"phone","mobile","mobile phone","mobile phone number","telephone","telephone number","phone number","contact number","tel","contact phone"},
             "country":{"country"},"city":{"city","location","supplier location"},"address":{"address","business address"},
-            "main category":{"main category","category","discipline category"},"subcategory":{"subcategory","sub category","sub-category"},
+            "category":{"category","supplier category","assigned category"},"material":{"material","specific material","assigned material"},
+            "is primary contact":{"is primary contact","primary contact","primary"},
+            "main category":{"main category","discipline category"},"subcategory":{"subcategory","sub category","sub-category"},
             "material description":{"material description","product description","description","products","materials","product"},
             "unit":{"unit","uom","unit of measure"},"discipline":{"discipline"},
             "trade":{"trade","trade products","trade / products","trade/products","products and services","trade / services","services"},
@@ -92,10 +97,15 @@ def _read(content: bytes, filename: str, headers: list[str]):
                 if not any(canonical_row.values()): continue
                 name=canonical_row.get("company name","")
                 if name: previous_name=name
-                elif previous_name and any(canonical_row.get(key) for key in ("trade","type","contact person","phone","email","website","city","brands","main category","subcategory")):
+                elif previous_name and any(canonical_row.get(key) for key in ("trade","type","contact person","phone","email","website","city","brands","main category","subcategory","category")):
                     canonical_row["company name"]=previous_name
                 else: continue
-                display_keys={key.casefold():key for key in SUPPLIER_HEADERS}
+                display_keys={"company name":"Company Name","contact person":"Contact Person","contact designation":"Contact Designation",
+                    "email":"Contact Email","phone":"Contact Phone","country":"Country","city":"City","address":"Address",
+                    "website":"Website","cr number":"CR Number","vat number":"VAT Number","company description":"Company Description",
+                    "category":"Category","material":"Material","is primary contact":"Is Primary Contact",
+                    "main category":"Main Category","subcategory":"Subcategory","material description":"Material Description",
+                    "unit":"Unit","discipline":"Discipline","trade":"Trade","type":"Type","brands":"Brands"}
                 row={display_keys[key]:value for key,value in canonical_row.items() if key in display_keys}
                 row["_source_sheet"]=sheet_name;row["_source_row"]=physical_row;row["_raw_excel"]=raw_excel
                 parsed.append((physical_row,row))
@@ -131,7 +141,80 @@ def material_template(user: User = Depends(admin_user)):
 
 @router.get("/suppliers/template")
 def supplier_template(user: User = Depends(admin_user)):
-    return _template(SUPPLIER_HEADERS, [["ABC Trading", "Ahmed", "info@example.com", "+966500000000", "Saudi Arabia", "Riyadh", "Riyadh", "Electrical", "Tools", "PVC Pipe Bender 32mm", "PCS"]], "suppliers-template")
+    book=Workbook();sheet=book.active;sheet.title='Supplier Import';sheet.append(SUPPLIER_HEADERS)
+    examples=[
+        ['Sydney Fine','Saudi Arabia','Jeddah','','','', '', '', 'Heal','Sales','heal@example.com','+966111111111','Lighting','Lighting Fixture','Yes'],
+        ['Sydney Fine','Saudi Arabia','Jeddah','','','', '', '', 'Abby Adeeb Arshad','Sales','abby@example.com','+966222222222','Fixer','Fixer','No'],
+        ['Sydney Fine','Saudi Arabia','Jeddah','','','', '', '', 'Another Contact','Sales','contact@example.com','+966333333333','Generator','Generator','No'],
+        ['ABC Trading','Saudi Arabia','Riyadh','','','', '', '', 'Ali','Sales','ali@example.com','+966444444444','Electrical','Cables','Yes'],
+        ['ABC Trading','Saudi Arabia','Riyadh','','','', '', '', 'Ahmed','Sales','ahmed@example.com','+966555555555','Mechanical','Pumps','No'],
+    ]
+    for row in examples:sheet.append(row)
+    sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
+    for column in sheet.columns:
+        letter=column[0].column_letter;sheet.column_dimensions[letter].width=min(38,max(15,max(len(str(cell.value or '')) for cell in column)+2))
+    yes_no=DataValidation(type='list',formula1='"Yes,No"',allow_blank=True);sheet.add_data_validation(yes_no);yes_no.add('O2:O5000')
+    instructions=book.create_sheet('Instructions')
+    instructions.append(['Supplier Excel Import Instructions'])
+    for text in [
+        'Enter company information and the responsible contact/category on each row.',
+        'For multiple contacts, add multiple rows and repeat the same company name.',
+        "Enter each person's own email and phone number; blank contact details are allowed.",
+        'Select or type the category that the contact handles. Use the category as it appears in the admin Material Master.',
+        'Do not create separate supplier companies for different contacts.',
+        'Do not enter fake or placeholder contact details.',
+        'Missing phone or email can remain blank.',
+        'Do not modify the Supplier Import column headers.',
+        'Material is optional. The importer links it only when it matches the category and Material Master.',
+        'Example: Sydney Fine has Heal (Lighting), Abby Adeeb Arshad (Fixer), and Another Contact (Generator).',
+        'Example: ABC Trading has Ali (Electrical / Cables) and Ahmed (Mechanical / Pumps).',
+    ]:instructions.append([text])
+    instructions.column_dimensions['A'].width=115
+    out=BytesIO();book.save(out);out.seek(0)
+    return StreamingResponse(out,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':'attachment; filename="suppliers-template.xlsx"'})
+
+
+@router.get('/suppliers/export')
+def export_suppliers(user:User=Depends(admin_user),db:Session=Depends(get_db)):
+    statement=select(Organization,Contact,Capability,Category).outerjoin(Contact, (Contact.org_id==Organization.id)&Contact.merged_into_contact_id.is_(None)&Contact.deleted_at.is_(None)).outerjoin(
+        ContactCapability,ContactCapability.contact_id==Contact.id).outerjoin(Capability,Capability.id==ContactCapability.capability_id).outerjoin(Category,Category.id==Capability.category_id).where(
+            Organization.is_supplier.is_(True),Organization.is_active.is_(True)).order_by(Organization.name,Contact.name,Category.name_en)
+    rows=db.execute(statement).all()
+    assigned=select(ContactCapability.capability_id).where(ContactCapability.capability_id==Capability.id).exists()
+    rows.extend(db.execute(select(Organization,Capability,Category).join(Capability,Capability.org_id==Organization.id).join(Category,Category.id==Capability.category_id).where(
+        Organization.is_supplier.is_(True),Organization.is_active.is_(True),~assigned)).all())
+    rows=[tuple(row) if len(row)==4 else (row[0],None,row[1],row[2]) for row in rows]
+    capability_map={cap.id:cap for _,_,cap,_ in rows if cap}
+    material_ids=[material_id for cap in capability_map.values() for material_id in (cap.material_ids or [])]
+    materials={}
+    unique_ids=list(dict.fromkeys(material_ids))
+    for offset in range(0,len(unique_ids),500):
+        for material in db.scalars(select(Material).where(Material.id.in_(unique_ids[offset:offset+500]))).all():materials[material.id]=material.name_en
+    channel_contact_ids={contact.id for _,contact,_,_ in rows if contact}
+    channel_values={contact_id:{'email':[],'phone':[]} for contact_id in channel_contact_ids}
+    if channel_contact_ids:
+        for channel in db.scalars(select(ContactChannel).where(ContactChannel.contact_id.in_(channel_contact_ids),ContactChannel.kind.in_(['email','phone']))).all():
+            channel_values[channel.contact_id][channel.kind].append(channel.value)
+    book=Workbook();sheet=book.active;sheet.title='Suppliers Export';sheet.append(SUPPLIER_HEADERS)
+    category_ids={category.id for _,_,_,category in rows if category}
+    categories={category.id:category for category in db.scalars(select(Category).where(Category.id.in_(category_ids))).all()} if category_ids else {}
+    parent_ids={category.parent_id for category in categories.values() if category.parent_id}
+    parents={category.id:category for category in db.scalars(select(Category).where(Category.id.in_(parent_ids))).all()} if parent_ids else {}
+    for org,contact,cap,category in rows:
+        values=channel_values.get(contact.id,{}) if contact else {}
+        emails=values.get('email') or ([contact.email] if contact and contact.email else [])
+        phones=values.get('phone') or ([contact.phone] if contact and contact.phone else [])
+        parent=parents.get(category.parent_id) if category and category.parent_id else None
+        category_name=f'{parent.name_en} / {category.name_en}' if parent else category.name_en if category else ''
+        sheet.append([org.name,org.country or '',org.city or '',org.address or '',org.website or '',org.cr_number or '',org.vat_number or '',org.description or '',
+            contact.name or '' if contact else '',contact.role or '' if contact else '','; '.join(dict.fromkeys(emails)),'; '.join(dict.fromkeys(phones)),category_name,
+            '; '.join(materials[mid] for mid in cap.material_ids if mid in materials) if cap else '',
+            'Yes' if contact and contact.is_primary else 'No' if contact else ''])
+    sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
+    out=BytesIO();book.save(out);out.seek(0)
+    return StreamingResponse(out,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':'attachment; filename="suppliers-export.xlsx"'})
 
 
 def _record_issue(db, batch, number, raw, reason):
@@ -178,8 +261,13 @@ def _material_row(db, row, number, batch, user, category_cache, unit_cache, cand
 
 
 def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen):
-    name, contact_name, raw_email, raw_phone, country, city, address, main_name, sub_name, desc, unit = (
-        row.get(key, "") for key in SUPPLIER_HEADERS[:11])
+    name=_clean(row.get("Company Name"));contact_name=_clean(row.get("Contact Person"))
+    raw_email=row.get("Contact Email") or row.get("Email","");raw_phone=row.get("Contact Phone") or row.get("Phone","")
+    country=_clean(row.get("Country"));city=_clean(row.get("City"));address=_clean(row.get("Address"))
+    main_name=_clean(row.get("Main Category"));sub_name=_clean(row.get("Subcategory"))
+    desc=_clean(row.get("Material") or row.get("Material Description"));unit=_clean(row.get("Unit"))
+    contact_designation=_clean(row.get("Contact Designation"))
+    contact_category=_clean(row.get("Category"))
     website = _clean(row.get("Website"))
     _, normalized_website = extract_website(website)
     website = normalized_website or website
@@ -205,6 +293,8 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     phone_values = _supplier_phones(raw_phone)
     valid_email = next((email for email in email_values if email["valid"]), None)
     valid_phone = next((phone for phone in phone_values if phone["normalized"] and not phone["fax"]), None)
+    emails=[item for item in email_values if item['valid']]
+    phones=[item for item in phone_values if item['normalized'] and not item['fax']]
     if not name and not valid_email and not valid_phone:
         return None, False, [], ["Company Name or a valid email/phone identifier is required"]
     reliable_key = name_key or ("email:" + valid_email["value"].casefold() if valid_email else "phone:" + valid_phone["normalized"])
@@ -253,51 +343,17 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     if name_key: org_cache[name_key] = org
     org_cache[reliable_key] = org
 
-    emails = [item for item in email_values if item["valid"]]
-    phones = [item for item in phone_values if item["normalized"] and not item["fax"]]
-    faxes = [item for item in phone_values if item["fax"]]
-    primary_phone = phones[0] if len(phones) == 1 else None
-    contact_specs = []
-    if emails:
-        contact_specs.extend((email["value"], primary_phone, "", False) for email in emails)
-    if phones and not (len(phones) == 1 and emails):
-        contact_specs.extend(("", phone, "", False) for phone in phones)
-    if faxes:
-        contact_specs.extend(("", None, fax["value"], False) for fax in faxes)
-    contact_specs.extend(("", None, "", True) for item in email_values if not item["valid"])
-    if raw_email and not email_values: contact_specs.append(("", None, "", True))
-    if any(not item["normalized"] and not item["fax"] for item in phone_values):
-        contact_specs.append(("", None, "", True))
-    if not contact_specs and contact_name: contact_specs.append(("", None, "", False))
-    contacts_added = 0
-    for email_value, phone_value, fax_value, needs_review in contact_specs:
-        email_key = email_value.casefold() if email_value else ""
-        phone_key = phone_value["normalized"] if phone_value else ""
-        try:
-            with db.begin_nested():
-                duplicate_query = select(Contact.id).where(Contact.org_id == org.id)
-                if email_key:
-                    duplicate_query = duplicate_query.where(func.lower(func.trim(Contact.email)) == email_key)
-                    duplicate_query = duplicate_query.where(Contact.phone_normalized == phone_key if phone_key else Contact.phone_normalized.is_(None))
-                    duplicate_query = duplicate_query.where(Contact.name == (contact_name or None))
-                elif phone_key:
-                    duplicate_query = duplicate_query.where(Contact.phone_normalized == phone_key)
-                    duplicate_query = duplicate_query.where(Contact.name == (contact_name or None))
-                elif fax_value:
-                    duplicate_query = duplicate_query.where(Contact.fax == fax_value[:80])
-                else:
-                    duplicate_query = duplicate_query.where(Contact.raw_email == (raw_email or None), Contact.raw_phone == (raw_phone or None),
-                        Contact.name == (contact_name or None), Contact.needs_review.is_(needs_review))
-                if db.scalar(duplicate_query): continue
-                db.add(Contact(org_id=org.id, name=contact_name[:150] or None,
-                    email=email_value[:220] or None, phone=phone_value["original"][:80] if phone_value else None,
-                    phone_normalized=phone_key or None, fax=fax_value[:80] or None,
-                    raw_phone=raw_phone[:300] or None, raw_email=raw_email[:500] or None,
-                    needs_review=needs_review, permission_to_notify=False))
-                db.flush()
-            contacts_added += 1
-        except Exception:
-            contact_warnings.append("A contact entry needs database review")
+    source_row = row.get("_source_row", number)
+    contacts_added, contacts_need_review, contact_ids, contacts_updated = import_contact_row(db, org.id, contact_name, raw_email, raw_phone,
+        country or "SA", f"{batch.id}:{source_row}", return_ids=True)
+    for contact_id in contact_ids:
+        imported_contact=db.get(Contact,contact_id)
+        if imported_contact and contact_designation and not imported_contact.role:imported_contact.role=contact_designation[:100]
+        if imported_contact and _clean(row.get("Is Primary Contact")).casefold() in {"yes","y","true","1"}:
+            db.query(Contact).filter(Contact.org_id==org.id,Contact.id!=imported_contact.id).update({Contact.is_primary:False},synchronize_session=False)
+            imported_contact.is_primary=True
+    if contacts_need_review:
+        contact_warnings.append(f"Contact data needs review (Excel row {source_row})")
     db.flush()
     # Imported and admin-created supplier records are verified by this authenticated admin operation.
     if org.source == "imported":
@@ -310,7 +366,8 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     if not org.description and row.get("Company Description"): org.description=_clean(row.get("Company Description"))[:5000]
     raw_type = raw_type or " / ".join(part for part in (main_name,sub_name) if part)
     mapping = {"path":path,"raw_trade":trade_keyword,"source_raw_trade":source_raw_trade,"raw_type":raw_type,"raw_brands":_clean(row.get("Brands")),
-        "city":city,"description":desc,"unit":unit} if raw_trade or raw_type or row.get("Brands") else None
+        "city":city,"description":desc,"unit":unit,"contact_category":contact_category,"contact_material":desc,"contact_ids":contact_ids,
+        "contacts_updated":contacts_updated} if raw_trade or raw_type or row.get("Brands") or contact_category else None
     missing_profile = [label for label,value in (("City",org.city),("Address",org.address),("CR Number",org.cr_number),
         ("Contact Person",org.contact_name)) if not value]
     org.profile_status="complete" if not missing_profile and (org.business_email or org.business_phone or emails or phones) else "incomplete"
@@ -332,6 +389,54 @@ def _process_supplier_capability(db,org,mapping,batch,user,row,number):
         unit=mapping["unit"],actor=user,batch_id=batch.id,row_number=row.get("_source_row",number),auto_confirm=True)
 
 
+def _link_contact_capability(db,org_id,contact_ids,capability_id):
+    created=0
+    for contact_id in dict.fromkeys(contact_ids or []):
+        contact=db.scalar(select(Contact).where(Contact.id==contact_id,Contact.org_id==org_id,
+            Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None)))
+        if not contact:continue
+        existing=db.scalar(select(ContactCapability.id).where(ContactCapability.contact_id==contact.id,
+            ContactCapability.capability_id==capability_id))
+        if not existing:
+            db.add(ContactCapability(contact_id=contact.id,capability_id=capability_id,is_primary=contact.is_primary));created+=1
+    return created
+
+
+def _supplier_contact_category_capability(db,org,mapping):
+    raw_category=_clean(mapping.get('contact_category'))
+    parts=[part.strip() for part in raw_category.split('/') if part.strip()]
+    category=None
+    if len(parts)>=2:
+        main,sub=_find_supplier_category_path(db,parts[-2],parts[-1],{})
+        category=sub
+    else:
+        key=_category_key(raw_category)
+        matches=db.scalars(select(Category).where(Category.active.is_(True),or_(
+            func.lower(func.trim(Category.name_en))==key,func.lower(func.trim(Category.normalized_name))==key))).all()
+        category=matches[0] if len(matches)==1 else None
+    if not category:
+        return {'status':'pending','reason':f'Category mapping needs review: {raw_category}','capability_created':False,'capability_id':None}
+    city=_clean(mapping.get('city'))
+    capability=db.scalar(select(Capability).where(Capability.org_id==org.id,Capability.category_id==category.id,
+        func.lower(func.trim(Capability.city))==city.casefold()).with_for_update())
+    created=capability is None
+    if created:
+        capability=Capability(org_id=org.id,category_id=category.id,city=city,material_ids=[],trade_keywords='',
+            confirmed=True,accepts_rfqs=True,eligibility_status='enabled',mapping_source='admin_import')
+        db.add(capability);db.flush()
+    material_name=_clean(mapping.get('contact_material'))
+    warning=None
+    if material_name:
+        normalized=normalize_text(material_name)
+        material=db.scalar(select(Material).where(Material.active.is_(True),Material.normalized_description==normalized,
+            or_(Material.category_id==category.id,Material.main_category_id==category.id,Material.subcategory_id==category.id)).limit(1))
+        if material:
+            if material.id not in (capability.material_ids or []):capability.material_ids=[*(capability.material_ids or []),material.id]
+        else:warning=f'Material was not matched to the selected category: {material_name}'
+    return {'status':'saved','reason':None,'capability_id':capability.id,'capability_created':created,
+        'material_warning':warning,'categories_created':0,'materials_created':0}
+
+
 def _supplier_emails(raw_value):
     values = []
     for part in re.split(r"[/,;]+", _clean(raw_value)):
@@ -344,22 +449,10 @@ def _supplier_emails(raw_value):
 def _supplier_phones(raw_value):
     raw = _clean(raw_value)
     if not raw: return []
-    parts = [part.strip() for part in re.split(r"[,;/|\n]+|(?<=\d)\s+(?=(?:T|TEL|PHONE|MOBILE|P|F|FAX)\s*:)", raw, flags=re.I) if part.strip()]
-    values = []
-    for part in parts:
-        fax = bool(re.match(r"^(?:F|FAX)\s*:\s*", part, re.I))
-        stripped = re.sub(r"^(?:T|TEL|PHONE|MOBILE|P|F|FAX)\s*:\s*", "", part, flags=re.I).strip()
-        stripped = re.sub(r"^tel\s*:\s*", "", stripped, flags=re.I).strip()
-        candidate = stripped
-        country = re.match(r"^[\[(]\s*(\+?\d{1,3})\s*[\])]\s*", candidate)
-        if country:
-            candidate = "+" + country.group(1).lstrip("+") + candidate[country.end():]
-        digits = "".join(str(unicodedata.digit(char)) for char in candidate if char.isdigit())
-        explicit_plus = candidate.lstrip().startswith("+") or candidate.lstrip().startswith("00")
-        if digits.startswith("00") and explicit_plus:
-            digits = digits[2:]
-        normalized = ("+" if explicit_plus else "") + digits if 8 <= len(digits) <= 15 and (not explicit_plus or not digits.startswith("0")) else ""
-        values.append({"original": stripped, "value": stripped, "normalized": normalized, "fax": fax})
+    parsed, needs_review = parse_phones(raw, 'SA')
+    values=[{"original":item["value"],"value":item["value"],"normalized":item["normalized"],"fax":item["kind"]=="fax"} for item in parsed]
+    if needs_review:
+        values.append({"original":raw,"value":raw,"normalized":"","fax":bool(re.search(r"(?:^|\s)(?:F|FAX)\s*:",raw,re.I))})
     return values
 
 
@@ -428,16 +521,16 @@ def _supplier_capability(db, org, row, batch, number, cap_cache, category_cache,
 def _supplier_identity_key(row):
     name = " ".join(unicodedata.normalize("NFKC", _clean(row.get("Company Name"))).casefold().split())
     if name: return "name:" + name
-    emails = [item["value"].casefold() for item in _supplier_emails(row.get("Email")) if item["valid"]]
+    emails = [item["value"].casefold() for item in _supplier_emails(row.get("Contact Email") or row.get("Email")) if item["valid"]]
     if emails: return "email:" + emails[0]
-    phones = [item["normalized"] for item in _supplier_phones(row.get("Phone")) if item["normalized"] and not item["fax"]]
+    phones = [item["normalized"] for item in _supplier_phones(row.get("Contact Phone") or row.get("Phone")) if item["normalized"] and not item["fax"]]
     return "phone:" + phones[0] if phones else "unidentified"
 
 
 def _stream_import(kind, rows, filename, user_id):
     chunks = _chunks(rows); batch_count = len(chunks); db = SessionLocal()
     issues = []; warnings = []; incomplete_rows = []; imported = skipped = incomplete = completed_rows = 0
-    capability_saved = capability_skipped = contacts_created = categories_created = materials_created = 0; category_cache = {}; unit_cache = {}; seen = set()
+    capability_saved = capability_skipped = contacts_created = categories_created = materials_created = contact_assignments_created = contacts_updated = duplicate_rows_skipped = 0; category_cache = {}; unit_cache = {}; seen = set()
     pending_category_mappings = 0
     org_cache = {}; cap_cache = {}; material_cache = {}
     new_supplier_ids = set(); reused_supplier_ids = set(); incomplete_supplier_ids = set(); failed_supplier_keys = set()
@@ -472,6 +565,7 @@ def _stream_import(kind, rows, filename, user_id):
                 for number, row in chunk:
                     identity_key = _supplier_identity_key(row)
                     raw_warnings = []
+                    row_assignments_created=0
                     try:
                         # Commit organization and contacts before attempting this row's capability.
                         with db.begin_nested():
@@ -490,6 +584,8 @@ def _stream_import(kind, rows, filename, user_id):
                         continue
 
                     contacts_created += contact_count
+                    row_contacts_updated=mapping.get('contacts_updated',0) if mapping else 0
+                    contacts_updated += row_contacts_updated
                     if created: new_supplier_ids.add(org.id)
                     elif org.id not in new_supplier_ids: reused_supplier_ids.add(org.id)
                     if missing or contact_warnings: incomplete_supplier_ids.add(org.id)
@@ -502,13 +598,22 @@ def _stream_import(kind, rows, filename, user_id):
                     if mapping:
                         try:
                             with db.begin_nested():
-                                mapping_result=_process_supplier_capability(db,org,mapping,batch,db.get(User,user_id),row,number)
+                                if mapping.get('contact_category'):
+                                    mapping_result=_supplier_contact_category_capability(db,org,mapping)
+                                    if mapping_result.get('status')=='pending':
+                                        ensure_trade_record(db,org,batch,raw_trade=mapping.get('source_raw_trade') or mapping['contact_category'],
+                                            raw_type=mapping['contact_category'],raw_brands='',raw_location=mapping.get('city',''))
+                                else:
+                                    mapping_result=_process_supplier_capability(db,org,mapping,batch,db.get(User,user_id),row,number)
+                                if mapping_result and mapping_result.get('status')=='saved' and mapping_result.get('capability_id'):
+                                    row_assignments_created=_link_contact_capability(db,org.id,mapping.get('contact_ids'),mapping_result['capability_id'])
                                 db.flush()
                             db.commit()
                         except Exception as exc:
                             db.rollback()
                             mapping_result={"status":"pending","reason":f"Category mapping needs review ({type(exc).__name__})",
                                 "categories_created":0,"materials_created":0,"capability_created":False}
+                    contact_assignments_created+=row_assignments_created
                     if mapping_result:
                         if mapping_result.get("status") == "saved":
                             capability_saved += int(mapping_result.get("capability_created", False))
@@ -522,9 +627,11 @@ def _stream_import(kind, rows, filename, user_id):
                             capability_skipped += 1
                             pending_category_mappings += 1
                             raw_warnings.append(mapping_result.get("reason") or "Category mapping needs review")
-                    elif row.get("Material Description") or row.get("Main Category") or row.get("Subcategory"):
+                    if not mapping and (row.get("Material Description") or row.get("Main Category") or row.get("Subcategory") or row.get("Category")):
                         capability_skipped += 1
                         raw_warnings.append("Capability source did not contain a reliable category path")
+                    if not created and contact_count==0 and row_contacts_updated==0 and not (mapping_result and (mapping_result.get('capability_created') or mapping_result.get('materials_created'))) and not row_assignments_created:
+                        duplicate_rows_skipped+=1
                     row_status = "incomplete" if (missing or contact_warnings) else ("created" if created else "existing")
                     issue_text = "; ".join(dict.fromkeys(raw_warnings))
                     if issue_text:
@@ -550,7 +657,7 @@ def _stream_import(kind, rows, filename, user_id):
                 "imported":imported, "skipped":skipped, "incomplete":len(incomplete_supplier_ids),
                 "failed":len(failed_supplier_keys) if kind == "suppliers" else len(issues),
                 "new_suppliers_saved":len(new_supplier_ids), "existing_suppliers_reused":len(reused_supplier_ids),
-                "contacts_created":contacts_created, "capabilities_saved":capability_saved, "capabilities_skipped":capability_skipped,
+                "contacts_created":contacts_created,"contacts_updated":contacts_updated,"category_assignments_created":contact_assignments_created,"duplicate_rows_skipped":duplicate_rows_skipped, "capabilities_saved":capability_saved, "capabilities_skipped":capability_skipped,
                 "categories_created":categories_created,"materials_created":materials_created,"pending_category_mappings":pending_category_mappings,
                 "progress_percent":round(index / batch_count * 100, 2) if batch_count else 100,
                 "issues":issues[-50:], "warnings":warnings[-50:], "incomplete_rows":incomplete_rows[-50:]}) + "\n"
@@ -564,7 +671,7 @@ def _stream_import(kind, rows, filename, user_id):
             "completed_batches":batch_count, "batches_total":batch_count,
             "total_supplier_records_identified":supplier_total, "new_suppliers_saved":len(new_supplier_ids),
             "existing_suppliers_reused":len(reused_supplier_ids), "suppliers_incomplete":len(incomplete_supplier_ids),
-            "contacts_created":contacts_created, "capabilities_saved":capability_saved, "capabilities_skipped":capability_skipped,
+            "contacts_created":contacts_created,"contacts_updated":contacts_updated,"category_assignments_created":contact_assignments_created,"duplicate_rows_skipped":duplicate_rows_skipped, "capabilities_saved":capability_saved, "capabilities_skipped":capability_skipped,
             "categories_created":categories_created,"materials_created":materials_created,"pending_category_mappings":pending_category_mappings,
             "supplier_failures":len(failed_supplier_keys), "imported":imported, "skipped":skipped,
             "incomplete":len(incomplete_supplier_ids), "failed":len(failed_supplier_keys) if kind == "suppliers" else len(issues),

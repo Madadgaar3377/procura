@@ -118,6 +118,16 @@ class MatchSummary(MatchOut):
     supplier_name: str
     covered_items: list[str]
     coverage: str
+    verification_status: str | None = None
+    description: str | None = None
+    website: str | None = None
+    business_email: str | None = None
+    business_phone: str | None = None
+    service_locations: list[str] = Field(default_factory=list)
+    matched_categories: list[str] = Field(default_factory=list)
+    invitation_status: str | None = None
+    quotation_status: str | None = None
+    profile_url: str | None = None
 
 class InvitationSummary(InvitationOut):
     rfq_reference: str
@@ -199,11 +209,14 @@ class Comparison(ResponseModel):
 class MatchResults(ResponseModel):
     matches: list[MatchSummary]
     invitations: list[BuyerInvitation]
-    progress: Literal['draft', 'matching_queued', 'matching_in_progress', 'matching_failed', 'invitations_available', 'no_eligible_suppliers', 'closed']
+    progress: Literal['draft', 'published', 'matching_queued', 'matching_in_progress', 'matching_completed', 'matching_failed', 'invitations_available', 'no_eligible_suppliers', 'closed']
     pending_invitation_ids: list[str]
     matched_suppliers: int = 0
     invited_suppliers: int = 0
     pending_suppliers: int = 0
+    suppliers_evaluated: int = 0
+    quotations_received: int = 0
+    explanation: str | None = None
     deliveries: dict[str, int] = Field(default_factory=dict)
     reminder_available_at: str | None = None
     limit: int = 25

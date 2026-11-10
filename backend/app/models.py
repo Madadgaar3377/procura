@@ -156,6 +156,52 @@ class Contact(TimeID, Base):
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False, server_default='false')
     permission_to_notify: Mapped[bool] = mapped_column(Boolean, default=False)
     role: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
+    merged_into_contact_id: Mapped[str | None] = mapped_column(ForeignKey('organization_contacts.id'), nullable=True, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+
+class ContactChannel(TimeID, Base):
+    """A normalized email, phone, or fax attached to one organization contact."""
+    __tablename__ = 'organization_contact_channels'
+    __table_args__ = (
+        UniqueConstraint('contact_id', 'kind', 'normalized_value', name='uq_contact_channel_identity'),
+        Index('ix_contact_channel_org_kind_normalized', 'org_id', 'kind', 'normalized_value'),
+    )
+    contact_id: Mapped[str] = mapped_column(ForeignKey('organization_contacts.id', ondelete='CASCADE'), index=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'), index=True)
+    kind: Mapped[str] = mapped_column(String(12))
+    value: Mapped[str] = mapped_column(String(300))
+    normalized_value: Mapped[str] = mapped_column(String(220))
+    label: Mapped[str] = mapped_column(String(20), default='other', server_default='other')
+    extension: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
+    needs_review: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
+    source_value: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    source_reference: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+
+class ContactImportSource(TimeID, Base):
+    __tablename__ = 'organization_contact_import_sources'
+    __table_args__ = (UniqueConstraint('contact_id', 'source_reference', name='uq_contact_import_source'),)
+    contact_id: Mapped[str] = mapped_column(ForeignKey('organization_contacts.id', ondelete='CASCADE'), index=True)
+    org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'), index=True)
+    source_reference: Mapped[str] = mapped_column(String(120))
+    raw_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    raw_email: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    raw_phone: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+
+
+class ContactCapability(TimeID, Base):
+    __tablename__ = 'supplier_contact_capabilities'
+    __table_args__ = (
+        UniqueConstraint('contact_id','capability_id',name='uq_supplier_contact_capability'),
+        Index('ix_supplier_contact_capabilities_capability_contact','capability_id','contact_id'),
+    )
+    contact_id: Mapped[str] = mapped_column(ForeignKey('organization_contacts.id',ondelete='CASCADE'),index=True)
+    capability_id: Mapped[str] = mapped_column(ForeignKey('supplier_capabilities.id',ondelete='CASCADE'),index=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean,default=False,server_default=text('false'))
 
 class ContactInquiry(TimeID, Base):
     __tablename__='contact_inquiries'

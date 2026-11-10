@@ -213,7 +213,7 @@ def test_supplier_contact_rows_group_company_and_keep_fax_invalid_contact_and_pe
         result = [json.loads(line) for line in bulk._stream_import("suppliers", rows, "supplier-contacts.xlsx", admin_id)][-1]
         assert result["total_supplier_records_identified"] == 1
         assert result["new_suppliers_saved"] == 1 and result["existing_suppliers_reused"] == 0
-        assert result["contacts_created"] == 5
+        assert result["contacts_created"] == 1
         assert result["capabilities_saved"] == 2 and result["capabilities_skipped"] == 2
         assert result["supplier_failures"] == 0
         with Session(engine) as db:
@@ -221,7 +221,7 @@ def test_supplier_contact_rows_group_company_and_keep_fax_invalid_contact_and_pe
             assert org and org.verified_status == "verified" and org.profile_status == "incomplete"
             assert org.business_email == "sales@example.com" and org.business_phone == "+966551234567"
             assert db.scalar(select(func.count()).select_from(Organization).where(Organization.name == "Signify")) == 1
-            assert db.scalar(select(func.count()).select_from(Contact).where(Contact.org_id == org.id)) == 5
+            assert db.scalar(select(func.count()).select_from(Contact).where(Contact.org_id == org.id, Contact.merged_into_contact_id.is_(None))) == 1
             assert db.scalar(select(func.count()).select_from(Contact).where(Contact.org_id == org.id, Contact.fax == "+966-13-8872513")) == 1
             assert db.scalar(select(func.count()).select_from(Contact).where(Contact.org_id == org.id, Contact.needs_review.is_(True))) == 1
             assert db.scalar(select(func.count()).select_from(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id == org.id)) == 2

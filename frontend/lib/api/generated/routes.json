@@ -84,7 +84,27 @@
     "POST"
   ],
   "organizations/admin/suppliers/{org_id}/contacts/{contact_id}": [
+    "PATCH",
+    "DELETE"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/deduplication-preview": [
+    "GET"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/deduplication": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/{contact_id}/channels": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/{contact_id}/channels/{channel_id}": [
+    "DELETE",
     "PATCH"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/{contact_id}/review": [
+    "PATCH"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/merge": [
+    "POST"
   ],
   "organizations/admin/suppliers/{org_id}/capabilities": [
     "POST"

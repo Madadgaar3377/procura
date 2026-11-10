@@ -176,12 +176,27 @@ class OrgCreate(BusinessProfile):
     is_supplier: bool=False
     website: str|None=Field(default=None,max_length=300)
 
+class AdminSupplierContactCreate(Model):
+    name: str|None=Field(default=None,max_length=150)
+    designation: str|None=Field(default=None,max_length=100)
+    email: str|None=Field(default=None,max_length=500)
+    phone: str|None=Field(default=None,max_length=300)
+    category_ids: list[str]=Field(default_factory=list,max_length=100)
+    material_ids: list[str]=Field(default_factory=list,max_length=500)
+    is_primary: bool=False
+
 class AdminSupplierCreate(Model):
     name: str=Field(min_length=2,max_length=220)
+    country: str|None=Field(default=None,max_length=100)
+    address: str|None=Field(default=None,max_length=300)
+    description: str|None=Field(default=None,max_length=5000)
+    contacts: list[AdminSupplierContactCreate]=Field(default_factory=list,max_length=100)
+    # Legacy single-contact fields remain accepted for existing API clients.
     contact_name: str|None=Field(default=None,min_length=2,max_length=150)
-    phone: str|None=Field(default=None,min_length=8,max_length=30)
-    email: str|None=Field(default=None,max_length=200)
+    phone: str|None=Field(default=None,max_length=300)
+    email: str|None=Field(default=None,max_length=500)
     cr_number: str|None=Field(default=None,max_length=80)
+    vat_number: str|None=Field(default=None,max_length=80)
     city: str|None=Field(default=None,max_length=100)
     website: str|None=Field(default=None,max_length=300)
 

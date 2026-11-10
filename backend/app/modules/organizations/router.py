@@ -1,12 +1,13 @@
 from app.search import ListSearch
 from app.response_contracts import ClaimOut, MemberOut, OrganizationOut, ReviewQueue, VerificationOut
 import os, uuid
+from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_, func, literal
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
-from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent
+from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,ContactChannel,ContactImportSource,ContactCapability,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent,utcnow
 from app.modules.auth.router import norm_phone, norm_email
 from app.identity import normalize_phone as normalize_business_phone
 from app.security import current_user,admin_user,org_member,audit
@@ -20,6 +21,7 @@ from pydantic import BaseModel, Field
 import re
 
 from app.modules.organizations.public_profile import router as public_profile_router
+from app.modules.organizations.contact_import import parse_emails, parse_phones, norm_name, _add_channel, import_contact_row
 
 router=APIRouter(prefix='/organizations',tags=['Organizations & Verification'])
 
@@ -43,6 +45,29 @@ class SupplierContactAdminInput(BaseModel):
     email: str | None = Field(default=None, max_length=500)
     phone: str | None = Field(default=None, max_length=300)
     fax: str | None = Field(default=None, max_length=80)
+    is_primary: bool | None = None
+
+class ContactChannelAdminInput(BaseModel):
+    kind: str = Field(pattern='^(email|phone|fax)$')
+    value: str = Field(min_length=3, max_length=300)
+    label: str = Field(default='other', pattern='^(mobile|office|other|fax)$')
+
+class ContactActionConfirmation(BaseModel):
+    confirm: bool
+
+class ContactChannelUpdateInput(BaseModel):
+    is_primary: bool | None = None
+    needs_review: bool | None = None
+    label: str | None = Field(default=None, pattern='^(mobile|office|other|fax)$')
+
+class ContactMergeInput(BaseModel):
+    canonical_contact_id: str
+    duplicate_contact_ids: list[str] = Field(min_length=1,max_length=30)
+    confirm: bool
+    reason: str = Field(min_length=4,max_length=1000)
+
+class ContactReviewInput(BaseModel):
+    needs_review: bool
 
 class SupplierReviewAction(BaseModel):
     reason: str | None = Field(default=None, min_length=4, max_length=2000)
@@ -53,13 +78,22 @@ class SupplierCapabilityAdminInput(BaseModel):
     trade_keywords: str = Field(default='', max_length=5000)
     material_ids: list[str] = Field(default_factory=list, max_length=500)
 
+class SupplierContactCapabilityInput(BaseModel):
+    category_id: str = Field(min_length=1,max_length=36)
+    material_ids: list[str] = Field(default_factory=list,max_length=500)
+    is_primary: bool = False
+
+class SupplierArchiveInput(BaseModel):
+    confirm: bool
+    reason: str = Field(min_length=4,max_length=1000)
+
 def _supplier_org(db, org_id):
     org=db.get(Organization,org_id)
     if not org or not org.is_supplier: raise HTTPException(404,'Supplier not found')
     return org
 
 def _refresh_supplier_profile_status(org,db):
-    contacts=db.scalars(select(Contact).where(Contact.org_id==org.id)).all()
+    contacts=db.scalars(select(Contact).where(Contact.org_id==org.id,Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None))).all()
     has_contact=bool(org.contact_name or any(c.name for c in contacts))
     has_email=False
     for value in [org.business_email,*[c.email for c in contacts]]:
@@ -73,14 +107,24 @@ def _refresh_supplier_profile_status(org,db):
     has_real_name=bool(org.name and not org.name.startswith('[Imported supplier placeholder:'))
     org.profile_status='complete' if all((has_real_name,org.city,org.address,org.cr_number,has_contact,has_email,has_phone)) else 'incomplete'
 
-def _contact_data(contact):
-    return {key:getattr(contact,key) for key in ('id','name','role','email','raw_email','phone','raw_phone','phone_normalized','fax','needs_review','created_at')}
+def _contact_data(contact,db):
+    channels=db.scalars(select(ContactChannel).where(ContactChannel.contact_id==contact.id).order_by(ContactChannel.kind,ContactChannel.is_primary.desc(),ContactChannel.created_at)).all()
+    emails=[{'id':c.id,'value':c.value,'normalized_value':c.normalized_value,'primary':c.is_primary,'verified':c.is_verified,'needs_review':c.needs_review,'source':c.source_value} for c in channels if c.kind=='email']
+    phones=[{'id':c.id,'value':c.value,'normalized_value':c.normalized_value,'label':c.label,'extension':c.extension,'primary':c.is_primary,'verified':c.is_verified,'needs_review':c.needs_review,'source':c.source_value} for c in channels if c.kind=='phone']
+    faxes=[{'id':c.id,'value':c.value,'normalized_value':c.normalized_value,'primary':c.is_primary,'source':c.source_value} for c in channels if c.kind=='fax']
+    if not emails and contact.email: emails=[{'id':None,'value':contact.email,'normalized_value':contact.email.casefold(),'primary':True,'verified':False,'needs_review':contact.needs_review,'source':contact.raw_email}]
+    if not phones and contact.phone: phones=[{'id':None,'value':contact.phone,'normalized_value':contact.phone_normalized,'label':'other','extension':None,'primary':True,'verified':False,'needs_review':contact.needs_review,'source':contact.raw_phone}]
+    if not faxes and contact.fax: faxes=[{'id':None,'value':contact.fax,'normalized_value':contact.fax,'primary':True,'source':contact.raw_phone}]
+    related_ids=[contact.id,*db.scalars(select(Contact.id).where(Contact.merged_into_contact_id==contact.id))]
+    sources=db.scalars(select(ContactImportSource).where(ContactImportSource.contact_id.in_(related_ids)).order_by(ContactImportSource.created_at)).all()
+    return {**{key:getattr(contact,key) for key in ('id','name','role','email','raw_email','phone','raw_phone','phone_normalized','fax','needs_review','is_primary','created_at')},'emails':emails,'phones':phones,'faxes':faxes,'import_sources':[{'source_reference':s.source_reference,'raw_name':s.raw_name,'raw_email':s.raw_email,'raw_phone':s.raw_phone} for s in sources],'source':'imported' if sources else 'admin'}
 
 @router.get('/admin/suppliers')
 def admin_supplier_list(q:str='', status_filter:str='all', limit:int=Query(26,ge=1,le=100), offset:int=Query(0,ge=0), admin:User=Depends(admin_user), db:Session=Depends(get_db)):
     if status_filter not in {'all','verified','unverified','incomplete','imported','pending_verification'}: raise HTTPException(422,'Invalid supplier filter')
     missing=missing_profile_columns(db)
     stmt=select(Organization).where(Organization.is_supplier.is_(True))
+    stmt=stmt.where(Organization.is_active.is_(True))
     if status_filter=='verified': stmt=stmt.where(Organization.verified_status=='verified')
     elif status_filter=='unverified': stmt=stmt.where(Organization.verified_status=='unverified')
     elif status_filter=='incomplete': stmt=stmt.where(literal(True) if 'profile_status' in missing else Organization.profile_status.in_(['incomplete','pending_onboarding']))
@@ -102,7 +146,16 @@ def admin_supplier_list(q:str='', status_filter:str='all', limit:int=Query(26,ge
 @router.get('/admin/suppliers/{org_id}')
 def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Session=Depends(get_db)):
     org=_supplier_org(db,org_id)
-    contacts=db.scalars(select(Contact).where(Contact.org_id==org_id).order_by(Contact.created_at,Contact.id)).all()
+    contacts=db.scalars(select(Contact).where(Contact.org_id==org_id,Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None)).order_by(Contact.created_at,Contact.id)).all()
+    contact_capabilities={contact.id:[] for contact in contacts}
+    if contacts:
+        contact_links=db.execute(select(ContactCapability,Capability,Category).join(Capability,Capability.id==ContactCapability.capability_id).join(Category,Category.id==Capability.category_id).where(ContactCapability.contact_id.in_([c.id for c in contacts]))).all()
+        for link,cap,category in contact_links:
+            parent=db.get(Category,category.parent_id) if category.parent_id else None
+            materials=db.scalars(select(Material).where(Material.id.in_(cap.material_ids or []))).all() if cap.material_ids else []
+            contact_capabilities[link.contact_id].append({'capability_id':cap.id,'category_id':category.id,
+                'category':f'{parent.name_en} / {category.name_en}' if parent else category.name_en,
+                'materials':[m.name_en for m in materials],'is_primary':link.is_primary})
     verifications=db.scalars(select(Verification).where(Verification.org_id==org_id).order_by(Verification.created_at.desc())).all()
     latest=verifications[0] if verifications else None
     caps=db.scalars(select(Capability).where(Capability.org_id==org_id).order_by(Capability.created_at,Capability.id)).all()
@@ -120,7 +173,7 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
             docs.append({'id':f.id,'name':f.safe_filename,'purpose':f.purpose,'status':f.status,'download_url':f'/files/{f.id}/download-url'})
     last_audit=db.scalar(select(func.max(AuditEvent.created_at)).where(AuditEvent.org_id==org_id))
     return {'company':{key:getattr(org,key) for key in ('id','name','country','city','address','cr_number','vat_number','website','description','source','created_at','contact_name','designation','business_email','business_phone')},
-        'contacts':[_contact_data(c) for c in contacts],
+        'contacts':[{**_contact_data(c,db),'assigned_capabilities':contact_capabilities[c.id]} for c in contacts],
         'status':{'profile_status':org.profile_status,'verification_status':org.verified_status,'onboarding_status':'complete' if db.scalar(select(Member.id).where(Member.organization_id==org_id)) else 'pending_onboarding','source':org.source,'last_updated_at':last_audit or org.created_at,'verified_by':latest.reviewer_id if latest and latest.status=='approved' else None,'verified_at':latest.reviewed_at if latest and latest.status=='approved' else None,'rejected_by':latest.reviewer_id if latest and latest.status=='rejected' else None,'rejected_at':latest.reviewed_at if latest and latest.status=='rejected' else None,'rejection_reason':latest.reviewer_notes if latest and latest.status=='rejected' else None},
         'capabilities':cap_items,'pending_category_mappings':[{'id':x.id,'raw_trade':x.raw_trade,'raw_type':x.raw_type,'raw_location':x.raw_location,'mapping_status':x.mapping_status} for x in trades if x.mapping_status not in {'approved','mapped'}],
         'documents':docs,'verification_history':[{'id':v.id,'status':v.status,'cr_number':v.cr_number,'reviewer_id':v.reviewer_id,'reviewer_notes':v.reviewer_notes,'reviewed_at':v.reviewed_at,'created_at':v.created_at} for v in verifications]}
@@ -140,9 +193,14 @@ def admin_update_supplier(org_id:str,payload:SupplierProfileAdminUpdate,admin:Us
 
 def _save_admin_contact(org_id,payload,admin,db,contact=None):
     values=payload.model_dump(exclude_unset=True)
-    if contact is None: contact=Contact(org_id=org_id,permission_to_notify=False)
+    is_new=contact is None
+    if contact is None:
+        contact=Contact(org_id=org_id,permission_to_notify=False);db.add(contact);db.flush()
     if 'name' in values: contact.name=(values['name'] or '').strip() or None
     if 'role' in values: contact.role=(values['role'] or '').strip() or None
+    if values.get('is_primary'):
+        db.query(Contact).filter(Contact.org_id==org_id,Contact.id!=contact.id,Contact.deleted_at.is_(None)).update({Contact.is_primary:False},synchronize_session=False)
+    if 'is_primary' in values:contact.is_primary=bool(values['is_primary'])
     if 'fax' in values: contact.fax=(values['fax'] or '').strip() or None
     review=False
     if 'email' in values:
@@ -157,10 +215,19 @@ def _save_admin_contact(org_id,payload,admin,db,contact=None):
         if raw:
             try: contact.phone_normalized=normalize_business_phone(raw);contact.phone=contact.phone_normalized
             except ValueError: review=True
-    contact.needs_review=review
-    is_new=contact.id is None
+    if 'email' in values:
+        parsed,invalid=parse_emails(values['email'])
+        review=review or invalid
+        for email in parsed: _add_channel(db,contact,'email',email,email,'other',values['email'] or '',None)
+    if 'phone' in values or 'fax' in values:
+        parsed,invalid=parse_phones(values.get('phone') or values.get('fax'), 'SA')
+        review=review or invalid
+        for item in parsed:
+            kind='fax' if 'fax' in values and not values.get('phone') else item['kind']
+            _add_channel(db,contact,kind,item['value'],item['normalized'],'fax' if kind=='fax' else item['label'],values.get('phone') or values.get('fax') or '',None,item['extension'])
+    contact.needs_review=contact.needs_review or review
     db.add(contact);db.flush();_refresh_supplier_profile_status(db.get(Organization,org_id),db);audit(db,admin,'supplier.contact_added' if is_new else 'supplier.contact_updated',org_id,contact.id)
-    db.commit();db.refresh(contact);return _contact_data(contact)
+    db.commit();db.refresh(contact);return _contact_data(contact,db)
 
 @router.post('/admin/suppliers/{org_id}/contacts',status_code=201)
 def admin_add_supplier_contact(org_id:str,payload:SupplierContactAdminInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
@@ -171,6 +238,251 @@ def admin_edit_supplier_contact(org_id:str,contact_id:str,payload:SupplierContac
     _supplier_org(db,org_id);contact=db.get(Contact,contact_id)
     if not contact or contact.org_id!=org_id:raise HTTPException(404,'Supplier contact not found')
     return _save_admin_contact(org_id,payload,admin,db,contact)
+
+def _contact_duplicate_preview(db,org_id):
+    contacts=db.scalars(select(Contact).where(Contact.org_id==org_id,Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None)).order_by(Contact.created_at,Contact.id)).all()
+    channels=db.scalars(select(ContactChannel).where(ContactChannel.org_id==org_id)).all()
+    by_contact={c.id:[] for c in contacts}
+    for channel in channels:
+        if channel.contact_id in by_contact: by_contact[channel.contact_id].append(channel)
+    def identities(contact):
+        rows=list(by_contact[contact.id])
+        raw_emails,_=parse_emails(contact.raw_email)
+        for value in set(raw_emails + ([contact.email.strip().casefold()] if contact.email else [])):
+            if not any(c.kind=='email' and c.normalized_value==value for c in rows): rows.append(SimpleNamespace(kind='email',normalized_value=value,label='other'))
+        raw_phones,_=parse_phones(contact.raw_phone,'SA')
+        phone_ids={p['normalized'] for p in raw_phones}
+        if contact.phone:
+            phone_ids.add(contact.phone_normalized or re.sub(r'[^0-9+]', '', contact.phone))
+        for value in phone_ids:
+            if value and not any(c.kind=='phone' and c.normalized_value==value for c in rows): rows.append(SimpleNamespace(kind='phone',normalized_value=value,label='other'))
+        if contact.fax:
+            value=re.sub(r'[^0-9+]', '', contact.fax)
+            if value and not any(c.kind=='fax' and c.normalized_value==value for c in rows): rows.append(SimpleNamespace(kind='fax',normalized_value=value,label='fax'))
+        return rows
+    for contact in contacts: by_contact[contact.id]=identities(contact)
+    safe_edges=[]; review_edges=[]
+    for i,left in enumerate(contacts):
+        for right in contacts[i+1:]:
+            emails={c.normalized_value for c in by_contact[left.id]+by_contact[right.id] if c.kind=='email'}
+            shared_email=bool({c.normalized_value for c in by_contact[left.id] if c.kind=='email'} & {c.normalized_value for c in by_contact[right.id] if c.kind=='email'})
+            left_name,right_name=norm_name(left.name),norm_name(right.name)
+            conflict=bool(left_name and right_name and left_name!=right_name)
+            overlapping = bool({(c.kind,c.normalized_value) for c in by_contact[left.id]} & {(c.kind,c.normalized_value) for c in by_contact[right.id]})
+            mobile_overlap=bool({c.normalized_value for c in by_contact[left.id] if c.kind=='phone' and c.label=='mobile'} & {c.normalized_value for c in by_contact[right.id] if c.kind=='phone' and c.label=='mobile'})
+            if shared_email or (overlapping and left_name and left_name==right_name) or (mobile_overlap and not conflict):
+                group={'contact_ids':[left.id,right.id],'names':[left.name,right.name],'shared_emails':sorted(emails)}
+                (review_edges if conflict else safe_edges).append(group)
+    parent={c.id:c.id for c in contacts}
+    def find(value):
+        while parent[value]!=value:
+            parent[value]=parent[parent[value]];value=parent[value]
+        return value
+    for edge in safe_edges+review_edges:
+        a,b=edge['contact_ids'];parent[find(b)]=find(a)
+    clusters={}
+    for edge in safe_edges+review_edges:
+        root=find(edge['contact_ids'][0]);clusters.setdefault(root,{'ids':set(),'manual':False,'emails':set()})
+        clusters[root]['ids'].update(edge['contact_ids']);clusters[root]['manual']|=edge in review_edges
+        clusters[root]['emails'].update(edge['shared_emails'])
+    safe=[];review=[]
+    contacts_by_id={c.id:c for c in contacts}
+    for cluster in clusters.values():
+        ids=sorted(cluster['ids']);names=[contacts_by_id[cid].name for cid in ids]
+        unique_names={norm_name(name) for name in names if norm_name(name)}
+        group={'contact_ids':ids,'names':names,'shared_emails':sorted(cluster['emails'])}
+        (review if cluster['manual'] or len(unique_names)>1 else safe).append(group)
+    involved={cid for group in safe+review for cid in group['contact_ids']}
+    return {'existing_contact_count':len(contacts),'duplicate_groups_detected':len(safe)+len(review),'safe_groups':safe,
+        'contacts_requiring_manual_review':review,'records_remaining_separate':[{'id':c.id,'name':c.name} for c in contacts if c.id not in involved],
+        'expected_contact_count_after_cleanup':len(contacts)-sum(len(group['contact_ids'])-1 for group in safe)}
+
+def _merge_contact_capabilities(db,source_id,target_id):
+    for link in db.scalars(select(ContactCapability).where(ContactCapability.contact_id==source_id)).all():
+        existing=db.scalar(select(ContactCapability).where(ContactCapability.contact_id==target_id,ContactCapability.capability_id==link.capability_id))
+        if existing:
+            existing.is_primary=existing.is_primary or link.is_primary;db.delete(link)
+        else:link.contact_id=target_id
+
+@router.get('/admin/suppliers/{org_id}/contacts/deduplication-preview')
+def admin_preview_supplier_contact_deduplication(org_id:str,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id)
+    return _contact_duplicate_preview(db,org_id)
+
+@router.post('/admin/suppliers/{org_id}/contacts/deduplication')
+def admin_execute_supplier_contact_deduplication(org_id:str,payload:ContactActionConfirmation,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    org=_supplier_org(db,org_id)
+    if not payload.confirm: raise HTTPException(422,'Explicit confirmation is required')
+    preview=_contact_duplicate_preview(db,org_id)
+    merged=[]
+    try:
+        for group in preview['safe_groups']:
+            contacts=[db.get(Contact,cid) for cid in group['contact_ids']]
+            contacts=[c for c in contacts if c and c.deleted_at is None and c.merged_into_contact_id is None]
+            if len(contacts)<2: continue
+            canonical=min(contacts,key=lambda c:(c.created_at,c.id))
+            for duplicate in contacts:
+                if duplicate.id==canonical.id: continue
+                # Recover valid addresses and numbers that older imports left only in raw cells.
+                emails=set(parse_emails(canonical.raw_email)[0]+parse_emails(duplicate.raw_email)[0])
+                emails.update(value for value in (canonical.email,duplicate.email) if value)
+                for email in emails:
+                    _add_channel(db,canonical,'email',email,email,'other',duplicate.raw_email or canonical.raw_email or '',None)
+                for source_contact in (canonical,duplicate):
+                    recovered,_=parse_phones(source_contact.raw_phone,'SA')
+                    if source_contact.phone:
+                        scalar,_=parse_phones(source_contact.phone,'SA');recovered.extend(scalar)
+                        if source_contact.phone_normalized and not any(item['normalized']==source_contact.phone_normalized for item in recovered):
+                            recovered.append({'value':source_contact.phone,'normalized':source_contact.phone_normalized,'kind':'phone','label':'other','extension':None})
+                    if source_contact.fax:
+                        fax_numbers,_=parse_phones(source_contact.fax,'SA')
+                        recovered.extend({**item,'kind':'fax','label':'fax'} for item in fax_numbers)
+                    for item in recovered:
+                        _add_channel(db,canonical,item['kind'],item['value'],item['normalized'],item['label'],source_contact.raw_phone or '',None,item['extension'])
+                channels=db.scalars(select(ContactChannel).where(ContactChannel.contact_id==duplicate.id)).all()
+                for channel in channels:
+                    existing=db.scalar(select(ContactChannel).where(ContactChannel.contact_id==canonical.id,
+                        ContactChannel.kind==channel.kind,ContactChannel.normalized_value==channel.normalized_value))
+                    if existing:
+                        if channel.source_value and channel.source_value not in (existing.source_value or ''):
+                            existing.source_value=((existing.source_value or '')+' | '+channel.source_value)[:500]
+                        db.delete(channel)
+                    else: channel.contact_id=canonical.id
+                _merge_contact_capabilities(db,duplicate.id,canonical.id)
+                canonical.name=canonical.name or duplicate.name
+                canonical.role=canonical.role or duplicate.role
+                canonical.raw_email=canonical.raw_email or duplicate.raw_email
+                canonical.raw_phone=canonical.raw_phone or duplicate.raw_phone
+                canonical.needs_review=canonical.needs_review or duplicate.needs_review
+                duplicate.merged_into_contact_id=canonical.id
+                merged.append({'from':duplicate.id,'to':canonical.id})
+        if merged:
+            audit(db,admin,'supplier.contacts_deduplicated',org_id,org_id,merged=merged,preview=preview)
+        db.commit()
+    except Exception:
+        db.rollback();raise
+    return {'merged_contacts':merged,'contacts_merged':len(merged),'preview':_contact_duplicate_preview(db,org_id)}
+
+@router.post('/admin/suppliers/{org_id}/contacts/{contact_id}/channels',status_code=201)
+def admin_add_supplier_contact_channel(org_id:str,contact_id:str,payload:ContactChannelAdminInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);contact=db.get(Contact,contact_id)
+    if not contact or contact.org_id!=org_id or contact.deleted_at or contact.merged_into_contact_id: raise HTTPException(404,'Supplier contact not found')
+    if payload.kind=='email':
+        emails,invalid=parse_emails(payload.value)
+        if invalid or len(emails)!=1: raise HTTPException(422,'Enter one valid email address')
+        value=normalized=emails[0]
+    else:
+        phones,invalid=parse_phones(payload.value,'SA')
+        if invalid or len(phones)!=1: raise HTTPException(422,'Enter one valid phone or fax number')
+        item=phones[0];value=item['value'];normalized=item['normalized']
+    if db.scalar(select(ContactChannel.id).where(ContactChannel.contact_id==contact.id,ContactChannel.kind==payload.kind,ContactChannel.normalized_value==normalized)):
+        return _contact_data(contact,db)
+    db.add(ContactChannel(contact_id=contact.id,org_id=org_id,kind=payload.kind,value=value,normalized_value=normalized,
+        label='fax' if payload.kind=='fax' else payload.label,is_primary=False,source_value='Admin added'))
+    audit(db,admin,'supplier.contact_channel_added',org_id,contact.id,kind=payload.kind,normalized_value=normalized)
+    db.commit();return _contact_data(contact,db)
+
+@router.delete('/admin/suppliers/{org_id}/contacts/{contact_id}/channels/{channel_id}')
+def admin_remove_supplier_contact_channel(org_id:str,contact_id:str,channel_id:str,payload:ContactActionConfirmation,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);contact=db.get(Contact,contact_id);channel=db.get(ContactChannel,channel_id)
+    if not payload.confirm: raise HTTPException(422,'Explicit confirmation is required')
+    if not contact or contact.org_id!=org_id or not channel or channel.contact_id!=contact_id: raise HTTPException(404,'Contact channel not found')
+    was_primary=channel.is_primary;kind=channel.kind
+    audit(db,admin,'supplier.contact_channel_removed',org_id,contact.id,channel={k:getattr(channel,k) for k in ('kind','value','normalized_value','label','source_value')})
+    db.delete(channel);db.flush()
+    if was_primary:
+        replacement=db.scalar(select(ContactChannel).where(ContactChannel.contact_id==contact.id,ContactChannel.kind==kind).order_by(ContactChannel.created_at,ContactChannel.id).limit(1))
+        if replacement:replacement.is_primary=True
+    db.commit();return {'deleted':True}
+
+@router.patch('/admin/suppliers/{org_id}/contacts/{contact_id}/channels/{channel_id}')
+def admin_update_supplier_contact_channel(org_id:str,contact_id:str,channel_id:str,payload:ContactChannelUpdateInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);contact=db.get(Contact,contact_id);channel=db.get(ContactChannel,channel_id)
+    if not contact or contact.org_id!=org_id or not channel or channel.contact_id!=contact_id: raise HTTPException(404,'Contact channel not found')
+    fields=payload.model_dump(exclude_unset=True)
+    if fields.get('is_primary'):
+        db.query(ContactChannel).filter(ContactChannel.contact_id==contact_id,ContactChannel.kind==channel.kind).update({ContactChannel.is_primary:False},synchronize_session=False)
+    for key,value in fields.items():setattr(channel,key,value)
+    audit(db,admin,'supplier.contact_channel_updated',org_id,contact.id,channel_id=channel_id,fields=fields)
+    db.commit();return _contact_data(contact,db)
+
+@router.patch('/admin/suppliers/{org_id}/contacts/{contact_id}/review')
+def admin_mark_supplier_contact_review(org_id:str,contact_id:str,payload:ContactReviewInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);contact=db.get(Contact,contact_id)
+    if not contact or contact.org_id!=org_id or contact.deleted_at or contact.merged_into_contact_id:raise HTTPException(404,'Supplier contact not found')
+    contact.needs_review=payload.needs_review
+    audit(db,admin,'supplier.contact_review_status_updated',org_id,contact.id,needs_review=payload.needs_review)
+    db.commit();return _contact_data(contact,db)
+
+@router.post('/admin/suppliers/{org_id}/contacts/merge')
+def admin_merge_supplier_contacts(org_id:str,payload:ContactMergeInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id)
+    if not payload.confirm:raise HTTPException(422,'Explicit confirmation is required')
+    if payload.canonical_contact_id in payload.duplicate_contact_ids or len(set(payload.duplicate_contact_ids))!=len(payload.duplicate_contact_ids):raise HTTPException(422,'Choose distinct contacts')
+    contacts=[db.get(Contact,cid) for cid in [payload.canonical_contact_id,*payload.duplicate_contact_ids]]
+    if any(not c or c.org_id!=org_id or c.deleted_at or c.merged_into_contact_id for c in contacts):raise HTTPException(404,'Supplier contact not found')
+    canonical=contacts[0];merged=[]
+    try:
+        for duplicate in contacts[1:]:
+            for channel in db.scalars(select(ContactChannel).where(ContactChannel.contact_id==duplicate.id)).all():
+                existing=db.scalar(select(ContactChannel).where(ContactChannel.contact_id==canonical.id,ContactChannel.kind==channel.kind,ContactChannel.normalized_value==channel.normalized_value))
+                if existing:
+                    if channel.source_value and channel.source_value not in (existing.source_value or ''):existing.source_value=((existing.source_value or '')+' | '+channel.source_value)[:500]
+                    db.delete(channel)
+                else:channel.contact_id=canonical.id
+            _merge_contact_capabilities(db,duplicate.id,canonical.id)
+            canonical.name=canonical.name or duplicate.name;canonical.role=canonical.role or duplicate.role
+            canonical.raw_email=canonical.raw_email or duplicate.raw_email;canonical.raw_phone=canonical.raw_phone or duplicate.raw_phone
+            canonical.needs_review=canonical.needs_review or duplicate.needs_review
+            duplicate.merged_into_contact_id=canonical.id;merged.append(duplicate.id)
+        audit(db,admin,'supplier.contacts_manually_merged',org_id,canonical.id,merged_contact_ids=merged,reason=payload.reason)
+        db.commit()
+    except Exception:db.rollback();raise
+    return _contact_data(canonical,db)
+
+@router.delete('/admin/suppliers/{org_id}/contacts/{contact_id}')
+def admin_delete_supplier_contact(org_id:str,contact_id:str,payload:ContactActionConfirmation,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);contact=db.get(Contact,contact_id)
+    if not payload.confirm: raise HTTPException(422,'Explicit confirmation is required')
+    if not contact or contact.org_id!=org_id or contact.deleted_at or contact.merged_into_contact_id: raise HTTPException(404,'Supplier contact not found')
+    contact.deleted_at=utcnow();audit(db,admin,'supplier.contact_deleted',org_id,contact.id,name=contact.name,email=contact.email,phone=contact.phone)
+    db.commit();return {'deleted':True}
+
+@router.post('/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities',status_code=201)
+def admin_assign_contact_capability(org_id:str,contact_id:str,payload:SupplierContactCapabilityInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    org=_supplier_org(db,org_id);contact=db.get(Contact,contact_id)
+    if not contact or contact.org_id!=org_id or contact.deleted_at or contact.merged_into_contact_id:raise HTTPException(404,'Supplier contact not found')
+    category,material_ids,city=_admin_capability_values(org_id,SupplierCapabilityAdminInput(category_id=payload.category_id,city=org.city or '',material_ids=payload.material_ids),db)
+    capability=db.scalar(select(Capability).where(Capability.org_id==org_id,Capability.category_id==category.id,
+        func.lower(func.trim(Capability.city))==city.casefold()).with_for_update())
+    created=capability is None
+    if capability is None:
+        capability=Capability(org_id=org_id,category_id=category.id,city=city,material_ids=[],trade_keywords='',confirmed=True,
+            accepts_rfqs=True,eligibility_status='enabled',mapping_source='admin');db.add(capability);db.flush()
+    capability.material_ids=sorted(set([*(capability.material_ids or []),*material_ids]))
+    relation=db.scalar(select(ContactCapability).where(ContactCapability.contact_id==contact.id,ContactCapability.capability_id==capability.id))
+    if relation is None:
+        relation=ContactCapability(contact_id=contact.id,capability_id=capability.id,is_primary=payload.is_primary);db.add(relation)
+    elif payload.is_primary:relation.is_primary=True
+    if payload.is_primary:
+        db.query(ContactCapability).filter(ContactCapability.capability_id==capability.id,ContactCapability.contact_id!=contact.id).update({ContactCapability.is_primary:False},synchronize_session=False)
+    audit(db,admin,'supplier.contact_capability_assigned',org_id,contact.id,capability_id=capability.id,category_id=category.id,created=created)
+    db.commit();return {'capability_id':capability.id,'created':created,'assigned':True}
+
+@router.delete('/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities/{capability_id}')
+def admin_unassign_contact_capability(org_id:str,contact_id:str,capability_id:str,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id)
+    relation=db.scalar(select(ContactCapability).where(ContactCapability.contact_id==contact_id,ContactCapability.capability_id==capability_id))
+    if not relation or not db.scalar(select(Contact.id).where(Contact.id==contact_id,Contact.org_id==org_id)):raise HTTPException(404,'Contact capability assignment not found')
+    db.delete(relation);audit(db,admin,'supplier.contact_capability_unassigned',org_id,contact_id,capability_id=capability_id);db.commit();return {'unassigned':True}
+
+@router.post('/admin/suppliers/{org_id}/archive')
+def admin_archive_supplier(org_id:str,payload:SupplierArchiveInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    org=_supplier_org(db,org_id)
+    if not payload.confirm:raise HTTPException(422,'Explicit confirmation is required')
+    org.is_active=False
+    audit(db,admin,'supplier.archived',org_id,org_id,reason=payload.reason,preserved_contacts=True,preserved_capabilities=True)
+    db.commit();return {'archived':True,'supplier_id':org.id}
 
 def _admin_capability_values(org_id,payload,db):
     category=db.scalar(select(Category).where(Category.id==payload.category_id,Category.active.is_(True)))
@@ -298,25 +610,52 @@ def mine(company_role:str|None=None,search:ListSearch=Depends(),user:User=Depend
 
 @router.post('/admin/suppliers',status_code=201,response_model=OrganizationOut)
 def create_supplier(payload:AdminSupplierCreate,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
-    try:
-        phone=normalize_business_phone(payload.phone) if payload.phone else None
-    except ValueError as exc:
-        raise HTTPException(422,str(exc)) from exc
-    email=norm_email(payload.email) if payload.email else None
     normalized=payload.name.strip().casefold()
     if db.scalar(select(Organization.id).where(Organization.name_normalized==normalized,Organization.is_supplier.is_(True))):
         raise HTTPException(409,'A supplier with this company name already exists')
-    org=Organization(name=payload.name.strip(),name_normalized=normalized,
-                     cr_number=payload.cr_number,city=payload.city,website=payload.website,
+    org=Organization(name=payload.name.strip(),name_normalized=normalized,country=payload.country,address=payload.address,
+                     description=payload.description,cr_number=payload.cr_number,vat_number=payload.vat_number,city=payload.city,website=payload.website,
                      is_buyer=False,is_supplier=True,source='admin_created',verified_status='verified',profile_status='incomplete')
     db.add(org);db.flush()
-    if payload.contact_name or phone or email:
-        db.add(Contact(org_id=org.id,name=payload.contact_name,phone=phone,email=email,permission_to_notify=False))
+    contact_inputs=list(payload.contacts)
+    if not contact_inputs and (payload.contact_name or payload.email or payload.phone):
+        contact_inputs=[{'name':payload.contact_name,'email':payload.email,'phone':payload.phone}]
+    seen_primary=False
+    for index,contact_payload in enumerate(contact_inputs):
+        item=contact_payload.model_dump() if hasattr(contact_payload,'model_dump') else dict(contact_payload)
+        if not any(item.get(key) for key in ('name','email','phone')):continue
+        _,_,contact_ids,_=import_contact_row(db,org.id,item.get('name'),item.get('email'),item.get('phone'),org.country or 'SA',f'admin-create:{admin.id}:{index}',return_ids=True)
+        for contact_id in contact_ids:
+            contact=db.get(Contact,contact_id)
+            contact.role=(item.get('designation') or '').strip() or None
+            contact.is_primary=bool(item.get('is_primary') and not seen_primary)
+            seen_primary|=contact.is_primary
+            category_ids=list(dict.fromkeys(item.get('category_ids') or []))
+            requested_material_ids=sorted(set(item.get('material_ids') or []))
+            requested_materials=db.scalars(select(Material).where(Material.id.in_(requested_material_ids),Material.active.is_(True))).all() if requested_material_ids else []
+            if len(requested_materials)!=len(requested_material_ids) or (requested_materials and not category_ids):
+                raise HTTPException(422,'Assigned materials must be active and have an assigned category')
+            if any(not any(category_id in {material.category_id,material.main_category_id,material.subcategory_id} for category_id in category_ids) for material in requested_materials):
+                raise HTTPException(422,'Every assigned material must belong to one of the contact categories')
+            for category_id in category_ids:
+                category=db.scalar(select(Category).where(Category.id==category_id,Category.active.is_(True)))
+                if not category:raise HTTPException(422,'A contact category is not active or does not exist')
+                capability=db.scalar(select(Capability).where(Capability.org_id==org.id,Capability.category_id==category.id,
+                    func.lower(func.trim(Capability.city))==(org.city or '').casefold()).with_for_update())
+                if capability is None:
+                    capability=Capability(org_id=org.id,category_id=category.id,city=org.city or '',material_ids=[],trade_keywords='',
+                        confirmed=True,accepts_rfqs=True,eligibility_status='enabled',mapping_source='admin')
+                    db.add(capability);db.flush()
+                materials=[m for m in requested_materials if category.id in {m.category_id,m.main_category_id,m.subcategory_id}]
+                capability.material_ids=sorted(set([*(capability.material_ids or []),*[m.id for m in materials]]))
+                relation=db.scalar(select(ContactCapability.id).where(ContactCapability.contact_id==contact.id,ContactCapability.capability_id==capability.id))
+                if not relation:db.add(ContactCapability(contact_id=contact.id,capability_id=capability.id,is_primary=contact.is_primary))
     verification=Verification(org_id=org.id,cr_number=org.cr_number,status='approved',reviewer_id=admin.id,
         reviewer_notes='Automatically verified when created by an authenticated administrator.',reviewed_at=__import__('datetime').datetime.now(__import__('datetime').UTC))
     db.add(verification);db.flush()
     audit(db,admin,'supplier.created_by_admin',org.id,org.id)
     audit(db,admin,'supplier.automatically_verified',org.id,verification.id,source='admin_created')
+    audit(db,admin,'supplier.contacts_and_categories_created',org.id,org.id,contacts=len(contact_inputs))
     db.commit();db.refresh(org)
     return record(org)
 
