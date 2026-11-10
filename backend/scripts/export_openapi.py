@@ -7,6 +7,7 @@ os.environ['DATABASE_URL']='sqlite:///:memory:'
 os.environ['MOCK_NOTIFICATIONS']='true'
 os.environ['REDIS_URL']=''
 from app.main import app
+application = app.app if hasattr(app, 'app') and not hasattr(app, 'openapi') else app
 output=Path(__file__).resolve().parents[2]/'docs/openapi.json'
-output.write_text(json.dumps(app.openapi(),indent=2),encoding='utf-8')
-print(f'Exported {len(app.openapi()["paths"])} paths to {output.name}')
+output.write_text(json.dumps(application.openapi(),indent=2),encoding='utf-8')
+print(f'Exported {len(application.openapi()["paths"])} paths to {output.name}')

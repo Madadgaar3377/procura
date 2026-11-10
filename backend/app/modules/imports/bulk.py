@@ -18,11 +18,12 @@ from app import catalog_cache
 from app.database import SessionLocal, get_db
 from app.models import Capability, Category, Contact, ImportBatch, ImportedRow, ImportedSupplierTrade, Material, Organization, User
 from app.modules.materials.service import create_material_record, normalize_text, normalize_unit, resolve_category
+from app.modules.imports.supplier_mapping import apply_supplier_trade_mapping, ensure_import_verification, ensure_trade_record, extract_website
 from app.security import admin_user, audit
 
 router = APIRouter(prefix="/bulk", tags=["Bulk Materials and Suppliers"])
 MATERIAL_HEADERS = ["Discipline", "Main Category", "Subcategory", "Description", "Unit"]
-SUPPLIER_HEADERS = ["Company Name", "Contact Person", "Email", "Phone", "Country", "City", "Address", "Main Category", "Subcategory", "Material Description", "Unit"]
+SUPPLIER_HEADERS = ["Company Name", "Contact Person", "Email", "Phone", "Country", "City", "Address", "Main Category", "Subcategory", "Material Description", "Unit", "Discipline", "Trade", "Type", "Website", "Brands", "CR Number", "VAT Number", "Company Description"]
 DISCIPLINES = {"civil": "Civil", "electrical": "Electrical", "mechanical": "Mechanical"}
 BATCH_SIZE = 35
 
@@ -41,18 +42,66 @@ def _read(content: bytes, filename: str, headers: list[str]):
         if filename.casefold().endswith(".xls"):
             import xlrd
             book = xlrd.open_workbook(file_contents=content, on_demand=True)
-            sheet = book.sheet_by_index(0)
-            values = [[sheet.cell_value(r, c) for c in range(sheet.ncols)] for r in range(sheet.nrows)]
+            sheets = [(sheet.name, [[sheet.cell_value(r, c) for c in range(sheet.ncols)] for r in range(sheet.nrows)]) for sheet in book.sheets()]
             book.release_resources()
         else:
             book = load_workbook(BytesIO(content), read_only=True, data_only=True, keep_links=False)
-            sheet = book.active
-            if sheet.max_row > 30_001: raise HTTPException(413, "Workbook exceeds the 30,000-row limit")
-            values = list(sheet.iter_rows(values_only=True))
+            sheets=[]
+            for sheet in book.worksheets:
+                if sheet.max_row > 30_001: raise HTTPException(413, f"Worksheet {sheet.title} exceeds the 30,000-row limit")
+                sheets.append((sheet.title,list(sheet.iter_rows(values_only=True))) )
             book.close()
     except HTTPException: raise
     except ImportError as exc: raise HTTPException(503, "Legacy XLS support is not installed") from exc
     except Exception as exc: raise HTTPException(422, "The uploaded Excel workbook could not be read") from exc
+    if not any(values for _,values in sheets): raise HTTPException(422, "The workbook is empty")
+    if headers is SUPPLIER_HEADERS or headers == SUPPLIER_HEADERS:
+        aliases={
+            "company name":{"company name","supplier name","suppliers name","supplier company","supplier company name","legal company name","company","supplier"},
+            "contact person":{"contact person","contact name","contact person name","representative","sales contact"},
+            "email":{"email","email address","e-mail","contact email"},
+            "phone":{"phone","mobile","mobile phone","mobile phone number","telephone","telephone number","phone number","contact number","tel"},
+            "country":{"country"},"city":{"city","location","supplier location"},"address":{"address","business address"},
+            "main category":{"main category","category","discipline category"},"subcategory":{"subcategory","sub category","sub-category"},
+            "material description":{"material description","product description","description","products","materials","product"},
+            "unit":{"unit","uom","unit of measure"},"discipline":{"discipline"},
+            "trade":{"trade","trade products","trade / products","trade/products","products and services","trade / services","services"},
+            "type":{"type","supplier type","supplier / manufacturer","supplier/manufacturer","business type"},
+            "website":{"website","web site","url","company website"},"brands":{"brands","brand","brand names"},
+            "cr number":{"cr number","commercial registration","commercial registration number","cr no"},
+            "vat number":{"vat number","vat registration","vat registration number"},
+            "company description":{"company description","about company","profile description"}}
+        aliases={canonical:{re.sub(r"[^a-z0-9]+"," ",value.casefold()).strip() for value in values} for canonical,values in aliases.items()}
+        parsed=[]
+        for sheet_name,values in sheets:
+            header_index=None;header_map={}
+            for index,source_row in enumerate(values[:15]):
+                mapped={}
+                for column_index,value in enumerate(source_row):
+                    key=re.sub(r"[^a-z0-9]+"," ",_clean(value).casefold()).strip()
+                    for canonical,choices in aliases.items():
+                        if key in choices: mapped.setdefault(canonical,column_index);break
+                if "company name" in mapped and len(mapped)>=2:
+                    header_index=index;header_map=mapped;break
+            if header_index is None: continue
+            previous_name=""
+            for physical_row,source_row in enumerate(values[header_index+1:],header_index+2):
+                raw_excel={str(values[header_index][column]):("" if value is None else str(value)) for column,value in enumerate(source_row)
+                    if column<len(values[header_index]) and _clean(values[header_index][column])}
+                canonical_row={canonical:_clean(source_row[column]) if column<len(source_row) else "" for canonical,column in header_map.items()}
+                if not any(canonical_row.values()): continue
+                name=canonical_row.get("company name","")
+                if name: previous_name=name
+                elif previous_name and any(canonical_row.get(key) for key in ("trade","type","contact person","phone","email","website","city","brands","main category","subcategory")):
+                    canonical_row["company name"]=previous_name
+                else: continue
+                display_keys={key.casefold():key for key in SUPPLIER_HEADERS}
+                row={display_keys[key]:value for key,value in canonical_row.items() if key in display_keys}
+                row["_source_sheet"]=sheet_name;row["_source_row"]=physical_row;row["_raw_excel"]=raw_excel
+                parsed.append((physical_row,row))
+        if not parsed: raise HTTPException(422,"No worksheet contains a supplier company-name header")
+        return parsed
+    values=sheets[0][1]
     if not values: raise HTTPException(422, "The workbook is empty")
     actual = [_clean(v).casefold() for v in values[0]]
     expected = [h.casefold() for h in headers]
@@ -130,7 +179,26 @@ def _material_row(db, row, number, batch, user, category_cache, unit_cache, cand
 
 def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen):
     name, contact_name, raw_email, raw_phone, country, city, address, main_name, sub_name, desc, unit = (
-        row.get(key, "") for key in SUPPLIER_HEADERS)
+        row.get(key, "") for key in SUPPLIER_HEADERS[:11])
+    website = _clean(row.get("Website"))
+    _, normalized_website = extract_website(website)
+    website = normalized_website or website
+    source_raw_trade = _clean(row.get("Trade"))
+    trade_without_website, extracted_website = extract_website(source_raw_trade)
+    raw_trade = source_raw_trade
+    trade_keyword = trade_without_website or source_raw_trade
+    raw_type = _clean(row.get("Type"))
+    discipline = _clean(row.get("Discipline"))
+    path = " / ".join(part for part in (discipline, main_name, sub_name) if part)
+    # Use the Excel type only when it explicitly describes a discipline hierarchy.
+    if raw_type and raw_type.split("/", 1)[0].strip().casefold() in DISCIPLINES:
+        path = raw_type
+    elif not path and trade_keyword and "/" in trade_keyword and trade_keyword.split("/",1)[0].strip().casefold() in DISCIPLINES:
+        path = trade_keyword
+    if not discipline and _category_key(main_name) in {"low current elv","low current"}:
+        path=f"Electrical / {main_name}"
+        if sub_name and sub_name.casefold() not in trade_keyword.casefold():
+            trade_keyword=" | ".join(part for part in (trade_keyword,sub_name) if part)
     name = _clean(name)
     name_key = " ".join(unicodedata.normalize("NFKC", name).casefold().split())
     email_values = _supplier_emails(raw_email)
@@ -164,7 +232,7 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
             business_email=valid_email["value"] if valid_email else None,
             business_phone=valid_phone["normalized"] if valid_phone else None,
             contact_name=contact_name[:150] or None, source="imported", is_supplier=True, is_buyer=False,
-            verified_status="unverified", profile_status="pending_onboarding")
+            verified_status="unverified", profile_status="incomplete")
         db.add(org); db.flush(); created = True
     else:
         # Fill gaps without erasing any existing valid supplier profile data.
@@ -173,7 +241,11 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
         if not org.city and city: org.city = city[:100]
         if not org.address and address: org.address = address[:300]
         if not org.contact_name and contact_name: org.contact_name = contact_name[:150]
-        if org.verified_status != "verified" and org.source == "imported": org.profile_status = "pending_onboarding"
+        if not org.country and country: org.country=country[:100]
+        if not org.website and (website or extracted_website): org.website=(website or extracted_website)[:300]
+        if not org.cr_number and row.get("CR Number"): org.cr_number=_clean(row.get("CR Number"))[:80]
+        if not org.vat_number and row.get("VAT Number"): org.vat_number=_clean(row.get("VAT Number"))[:80]
+        if not org.description and row.get("Company Description"): org.description=_clean(row.get("Company Description"))[:5000]
 
     contact_warnings = []
     if any(not item["valid"] for item in email_values): contact_warnings.append("Email needs review")
@@ -206,8 +278,11 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
                 duplicate_query = select(Contact.id).where(Contact.org_id == org.id)
                 if email_key:
                     duplicate_query = duplicate_query.where(func.lower(func.trim(Contact.email)) == email_key)
+                    duplicate_query = duplicate_query.where(Contact.phone_normalized == phone_key if phone_key else Contact.phone_normalized.is_(None))
+                    duplicate_query = duplicate_query.where(Contact.name == (contact_name or None))
                 elif phone_key:
                     duplicate_query = duplicate_query.where(Contact.phone_normalized == phone_key)
+                    duplicate_query = duplicate_query.where(Contact.name == (contact_name or None))
                 elif fax_value:
                     duplicate_query = duplicate_query.where(Contact.fax == fax_value[:80])
                 else:
@@ -224,14 +299,37 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
         except Exception:
             contact_warnings.append("A contact entry needs database review")
     db.flush()
+    # Imported and admin-created supplier records are verified by this authenticated admin operation.
+    if org.source == "imported":
+        ensure_import_verification(db, org, user)
+    if website or extracted_website:
+        org.website = org.website or (website or extracted_website)[:300]
+    if not org.country and country: org.country=country[:100]
+    if not org.cr_number and row.get("CR Number"): org.cr_number=_clean(row.get("CR Number"))[:80]
+    if not org.vat_number and row.get("VAT Number"): org.vat_number=_clean(row.get("VAT Number"))[:80]
+    if not org.description and row.get("Company Description"): org.description=_clean(row.get("Company Description"))[:5000]
+    raw_type = raw_type or " / ".join(part for part in (main_name,sub_name) if part)
+    mapping = {"path":path,"raw_trade":trade_keyword,"source_raw_trade":source_raw_trade,"raw_type":raw_type,"raw_brands":_clean(row.get("Brands")),
+        "city":city,"description":desc,"unit":unit} if raw_trade or raw_type or row.get("Brands") else None
+    missing_profile = [label for label,value in (("City",org.city),("Address",org.address),("CR Number",org.cr_number),
+        ("Contact Person",org.contact_name)) if not value]
+    org.profile_status="complete" if not missing_profile and (org.business_email or org.business_phone or emails or phones) else "incomplete"
     missing = [label for label, value in (("Company Name", not org.name.startswith("[Imported supplier placeholder:")),
         ("Email", org.business_email), ("Phone", org.business_phone), ("City", org.city),
         ("Address", org.address), ("Contact Person", org.contact_name)) if not value]
-    if (missing or contact_warnings) and org.verified_status != "verified" and org.source == "imported":
-        org.profile_status = "pending_onboarding"
-    elif org.verified_status != "verified" and org.source == "imported":
-        org.profile_status = "pending_onboarding"
-    return org, created, missing, contact_warnings, contacts_added
+    return org, created, missing, contact_warnings, contacts_added, mapping
+
+
+def _process_supplier_capability(db,org,mapping,batch,user,row,number):
+    if not mapping:return None
+    trade=ensure_trade_record(db,org,batch,raw_trade=mapping["source_raw_trade"],raw_type=mapping["raw_type"],
+        raw_brands=mapping["raw_brands"],raw_location=mapping["city"])
+    if not mapping["path"]:
+        return {"status":"pending","reason":"Category mapping needs review","categories_created":0,
+            "materials_created":0,"capability_created":False}
+    return apply_supplier_trade_mapping(db,org=org,trade=trade,raw_path=mapping["path"],
+        raw_trade=mapping["raw_trade"],city=mapping["city"],description=mapping["description"],
+        unit=mapping["unit"],actor=user,batch_id=batch.id,row_number=row.get("_source_row",number),auto_confirm=True)
 
 
 def _supplier_emails(raw_value):
@@ -339,7 +437,8 @@ def _supplier_identity_key(row):
 def _stream_import(kind, rows, filename, user_id):
     chunks = _chunks(rows); batch_count = len(chunks); db = SessionLocal()
     issues = []; warnings = []; incomplete_rows = []; imported = skipped = incomplete = completed_rows = 0
-    capability_saved = capability_skipped = contacts_created = 0; category_cache = {}; unit_cache = {}; seen = set()
+    capability_saved = capability_skipped = contacts_created = categories_created = materials_created = 0; category_cache = {}; unit_cache = {}; seen = set()
+    pending_category_mappings = 0
     org_cache = {}; cap_cache = {}; material_cache = {}
     new_supplier_ids = set(); reused_supplier_ids = set(); incomplete_supplier_ids = set(); failed_supplier_keys = set()
     supplier_total = len({_supplier_identity_key(row) for _, row in rows if _supplier_identity_key(row) != "unidentified"}) if kind == "suppliers" else 0
@@ -379,7 +478,7 @@ def _stream_import(kind, rows, filename, user_id):
                             result = _supplier_row(db, row, number, batch, db.get(User, user_id), org_cache, cap_cache, {}, material_cache, seen)
                             if result[0] is None:
                                 raise ValueError("Company Name or a valid email/phone identifier is required")
-                            org, created, missing, contact_warnings, contact_count = result
+                            org, created, missing, contact_warnings, contact_count, mapping = result
                             db.flush()
                         db.commit()
                     except Exception as exc:
@@ -398,26 +497,41 @@ def _stream_import(kind, rows, filename, user_id):
                         incomplete_rows.append({"row":number, "reason":", ".join(f"{field} missing" for field in missing), "missing_fields":missing})
                         raw_warnings.extend(f"{field} missing" for field in missing)
                     raw_warnings.extend(contact_warnings)
-                    try:
-                        with db.begin_nested():
-                            cap_status, cap_warning = _supplier_capability(db, org, row, batch, number,
-                                cap_cache, category_cache, material_cache)
-                            db.flush()
-                        db.commit()
-                        if cap_status == "saved": capability_saved += 1
-                        elif cap_status == "skipped": capability_skipped += 1
-                        if cap_warning: raw_warnings.append(cap_warning)
-                    except Exception as exc:
-                        db.rollback()
-                        cap_status = "skipped"; capability_skipped += 1
-                        raw_warnings.append(f"Capability processing failed: {type(exc).__name__}")
+                    cap_status = "skipped"
+                    mapping_result=None
+                    if mapping:
+                        try:
+                            with db.begin_nested():
+                                mapping_result=_process_supplier_capability(db,org,mapping,batch,db.get(User,user_id),row,number)
+                                db.flush()
+                            db.commit()
+                        except Exception as exc:
+                            db.rollback()
+                            mapping_result={"status":"pending","reason":f"Category mapping needs review ({type(exc).__name__})",
+                                "categories_created":0,"materials_created":0,"capability_created":False}
+                    if mapping_result:
+                        if mapping_result.get("status") == "saved":
+                            capability_saved += int(mapping_result.get("capability_created", False))
+                            categories_created += mapping_result.get("categories_created", 0)
+                            materials_created += mapping_result.get("materials_created", 0)
+                            cap_status = "saved"
+                            if mapping_result.get("material_warning"):
+                                capability_skipped += 1
+                                raw_warnings.append(mapping_result["material_warning"])
+                        else:
+                            capability_skipped += 1
+                            pending_category_mappings += 1
+                            raw_warnings.append(mapping_result.get("reason") or "Category mapping needs review")
+                    elif row.get("Material Description") or row.get("Main Category") or row.get("Subcategory"):
+                        capability_skipped += 1
+                        raw_warnings.append("Capability source did not contain a reliable category path")
                     row_status = "incomplete" if (missing or contact_warnings) else ("created" if created else "existing")
                     issue_text = "; ".join(dict.fromkeys(raw_warnings))
                     if issue_text:
                         warnings.append({"row":number, "reason":issue_text, "capability_saved":cap_status == "saved"})
                     try:
-                        db.add(ImportedRow(batch_id=batch.id, row_number=number, raw=row,
-                            status="warning" if issue_text else row_status, issue=issue_text[:300] or None))
+                        db.add(ImportedRow(batch_id=batch.id, row_number=row.get("_source_row",number), raw=row,
+                            status="incomplete" if missing else "warning" if issue_text else row_status, issue=issue_text[:300] or None))
                         db.commit()
                     except Exception as exc:
                         db.rollback()
@@ -437,6 +551,7 @@ def _stream_import(kind, rows, filename, user_id):
                 "failed":len(failed_supplier_keys) if kind == "suppliers" else len(issues),
                 "new_suppliers_saved":len(new_supplier_ids), "existing_suppliers_reused":len(reused_supplier_ids),
                 "contacts_created":contacts_created, "capabilities_saved":capability_saved, "capabilities_skipped":capability_skipped,
+                "categories_created":categories_created,"materials_created":materials_created,"pending_category_mappings":pending_category_mappings,
                 "progress_percent":round(index / batch_count * 100, 2) if batch_count else 100,
                 "issues":issues[-50:], "warnings":warnings[-50:], "incomplete_rows":incomplete_rows[-50:]}) + "\n"
         batch = db.get(ImportBatch, batch.id)
@@ -450,6 +565,7 @@ def _stream_import(kind, rows, filename, user_id):
             "total_supplier_records_identified":supplier_total, "new_suppliers_saved":len(new_supplier_ids),
             "existing_suppliers_reused":len(reused_supplier_ids), "suppliers_incomplete":len(incomplete_supplier_ids),
             "contacts_created":contacts_created, "capabilities_saved":capability_saved, "capabilities_skipped":capability_skipped,
+            "categories_created":categories_created,"materials_created":materials_created,"pending_category_mappings":pending_category_mappings,
             "supplier_failures":len(failed_supplier_keys), "imported":imported, "skipped":skipped,
             "incomplete":len(incomplete_supplier_ids), "failed":len(failed_supplier_keys) if kind == "suppliers" else len(issues),
             "warnings":warnings, "incomplete_rows":incomplete_rows, "issues":issues}) + "\n"

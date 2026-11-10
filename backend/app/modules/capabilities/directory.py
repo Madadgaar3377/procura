@@ -5,7 +5,7 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.database import get_db
-from app.models import Capability, Category, Organization
+from app.models import Capability, Category, Material, Organization
 from app.modules.capabilities.public_details import published_details
 from app.response_contracts import PublicSupplier
 
@@ -84,7 +84,8 @@ def add_coverage(db,profiles,include_categories=False,include_groups=False,share
     parent=aliased(Category)
     rows=db.execute(select(Capability.org_id,Capability.city,Category.name_en,Category.name_ar,
         parent.name_en.label("main_en"),parent.name_ar.label("main_ar"),
-        Category.id.label("category_id"),Category.parent_id).join(
+        Category.id.label("category_id"),Category.parent_id,Capability.trade_keywords,Capability.material_ids,
+        Capability.mapping_source).join(
         Category,Category.id==Capability.category_id).outerjoin(parent,parent.id==Category.parent_id).where(
         Capability.org_id.in_(ids),Capability.confirmed.is_(True),Capability.accepts_rfqs.is_(True),
         Capability.eligibility_status=='enabled',Category.active.is_(True),
@@ -92,6 +93,11 @@ def add_coverage(db,profiles,include_categories=False,include_groups=False,share
     grouped={org_id:[] for org_id in ids}
     for row in rows:
         grouped[row.org_id].append(row)
+    material_ids={item for row in rows for item in (row.material_ids or [])}
+    material_names={}
+    if material_ids:
+        material_names={m.id:(m.name_en,m.unit or '') for m in db.scalars(select(Material).where(
+            Material.id.in_(material_ids),Material.active.is_(True))).all()}
     for profile in profiles:
         selected=grouped[profile['id']]
         if include_categories:
@@ -106,13 +112,24 @@ def add_coverage(db,profiles,include_categories=False,include_groups=False,share
                 group=groups.setdefault(main_id,{'id':main_id,'name_en':row.main_en or row.name_en,
                     'name_ar':row.main_ar or row.main_en or row.name_ar or row.name_en,'subcategories':{}})
                 if row.parent_id:
-                    child={'id':row.category_id,'name_en':row.name_en,'name_ar':row.name_ar or row.name_en}
-                    group['subcategories'][row.category_id]=child
+                    child=group['subcategories'].setdefault(row.category_id,{'id':row.category_id,'name_en':row.name_en,
+                        'name_ar':row.name_ar or row.name_en,'trade_keywords':set(),'materials':set(),'units':set()})
+                    child['trade_keywords'].update(part.strip() for part in (row.trade_keywords or '').split('|') if part.strip())
+                    for material_id in row.material_ids or []:
+                        if material_id in material_names:
+                            material_name,unit=material_names[material_id]
+                            child['materials'].add(material_name)
+                            if unit:child['units'].add(unit)
                     if shared_ids and row.category_id in shared_ids:shared[row.category_id]=child
-            profile['capability_groups']=[{**g,'subcategories':sorted(g['subcategories'].values(),key=lambda c:(c['name_en'],c['id']))}
+            profile['capability_groups']=[{**g,'subcategories':[
+                {**child,'trade_keywords':sorted(child['trade_keywords']),'materials':sorted(child['materials']),'units':sorted(child['units'])}
+                for child in sorted(g['subcategories'].values(),key=lambda c:(c['name_en'],c['id']))]}
                 for g in sorted(groups.values(),key=lambda c:(c['name_en'],c['id']))]
-            if shared_ids is not None:profile['shared_subcategories']=sorted(shared.values(),key=lambda c:(c['name_en'],c['id']))[:3]
-        profile['service_cities']=sorted({row.city.strip() for row in selected if row.city and row.city.strip()})
+            if shared_ids is not None:profile['shared_subcategories']=[
+                {**child,'trade_keywords':sorted(child['trade_keywords']),'materials':sorted(child['materials']),'units':sorted(child['units'])}
+                for child in sorted(shared.values(),key=lambda c:(c['name_en'],c['id']))[:3]]
+        profile['service_cities']=sorted({row.city.strip() for row in selected if row.city and row.city.strip()
+            and row.mapping_source!='supplier_import'})
         profile['capability_labels']=sorted({row.name_en for row in selected})
         profile['capability_labels_ar']=sorted({row.name_ar or row.name_en for row in selected})
 

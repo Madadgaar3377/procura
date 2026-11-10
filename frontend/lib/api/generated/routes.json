@@ -72,6 +72,36 @@
   "auth/phone/change/confirm": [
     "POST"
   ],
+  "organizations/admin/suppliers": [
+    "GET",
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}": [
+    "GET",
+    "PATCH"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/{contact_id}": [
+    "PATCH"
+  ],
+  "organizations/admin/suppliers/{org_id}/capabilities": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/capabilities/{capability_id}": [
+    "PATCH",
+    "DELETE"
+  ],
+  "organizations/admin/suppliers/{org_id}/verify": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/request-information": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/reject": [
+    "POST"
+  ],
   "organizations/{org_id}/public-profile": [
     "GET",
     "PATCH"
@@ -79,9 +109,6 @@
   "organizations": [
     "POST",
     "GET"
-  ],
-  "organizations/admin/suppliers": [
-    "POST"
   ],
   "organizations/claimable/suppliers": [
     "GET"
@@ -196,6 +223,33 @@
   ],
   "imports/materials": [
     "GET"
+  ],
+  "imports/bulk/materials/template": [
+    "GET"
+  ],
+  "imports/bulk/suppliers/template": [
+    "GET"
+  ],
+  "imports/bulk/materials": [
+    "POST"
+  ],
+  "imports/bulk/suppliers": [
+    "POST"
+  ],
+  "imports/bulk/{batch_id}/errors": [
+    "GET"
+  ],
+  "imports/bulk/suppliers/{batch_id}/warnings": [
+    "GET"
+  ],
+  "imports/bulk/suppliers/{batch_id}/incomplete": [
+    "GET"
+  ],
+  "imports/suppliers/reprocess/preview": [
+    "GET"
+  ],
+  "imports/suppliers/reprocess": [
+    "POST"
   ],
   "imports/{kind}": [
     "POST"

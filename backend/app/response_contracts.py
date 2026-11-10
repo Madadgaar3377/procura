@@ -217,6 +217,9 @@ class PublicCategory(ResponseModel):
     id: str
     name_en: str
     name_ar: str = ''
+    trade_keywords: list[str] = Field(default_factory=list)
+    materials: list[str] = Field(default_factory=list)
+    units: list[str] = Field(default_factory=list)
 
 
 class PublicCapabilityGroup(PublicCategory):

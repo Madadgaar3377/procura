@@ -12,7 +12,7 @@ from zipfile import BadZipFile, ZipFile
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import load_workbook
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app import catalog_cache
@@ -27,6 +27,7 @@ from app.models import (
     Material,
     Organization,
     User,
+    Verification,
 )
 from app.response_contracts import ImportBatchOut, SupplierImportConfirmation
 from app.schemas import SupplierTradeMappingIn
@@ -36,6 +37,8 @@ from app.serializers import record
 router=APIRouter(prefix='/imports',tags=['Supplier & Material Imports'])
 from app.modules.imports.materials import router as material_imports
 from app.modules.imports.bulk import router as bulk_imports
+from app.modules.imports.supplier_mapping import (DISCIPLINES, apply_supplier_trade_mapping,
+    ensure_import_verification, label_key, resolve_supplier_path, split_path)
 
 router.include_router(material_imports)
 router.include_router(bulk_imports)
@@ -259,15 +262,21 @@ def _apply_supplier_rows(db:Session,user:User,batch:ImportBatch,rows:Sequence[Im
         company=company_by_name.get(n)
         if not company:
             company=Organization(name=name,name_normalized=n,city=field(row,'city') or None,
-                website=field(row,'website') or None,source='imported',is_supplier=True,is_buyer=False)
+                website=field(row,'website') or None,source='imported',is_supplier=True,is_buyer=False,
+                verified_status='unverified',profile_status='incomplete')
             db.add(company);db.flush();company_by_name[n]=company;created+=1
         made_any=False
         trade_key=supplier_trade_key(row)
         known_trades=trade_keys.setdefault(company.id,set())
         if trade_key not in known_trades:
-            db.add(ImportedSupplierTrade(org_id=company.id,import_batch_id=batch.id,raw_trade=field(row,'trade'),
-                raw_brands=field(row,'brands'),raw_type=field(row,'type'),raw_location=field(row,'city')))
+            trade=ImportedSupplierTrade(org_id=company.id,import_batch_id=batch.id,raw_trade=field(row,'trade'),
+                raw_brands=field(row,'brands'),raw_type=field(row,'type'),raw_location=field(row,'city'))
+            db.add(trade);db.flush()
             known_trades.add(trade_key);made_any=True
+        else:
+            trade=db.scalar(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==company.id,
+                ImportedSupplierTrade.raw_trade==field(row,'trade'),ImportedSupplierTrade.raw_brands==field(row,'brands'),
+                ImportedSupplierTrade.raw_type==field(row,'type'),ImportedSupplierTrade.raw_location==field(row,'city')).limit(1))
         contact_key=supplier_contact_key(row)
         if contact_key:
             known_contacts=contact_keys.setdefault(company.id,set())
@@ -278,6 +287,19 @@ def _apply_supplier_rows(db:Session,user:User,batch:ImportBatch,rows:Sequence[Im
                         permission_to_notify=False))
                 known_contacts.add(contact_key);made_any=True
         if not made_any:unchanged+=1
+        if company.source=='imported':
+            ensure_import_verification(db,company,user)
+        if trade:
+            path=supplier_trade_path(trade)
+            if path:
+                try:
+                    with db.begin_nested():
+                        apply_supplier_trade_mapping(db,org=company,trade=trade,raw_path=path,
+                            raw_trade=trade.raw_trade,city=field(row,'city'),actor=user,batch_id=batch.id,
+                            row_number=item.row_number,auto_confirm=True)
+                        db.flush()
+                except Exception:
+                    trade.mapping_status='unreviewed'
         item.status='created' if made_any else 'unchanged'
     return created,unchanged,errors
 
@@ -322,6 +344,102 @@ def process_queued_supplier_imports(db:Session,batch_limit:int=1,chunk_size:int=
                 failed.status='failed' if failed.retry_count>=3 else 'queued';failed.updated_at=datetime.now(UTC)
                 db.commit()
     return completed
+
+
+def _supplier_reprocess_query():
+    approved=select(Verification.id).where(Verification.org_id==Organization.id,Verification.status=='approved').exists()
+    unresolved=select(ImportedSupplierTrade.id).where(ImportedSupplierTrade.org_id==Organization.id,
+        ImportedSupplierTrade.mapping_status.notin_(['mapped','approved'])).exists()
+    return select(Organization).where(Organization.is_supplier.is_(True),Organization.source=='imported',
+        Organization.verified_status!='rejected',or_(Organization.verified_status!='verified',~approved,unresolved))
+
+
+@router.get('/suppliers/reprocess/preview')
+def supplier_reprocess_preview(after_id:str|None=None,user:User=Depends(admin_user),db:Session=Depends(get_db)):
+    """Read-only preview of legacy imported suppliers eligible for safe repair."""
+    query=_supplier_reprocess_query()
+    if after_id:
+        if not db.scalar(select(Organization.id).where(Organization.id==after_id,Organization.source=='imported')):
+            raise HTTPException(422,'Invalid supplier reprocessing cursor')
+        query=query.where(Organization.id>after_id)
+    count=db.scalar(select(func.count()).select_from(query.subquery())) or 0
+    companies=db.scalars(query.order_by(Organization.id).limit(35)).all()
+    preview=[]
+    for company in companies:
+        trades=db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==company.id).order_by(
+            ImportedSupplierTrade.created_at,ImportedSupplierTrade.id)).all()
+        approved=db.scalar(select(Verification.id).where(Verification.org_id==company.id,Verification.status=='approved'))
+        needs=company.verified_status!='verified' or not approved or any(t.mapping_status not in {'mapped','approved'} for t in trades)
+        if not needs:continue
+        suggestions=[];supplier_categories_to_create=0
+        for trade in trades:
+            path=supplier_trade_path(trade)
+            result=resolve_supplier_path(db,raw_path=path,create=False) if path else None
+            parts=split_path(path)
+            can_create=bool(parts and (label_key(parts[0]) in DISCIPLINES or label_key(parts[0]) in {'low current elv','low current'}) and not (result and result.category))
+            planned_category='Electrical / Low Current (ELV)' if parts and label_key(parts[0]) in {'low current elv','low current'} else ' / '.join(parts[:2])
+            supplier_categories_to_create+=int(can_create)
+            suggestions.append({'trade_id':trade.id,'raw_trade':trade.raw_trade,'raw_type':trade.raw_type,
+                'mapping':'reuse' if result and result.category else 'create' if can_create else 'pending_review',
+                'category':result.category.name_en if result and result.category else planned_category if can_create else None})
+        preview.append({'organization_id':company.id,'name':company.name,'verification':company.verified_status,
+            'capabilities':db.scalar(select(func.count()).select_from(Capability).where(Capability.org_id==company.id)) or 0,
+            'categories_to_create':supplier_categories_to_create,'trades':suggestions})
+    return {'suppliers_to_reprocess':count,'batch_size':35,'suppliers':preview,
+        'categories_to_create':sum(int(item['categories_to_create']) for item in preview)}
+
+
+@router.post('/suppliers/reprocess')
+def reprocess_imported_suppliers(after_id:str|None=None,user:User=Depends(admin_user),db:Session=Depends(get_db)):
+    """Apply deterministic category backfill in per-supplier transactions (maximum 35)."""
+    query=_supplier_reprocess_query()
+    if after_id:
+        if not db.scalar(select(Organization.id).where(Organization.id==after_id,Organization.source=='imported')):
+            raise HTTPException(422,'Invalid supplier reprocessing cursor')
+        query=query.where(Organization.id>after_id)
+    candidates=db.scalars(query.order_by(Organization.id).limit(36)).all()
+    companies=candidates[:35]
+    summary={'processed':0,'verified':0,'capabilities_created':0,'categories_created':0,'pending_mappings':0,'failed':0}
+    next_after_id=after_id
+    for candidate in companies:
+        company=db.scalar(select(Organization).where(Organization.id==candidate.id).with_for_update(skip_locked=True))
+        if not company:continue
+        current={'verified':0,'capabilities_created':0,'categories_created':0,'pending_mappings':0}
+        try:
+            with db.begin_nested():
+                trades=db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==company.id).order_by(
+                    ImportedSupplierTrade.created_at,ImportedSupplierTrade.id)).all()
+                # Attribute verification to the original import admin where known.
+                importer=None
+                for trade in trades:
+                    if trade.import_batch_id:
+                        source_batch=db.get(ImportBatch,trade.import_batch_id)
+                        if source_batch and source_batch.initiated_by:
+                            importer=db.get(User,source_batch.initiated_by)
+                            if importer:break
+                current['verified']+=int(ensure_import_verification(db,company,importer,
+                    reason='' if importer else 'System migration: original importing administrator identity is unavailable.'))
+                for trade in trades:
+                    path=supplier_trade_path(trade)
+                    if not path:
+                        trade.mapping_status='unreviewed';current['pending_mappings']+=1;continue
+                    resolved=resolve_supplier_path(db,raw_path=path,create=False)
+                    before=db.scalar(select(Capability.id).where(Capability.org_id==company.id,
+                        Capability.category_id==resolved.category.id,Capability.city==' '.join((trade.raw_location or '').split()))) if resolved.category else None
+                    mapped=apply_supplier_trade_mapping(db,org=company,trade=trade,raw_path=path,
+                        raw_trade=trade.raw_trade,city=trade.raw_location,actor=user,
+                        batch_id=trade.import_batch_id,row_number=None,auto_confirm=True)
+                    current['categories_created']+=mapped.get('categories_created',0)
+                    current['capabilities_created']+=int(mapped.get('status')=='saved' and not before)
+                    if mapped.get('status')!='saved':current['pending_mappings']+=1
+                audit(db,user,'supplier.categories_reprocessed',company.id,company.id,trade_count=len(trades))
+            db.commit();summary['processed']+=1;next_after_id=company.id
+            for key,value in current.items():summary[key]+=value
+        except Exception:
+            db.rollback();summary['failed']+=1;break
+    summary['next_after_id']=next_after_id
+    summary['has_more']=len(candidates)>len(companies) or summary['failed']>0 or summary['processed']<len(companies)
+    return summary
 
 @router.post('/{kind}',status_code=201)
 def upload(kind:str,file:UploadFile=File(...),dry_run:bool=True,column_mapping:str|None=None,sheet_name:str|None=Form(default=None),user:User=Depends(admin_user),db:Session=Depends(get_db)):
@@ -485,6 +603,16 @@ def _csv_safe(value:object)->str:
     return "'"+text if text.lstrip().startswith(('=','+','-','@','\t','\r')) else text
 
 
+def supplier_trade_path(trade:ImportedSupplierTrade)->str:
+    raw_type=trade.raw_type or '';raw_trade=trade.raw_trade or ''
+    type_parts=split_path(raw_type);trade_parts=split_path(raw_trade)
+    if type_parts and (label_key(type_parts[0]) in DISCIPLINES or label_key(type_parts[0]) in {'low current elv','low current'}):
+        return raw_type
+    if trade_parts and label_key(trade_parts[0]) in DISCIPLINES:
+        return raw_trade
+    return ''
+
+
 @router.get('/suppliers/{batch_id}/errors.csv')
 def supplier_import_errors(batch_id:str,user:User=Depends(admin_user),db:Session=Depends(get_db)):
     batch=db.scalar(select(ImportBatch).where(ImportBatch.id==batch_id,ImportBatch.kind=='suppliers'))
@@ -539,14 +667,17 @@ def map_supplier_trade(trade_id:str,payload:SupplierTradeMappingIn,user:User=Dep
     category=db.scalar(select(Category).where(Category.id==payload.category_id,Category.active.is_(True)))
     if not category:raise HTTPException(422,'Choose an existing active category')
     city=' '.join(payload.city.split())
-    if not city:raise HTTPException(422,'Confirm a service city for this supplier capability')
     capability=db.scalar(select(Capability).where(Capability.org_id==trade.org_id,
         Capability.category_id==category.id,func.lower(func.trim(Capability.city))==city.casefold()))
     if capability is None:
         capability=Capability(org_id=trade.org_id,category_id=category.id,city=city,
-            trade_keywords=trade.raw_trade,confirmed=False,accepts_rfqs=False,eligibility_status='enabled')
+            trade_keywords=trade.raw_trade,confirmed=True,accepts_rfqs=True,eligibility_status='enabled',mapping_source='admin')
         db.add(capability);db.flush()
-    trade.mapping_status='mapped_pending_approval'
+    else:
+        capability.confirmed=True;capability.accepts_rfqs=True;capability.eligibility_status='enabled';capability.mapping_source='admin'
+        if trade.raw_trade and trade.raw_trade not in (capability.trade_keywords or ''):
+            capability.trade_keywords=' | '.join(filter(None,[capability.trade_keywords,trade.raw_trade]))[:5000]
+    trade.mapping_status='mapped'
     audit(db,user,'supplier_trade.mapped',trade.org_id,trade.id,category_id=category.id,city=city,
         capability_id=capability.id)
     db.commit()

@@ -5,10 +5,10 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 
 from app.database import Base
-from app.models import Capability, Category, Contact, ImportBatch, ImportedRow, ImportedSupplierTrade, MeasurementUnit, Organization, User
+from app.models import Capability, Category, Contact, ImportBatch, ImportedRow, ImportedSupplierTrade, MeasurementUnit, Organization, User, Verification
 from app.modules.materials.service import create_material_record
 from app.modules.imports.materials import _discover
-from app.modules.imports.router import extract, field, map_supplier_trade, process_queued_supplier_imports, router
+from app.modules.imports.router import extract, field, map_supplier_trade, process_queued_supplier_imports, router, reprocess_imported_suppliers, supplier_reprocess_preview
 from app.schemas import SupplierTradeMappingIn
 
 
@@ -68,7 +68,7 @@ def test_material_import_can_register_an_unlisted_source_unit():
     engine.dispose()
 
 
-def test_supplier_import_worker_commits_bounded_idempotent_batches_without_verifying_or_notifying():
+def test_supplier_import_worker_commits_bounded_idempotent_batches_and_auto_verifies_admin_imports():
     engine=create_engine('sqlite:///:memory:')
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -78,24 +78,29 @@ def test_supplier_import_worker_commits_bounded_idempotent_batches_without_verif
                           initiated_by=admin.id)
         db.add(batch);db.flush()
         db.add_all([
-            ImportedRow(batch_id=batch.id,row_number=2,status='valid',raw={'supplier name':'Bright Co','trade':'Lighting','contact person':'Sales One','mobile':'0501112222','email':'one@example.com'}),
-            ImportedRow(batch_id=batch.id,row_number=3,status='valid',raw={'supplier name':'Bright Co','trade':'Lighting','contact person':'Sales Two','mobile':'0503334444','email':'two@example.com'}),
+            ImportedRow(batch_id=batch.id,row_number=2,status='valid',raw={'supplier name':'Bright Co','trade':'Panels / MV','type':'Electrical / Panels','contact person':'Sales One','mobile':'0501112222','email':'one@example.com'}),
+            ImportedRow(batch_id=batch.id,row_number=3,status='valid',raw={'supplier name':'Bright Co','trade':'Panels / MV','type':'Electrical / Panels','contact person':'Sales Two','mobile':'0503334444','email':'two@example.com'}),
         ]);db.commit()
 
         assert not process_queued_supplier_imports(db,batch_limit=1,chunk_size=1)
         assert batch.status=='queued' and batch.completed_rows==1
         assert process_queued_supplier_imports(db,batch_limit=1,chunk_size=1)==[batch.id]
         company=db.scalar(select(Organization).where(Organization.source=='imported'))
-        assert company and company.verified_status=='unverified' and not company.is_buyer
+        assert company and company.verified_status=='verified' and not company.is_buyer
+        verification=db.scalar(select(Verification).where(Verification.org_id==company.id,Verification.status=='approved'))
+        assert verification and verification.reviewer_id==admin.id and verification.reviewed_at
         assert db.scalar(select(func.count()).select_from(Contact).where(Contact.org_id==company.id))==2
         assert db.scalar(select(func.count()).select_from(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==company.id))==1
         assert db.scalar(select(func.count()).select_from(ImportedRow).where(ImportedRow.batch_id==batch.id,ImportedRow.status=='created'))==2
-        assert not db.scalar(select(ImportedSupplierTrade.id).where(ImportedSupplierTrade.org_id==company.id,ImportedSupplierTrade.mapping_status!='unreviewed'))
+        trade=db.scalar(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==company.id))
+        capability=db.scalar(select(Capability).where(Capability.org_id==company.id))
+        assert trade and trade.mapping_status=='mapped'
+        assert capability and capability.confirmed and capability.trade_keywords=='Panels / MV'
         assert db.scalar(select(func.count()).select_from(Contact).where(Contact.org_id==company.id,Contact.permission_to_notify.is_(True)))==0
     engine.dispose()
 
 
-def test_imported_trade_maps_to_existing_category_and_stays_pending_for_capability_approval():
+def test_imported_trade_admin_mapping_is_confirmed_for_publication():
     engine=create_engine('sqlite:///:memory:')
     Base.metadata.create_all(engine)
     with Session(engine) as db:
@@ -110,10 +115,10 @@ def test_imported_trade_maps_to_existing_category_and_stays_pending_for_capabili
         result=map_supplier_trade(trade.id,SupplierTradeMappingIn(category_id=category.id,city='Riyadh'),admin,db)
 
         capability=db.scalar(select(Capability).where(Capability.org_id==company.id))
-        assert result['requires_capability_approval'] is True
+        assert result['requires_capability_approval'] is False
         assert capability and capability.category_id==category.id and capability.trade_keywords=='Lighting fixtures'
-        assert capability.confirmed is False and capability.accepts_rfqs is False
-        assert trade.mapping_status=='mapped_pending_approval'
+        assert capability.confirmed is True and capability.accepts_rfqs is True
+        assert trade.mapping_status=='mapped'
     engine.dispose()
 
 
@@ -122,7 +127,8 @@ def test_supplier_import_read_and_download_routes_require_admin():
 
     protected={'/api/v1/imports/suppliers/{batch_id}','/api/v1/imports/suppliers/{batch_id}/errors.csv',
                '/api/v1/imports/suppliers/{batch_id}/confirm','/api/v1/imports/supplier-trades',
-               '/api/v1/imports/supplier-trades/{trade_id}/map'}
+               '/api/v1/imports/supplier-trades/{trade_id}/map','/api/v1/imports/suppliers/reprocess/preview',
+               '/api/v1/imports/suppliers/reprocess'}
     for route in router.routes:
         if not hasattr(route,'path'):
             continue
@@ -130,3 +136,31 @@ def test_supplier_import_read_and_download_routes_require_admin():
         if full_path in protected:
             assert any(dependency.call is admin_user for dependency in route.dependant.dependencies)
     assert protected <= {'/api/v1'+route.path for route in router.routes if hasattr(route,'path')}
+
+
+def test_imported_supplier_backfill_preserves_importer_and_does_not_verify_registered_supplier():
+    engine=create_engine('sqlite:///:memory:')
+    Base.metadata.create_all(engine)
+    with Session(engine) as db:
+        admin=User(username='backfill-admin',phone='+966500000003',phone_e164='+966500000003',password_hash='x',is_admin=True)
+        imported=Organization(name='Legacy Imported',name_normalized='legacy imported',source='imported',is_supplier=True,
+            is_buyer=False,verified_status='unverified',profile_status='incomplete')
+        registered=Organization(name='Self Registered',name_normalized='self registered',source='registered',is_supplier=True,
+            is_buyer=False,verified_status='unverified',profile_status='incomplete')
+        db.add_all([admin,imported,registered]);db.flush()
+        batch=ImportBatch(kind='suppliers',filename='legacy.xlsx',initiated_by=admin.id);db.add(batch);db.flush()
+        trade=ImportedSupplierTrade(org_id=imported.id,import_batch_id=batch.id,raw_type='Electrical / Panels',raw_trade='Panels / MV')
+        db.add(trade);db.commit()
+        preview=supplier_reprocess_preview(user=admin,db=db)
+        assert preview['suppliers_to_reprocess']==1
+        result=reprocess_imported_suppliers(None,admin,db)
+        db.refresh(imported);db.refresh(registered);db.refresh(trade)
+        verification=db.scalar(select(Verification).where(Verification.org_id==imported.id,Verification.status=='approved'))
+        capability=db.scalar(select(Capability).where(Capability.org_id==imported.id))
+        assert result['processed']==1 and result['verified']==1
+        assert imported.verified_status=='verified' and verification.reviewer_id==admin.id
+        assert capability and capability.confirmed and capability.trade_keywords=='Panels / MV'
+        assert trade.mapping_status=='mapped'
+        assert registered.verified_status=='unverified'
+        assert not db.scalar(select(Verification.id).where(Verification.org_id==registered.id))
+    engine.dispose()

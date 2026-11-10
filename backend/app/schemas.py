@@ -400,7 +400,7 @@ class CapabilityReviewIn(Model):
 
 class SupplierTradeMappingIn(Model):
     category_id:str=Field(min_length=1,max_length=36)
-    city:str=Field(min_length=1,max_length=100)
+    city:str=Field(default='',max_length=100)
 
 class PriceIn(Model):
     org_id:str

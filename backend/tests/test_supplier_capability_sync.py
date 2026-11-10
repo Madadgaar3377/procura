@@ -39,6 +39,7 @@ def test_private_rate_creates_pending_capability_then_approval_publishes_and_mat
                                                         Capability.category_id == sub.id))
         assert rate.org_id == company.id and rate.unit_price == Decimal('150.00')
         assert capability and not capability.confirmed and capability.eligibility_status == 'enabled'
+        capability.trade_keywords='Panels / MV'
         assert rate.unit_price == Decimal('150.00')  # price remains private to price-book records
         profile = [{'id': company.id}]
         add_coverage(db, profile, include_categories=True, include_groups=True)
@@ -68,6 +69,9 @@ def test_private_rate_creates_pending_capability_then_approval_publishes_and_mat
         add_coverage(db, profile, include_categories=True, include_groups=True)
         assert profile[0]['capability_groups'][0]['name_en'] == 'Civil'
         assert profile[0]['capability_groups'][0]['subcategories'][0]['id'] == sub.id
+        assert profile[0]['capability_groups'][0]['subcategories'][0]['trade_keywords'] == ['Panels / MV']
+        assert profile[0]['capability_groups'][0]['subcategories'][0]['materials'] == ['Supplier insulation']
+        assert profile[0]['capability_groups'][0]['subcategories'][0]['units'] == ['PCS']
         assert 'unit_price' not in profile[0]
         outcome = match_and_invite(db, rfq)
         assert outcome['eligible_suppliers'] == 1

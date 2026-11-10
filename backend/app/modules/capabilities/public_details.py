@@ -11,13 +11,11 @@ from app.profile_schema import missing_profile_columns
 
 
 def published_details(db: Session, org_id: str) -> dict:
-    if not consent_available(db):
-        return {}
-    fields = db.scalar(select(PublicProfileConsent.fields).where(PublicProfileConsent.org_id == org_id)) or []
-    if not fields:
-        return {}
+    fields = db.scalar(select(PublicProfileConsent.fields).where(PublicProfileConsent.org_id == org_id)) or [] if consent_available(db) else []
     allowed = PUBLIC_FIELDS
-    selected = sorted(set(fields) & allowed - missing_profile_columns(db))
+    # Website and company description are organization-level profile fields.
+    # Contact channels and address remain hidden unless the supplier opted in.
+    selected = sorted((set(fields) | {'website','description'}) & allowed - missing_profile_columns(db))
     if not selected:
         return {}
     row = db.execute(select(*(getattr(Organization, key) for key in selected)).where(Organization.id == org_id)).one()

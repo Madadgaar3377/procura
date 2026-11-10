@@ -39,7 +39,7 @@ def capability_categories(db,org_id):
         db.info[key]=selected
     return db.info[key]
 
-def ensure_material_capability(db,org,main,sub):
+def ensure_material_capability(db,org,main,sub,material_id=None):
     """Create a pending declaration for the material's stable category IDs.
 
     Reuse each declared service area so approval and RFQ coverage remain scoped
@@ -51,10 +51,13 @@ def ensure_material_capability(db,org,main,sub):
     cities=list(db.scalars(select(Capability.city).where(Capability.org_id==org.id)).all())
     if not cities and org.city and org.city.strip(): cities=[org.city.strip()]
     for city in dict.fromkeys(cities):
-        exists=db.scalar(select(Capability.id).where(Capability.org_id==org.id,
+        exists=db.scalar(select(Capability).where(Capability.org_id==org.id,
             Capability.category_id==category_id,func.lower(func.trim(Capability.city))==city.casefold()))
         if not exists:
-            db.add(Capability(org_id=org.id,category_id=category_id,city=city,confirmed=False))
+            exists=Capability(org_id=org.id,category_id=category_id,city=city,confirmed=False,material_ids=[])
+            db.add(exists)
+        if material_id and material_id not in (exists.material_ids or []):
+            exists.material_ids=[*(exists.material_ids or []),material_id]
     db.flush()
     db.info.pop(('rate_capability_categories',org.id),None)
 
@@ -104,7 +107,7 @@ def save_rate(db,user,payload:PriceIn,item=None,*,expected_version=None):
         material=db.get(Material,payload.material_id)
         if not material or not material.active:raise HTTPException(422,'Select an active Material Master item')
         main,sub=category_pair(db,material)
-        ensure_material_capability(db,organization,main,sub)
+        ensure_material_capability(db,organization,main,sub,material.id)
         material,unit=validate_material(db,payload.org_id,payload.material_id,payload.unit)
         if payload.main_category_id and payload.main_category_id!=main or payload.subcategory_id and payload.subcategory_id!=sub:raise HTTPException(422,'Selected categories do not match the Material Master item')
         description=payload.supplier_description or (item.supplier_description if item else '') or payload.offered_description or material.name_en

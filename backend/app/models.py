@@ -334,6 +334,7 @@ class Capability(TimeID, Base):
     qualifications: Mapped[list] = mapped_column(JSON, default=list)
     material_ids: Mapped[list] = mapped_column(JSON, default=list)
     trade_keywords: Mapped[str] = mapped_column(Text, default='')
+    mapping_source: Mapped[str | None] = mapped_column(String(30), nullable=True)
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     accepts_rfqs: Mapped[bool] = mapped_column(Boolean, default=True)
     eligibility_status: Mapped[str] = mapped_column(String(20), default='enabled', server_default='enabled')

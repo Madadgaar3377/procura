@@ -952,6 +952,677 @@
         ]
       }
     },
+    "/api/v1/organizations/admin/suppliers": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Supplier List",
+        "operationId": "admin_supplier_list_api_v1_organizations_admin_suppliers_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "status_filter",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "all",
+              "title": "Status Filter"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 26,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Create Supplier",
+        "operationId": "create_supplier_api_v1_organizations_admin_suppliers_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSupplierCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Supplier Details",
+        "operationId": "admin_supplier_details_api_v1_organizations_admin_suppliers__org_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Update Supplier",
+        "operationId": "admin_update_supplier_api_v1_organizations_admin_suppliers__org_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierProfileAdminUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Add Supplier Contact",
+        "operationId": "admin_add_supplier_contact_api_v1_organizations_admin_suppliers__org_id__contacts_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierContactAdminInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}": {
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Edit Supplier Contact",
+        "operationId": "admin_edit_supplier_contact_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierContactAdminInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/capabilities": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Add Supplier Capability",
+        "operationId": "admin_add_supplier_capability_api_v1_organizations_admin_suppliers__org_id__capabilities_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierCapabilityAdminInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/capabilities/{capability_id}": {
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Edit Supplier Capability",
+        "operationId": "admin_edit_supplier_capability_api_v1_organizations_admin_suppliers__org_id__capabilities__capability_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierCapabilityAdminInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Delete Supplier Capability",
+        "operationId": "admin_delete_supplier_capability_api_v1_organizations_admin_suppliers__org_id__capabilities__capability_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/verify": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Verify Supplier",
+        "operationId": "admin_verify_supplier_api_v1_organizations_admin_suppliers__org_id__verify_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierReviewAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/request-information": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Request Supplier Information",
+        "operationId": "admin_request_supplier_information_api_v1_organizations_admin_suppliers__org_id__request_information_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierReviewAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/reject": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Reject Supplier",
+        "operationId": "admin_reject_supplier_api_v1_organizations_admin_suppliers__org_id__reject_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierReviewAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/organizations/{org_id}/public-profile": {
       "get": {
         "tags": [
@@ -1206,52 +1877,6 @@
             }
           }
         }
-      }
-    },
-    "/api/v1/organizations/admin/suppliers": {
-      "post": {
-        "tags": [
-          "Organizations & Verification"
-        ],
-        "summary": "Create Supplier",
-        "operationId": "create_supplier_api_v1_organizations_admin_suppliers_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AdminSupplierCreate"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/OrganizationOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
       }
     },
     "/api/v1/organizations/claimable/suppliers": {
@@ -3660,6 +4285,390 @@
                 "schema": {
                   "$ref": "#/components/schemas/MaterialSearchPage"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/bulk/materials/template": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Material Template",
+        "operationId": "material_template_api_v1_imports_bulk_materials_template_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/template": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Supplier Template",
+        "operationId": "supplier_template_api_v1_imports_bulk_suppliers_template_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/imports/bulk/materials": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Upload Materials",
+        "operationId": "upload_materials_api_v1_imports_bulk_materials_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_materials_api_v1_imports_bulk_materials_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/imports/bulk/suppliers": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Upload Suppliers",
+        "operationId": "upload_suppliers_api_v1_imports_bulk_suppliers_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_suppliers_api_v1_imports_bulk_suppliers_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/imports/bulk/{batch_id}/errors": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Error Report",
+        "operationId": "error_report_api_v1_imports_bulk__batch_id__errors_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/{batch_id}/warnings": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Supplier Warning Report",
+        "operationId": "supplier_warning_report_api_v1_imports_bulk_suppliers__batch_id__warnings_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/{batch_id}/incomplete": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Incomplete Supplier Report",
+        "operationId": "incomplete_supplier_report_api_v1_imports_bulk_suppliers__batch_id__incomplete_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/suppliers/reprocess/preview": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports"
+        ],
+        "summary": "Supplier Reprocess Preview",
+        "description": "Read-only preview of legacy imported suppliers eligible for safe repair.",
+        "operationId": "supplier_reprocess_preview_api_v1_imports_suppliers_reprocess_preview_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "after_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/suppliers/reprocess": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports"
+        ],
+        "summary": "Reprocess Imported Suppliers",
+        "description": "Apply deterministic category backfill in per-supplier transactions (maximum 35).",
+        "operationId": "reprocess_imported_suppliers_api_v1_imports_suppliers_reprocess_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "after_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -10479,6 +11488,34 @@
         ],
         "title": "Body_upload_document_api_v1_organizations__org_id__documents_post"
       },
+      "Body_upload_materials_api_v1_imports_bulk_materials_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_materials_api_v1_imports_bulk_materials_post"
+      },
+      "Body_upload_suppliers_api_v1_imports_bulk_suppliers_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_suppliers_api_v1_imports_bulk_suppliers_post"
+      },
       "BrowserSessionOut": {
         "properties": {
           "authenticated": {
@@ -10650,6 +11687,17 @@
             "type": "string",
             "title": "Trade Keywords"
           },
+          "mapping_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping Source"
+          },
           "confirmed": {
             "type": "boolean",
             "title": "Confirmed"
@@ -10691,6 +11739,7 @@
           "qualifications",
           "material_ids",
           "trade_keywords",
+          "mapping_source",
           "confirmed",
           "accepts_rfqs",
           "eligibility_status",
@@ -10746,6 +11795,17 @@
           "trade_keywords": {
             "type": "string",
             "title": "Trade Keywords"
+          },
+          "mapping_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mapping Source"
           },
           "confirmed": {
             "type": "boolean",
@@ -10829,6 +11889,7 @@
           "qualifications",
           "material_ids",
           "trade_keywords",
+          "mapping_source",
           "confirmed",
           "accepts_rfqs",
           "eligibility_status",
@@ -14012,6 +15073,10 @@
             "type": "string",
             "title": "Verified Status"
           },
+          "profile_status": {
+            "type": "string",
+            "title": "Profile Status"
+          },
           "is_buyer": {
             "type": "boolean",
             "title": "Is Buyer"
@@ -14054,6 +15119,7 @@
           "region",
           "source",
           "verified_status",
+          "profile_status",
           "is_buyer",
           "is_supplier",
           "is_active",
@@ -15410,6 +16476,27 @@
             "title": "Name Ar",
             "default": ""
           },
+          "trade_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Trade Keywords"
+          },
+          "materials": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Materials"
+          },
+          "units": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Units"
+          },
           "subcategories": {
             "items": {
               "$ref": "#/components/schemas/PublicCategory"
@@ -15439,6 +16526,27 @@
             "type": "string",
             "title": "Name Ar",
             "default": ""
+          },
+          "trade_keywords": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Trade Keywords"
+          },
+          "materials": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Materials"
+          },
+          "units": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Units"
           }
         },
         "type": "object",
@@ -17746,6 +18854,107 @@
         ],
         "title": "SubscriptionOut"
       },
+      "SupplierCapabilityAdminInput": {
+        "properties": {
+          "category_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Category Id"
+          },
+          "city": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "City",
+            "default": ""
+          },
+          "trade_keywords": {
+            "type": "string",
+            "maxLength": 5000,
+            "title": "Trade Keywords",
+            "default": ""
+          },
+          "material_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Material Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id"
+        ],
+        "title": "SupplierCapabilityAdminInput"
+      },
+      "SupplierContactAdminInput": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 150
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Role"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "fax": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fax"
+          }
+        },
+        "type": "object",
+        "title": "SupplierContactAdminInput"
+      },
       "SupplierImportConfirmation": {
         "properties": {
           "batch_id": {
@@ -17790,6 +18999,175 @@
         ],
         "title": "SupplierImportConfirmation"
       },
+      "SupplierProfileAdminUpdate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 220,
+                "minLength": 2
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "cr_number": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cr Number"
+          },
+          "vat_number": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vat Number"
+          },
+          "website": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Website"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "contact_name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 150
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Name"
+          },
+          "designation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Designation"
+          },
+          "business_email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 200
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Email"
+          },
+          "business_phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Phone"
+          }
+        },
+        "type": "object",
+        "title": "SupplierProfileAdminUpdate"
+      },
+      "SupplierReviewAction": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000,
+                "minLength": 4
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "SupplierReviewAction"
+      },
       "SupplierTradeMappingIn": {
         "properties": {
           "category_id": {
@@ -17801,14 +19179,13 @@
           "city": {
             "type": "string",
             "maxLength": 100,
-            "minLength": 1,
-            "title": "City"
+            "title": "City",
+            "default": ""
           }
         },
         "type": "object",
         "required": [
-          "category_id",
-          "city"
+          "category_id"
         ],
         "title": "SupplierTradeMappingIn"
       },
@@ -18152,7 +19529,14 @@
             "title": "Org Id"
           },
           "cr_number": {
-            "type": "string",
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
             "title": "Cr Number"
           },
           "document_key": {
@@ -18192,6 +19576,18 @@
             ],
             "title": "Reviewer Notes"
           },
+          "reviewed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewed At"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -18210,6 +19606,7 @@
           "status",
           "reviewer_id",
           "reviewer_notes",
+          "reviewed_at",
           "id",
           "created_at"
         ],

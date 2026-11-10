@@ -47,6 +47,12 @@ class SupplierContactAdminInput(BaseModel):
 class SupplierReviewAction(BaseModel):
     reason: str | None = Field(default=None, min_length=4, max_length=2000)
 
+class SupplierCapabilityAdminInput(BaseModel):
+    category_id: str = Field(min_length=1, max_length=36)
+    city: str = Field(default='', max_length=100)
+    trade_keywords: str = Field(default='', max_length=5000)
+    material_ids: list[str] = Field(default_factory=list, max_length=500)
+
 def _supplier_org(db, org_id):
     org=db.get(Organization,org_id)
     if not org or not org.is_supplier: raise HTTPException(404,'Supplier not found')
@@ -105,7 +111,7 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
         category=db.get(Category,cap.category_id)
         parent=db.get(Category,category.parent_id) if category and category.parent_id else None
         materials=db.scalars(select(Material).where(Material.id.in_(cap.material_ids or []))).all() if cap.material_ids else []
-        cap_items.append({'id':cap.id,'main_category':parent.name_en if parent else (category.name_en if category else None),'subcategory':category.name_en if parent else None,'category_id':cap.category_id,'materials':[{'id':m.id,'name':m.name_en,'unit':m.unit} for m in materials],'units':sorted({m.unit for m in materials if m.unit}),'trade_keywords':cap.trade_keywords,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status,'city':cap.city})
+        cap_items.append({'id':cap.id,'main_category':parent.name_en if parent else (category.name_en if category else None),'subcategory':category.name_en if parent else None,'category_id':cap.category_id,'materials':[{'id':m.id,'name':m.name_en,'unit':m.unit} for m in materials],'units':sorted({m.unit for m in materials if m.unit}),'trade_keywords':cap.trade_keywords,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status,'mapping_source':cap.mapping_source,'created_at':cap.created_at,'city':cap.city})
     trades=db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==org_id).order_by(ImportedSupplierTrade.created_at)).all()
     files=db.scalars(select(StoredFile).where(StoredFile.organization_id==org_id,StoredFile.status=='available',StoredFile.deleted_at.is_(None))).all()
     docs=[{'id':v.id,'name':v.document_key.rsplit('/',1)[-1] if v.document_key else 'Verification document','status':v.status,'download_url':f'/organizations/admin/review/verification/{v.id}/document-url'} for v in verifications if v.document_key]
@@ -165,6 +171,61 @@ def admin_edit_supplier_contact(org_id:str,contact_id:str,payload:SupplierContac
     _supplier_org(db,org_id);contact=db.get(Contact,contact_id)
     if not contact or contact.org_id!=org_id:raise HTTPException(404,'Supplier contact not found')
     return _save_admin_contact(org_id,payload,admin,db,contact)
+
+def _admin_capability_values(org_id,payload,db):
+    category=db.scalar(select(Category).where(Category.id==payload.category_id,Category.active.is_(True)))
+    if not category:raise HTTPException(422,'Choose an active category')
+    material_ids=sorted(set(payload.material_ids))
+    materials=db.scalars(select(Material).where(Material.id.in_(material_ids),Material.active.is_(True))).all() if material_ids else []
+    if len(materials)!=len(material_ids):raise HTTPException(422,'Every selected material must be active')
+    if any(category.id not in {m.category_id,m.main_category_id,m.subcategory_id} for m in materials):
+        raise HTTPException(422,'Selected materials must belong to the capability category')
+    return category,material_ids,' '.join(payload.city.split())
+
+@router.post('/admin/suppliers/{org_id}/capabilities',status_code=201)
+def admin_add_supplier_capability(org_id:str,payload:SupplierCapabilityAdminInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);category,material_ids,city=_admin_capability_values(org_id,payload,db)
+    cap=db.scalar(select(Capability).where(Capability.org_id==org_id,Capability.category_id==category.id,
+        func.lower(func.trim(Capability.city))==city.casefold()).with_for_update())
+    created=cap is None
+    if cap is None:
+        cap=Capability(org_id=org_id,category_id=category.id,city=city,material_ids=[],trade_keywords='',
+            confirmed=True,accepts_rfqs=True,eligibility_status='enabled',mapping_source='admin')
+        db.add(cap)
+    cap.material_ids=sorted(set((cap.material_ids or [])+material_ids))
+    existing=[part.strip() for part in (cap.trade_keywords or '').split(' | ') if part.strip()]
+    for part in payload.trade_keywords.split('|'):
+        value=part.strip()
+        if value and value not in existing:existing.append(value)
+    cap.trade_keywords=' | '.join(existing)[:5000]
+    if cap.eligibility_status not in {'rejected','revoked','suspended'}:
+        cap.confirmed=True;cap.accepts_rfqs=True;cap.eligibility_status='enabled'
+    db.flush();audit(db,admin,'supplier.capability_admin_added',org_id,cap.id,category_id=category.id,created=created)
+    db.commit();return {'id':cap.id,'category_id':cap.category_id,'city':cap.city,'trade_keywords':cap.trade_keywords,
+        'material_ids':cap.material_ids,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status,'created':created}
+
+@router.patch('/admin/suppliers/{org_id}/capabilities/{capability_id}')
+def admin_edit_supplier_capability(org_id:str,capability_id:str,payload:SupplierCapabilityAdminInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);cap=db.get(Capability,capability_id)
+    if not cap or cap.org_id!=org_id:raise HTTPException(404,'Supplier capability not found')
+    category,material_ids,city=_admin_capability_values(org_id,payload,db)
+    duplicate=db.scalar(select(Capability.id).where(Capability.org_id==org_id,Capability.category_id==category.id,
+        func.lower(func.trim(Capability.city))==city.casefold(),Capability.id!=cap.id))
+    if duplicate:raise HTTPException(409,'This supplier capability already exists')
+    before={'category_id':cap.category_id,'city':cap.city,'trade_keywords':cap.trade_keywords,'material_ids':cap.material_ids}
+    cap.category_id=category.id;cap.city=city;cap.trade_keywords=payload.trade_keywords.strip()
+    cap.material_ids=material_ids;cap.mapping_source='admin';cap.confirmed=True;cap.accepts_rfqs=True
+    if cap.eligibility_status not in {'rejected','revoked','suspended'}:cap.eligibility_status='enabled'
+    audit(db,admin,'supplier.capability_admin_updated',org_id,cap.id,before=before,after={'category_id':category.id,'city':city})
+    db.commit();return {'id':cap.id,'category_id':cap.category_id,'city':cap.city,'trade_keywords':cap.trade_keywords,
+        'material_ids':cap.material_ids,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status}
+
+@router.delete('/admin/suppliers/{org_id}/capabilities/{capability_id}',status_code=204)
+def admin_delete_supplier_capability(org_id:str,capability_id:str,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);cap=db.get(Capability,capability_id)
+    if not cap or cap.org_id!=org_id:raise HTTPException(404,'Supplier capability not found')
+    audit(db,admin,'supplier.capability_admin_removed',org_id,cap.id,category_id=cap.category_id)
+    db.delete(cap);db.commit()
 
 def _supplier_review(org_id,admin,db,status,reason=None):
     org=_supplier_org(db,org_id)
@@ -247,11 +308,15 @@ def create_supplier(payload:AdminSupplierCreate,admin:User=Depends(admin_user),d
         raise HTTPException(409,'A supplier with this company name already exists')
     org=Organization(name=payload.name.strip(),name_normalized=normalized,
                      cr_number=payload.cr_number,city=payload.city,website=payload.website,
-                     is_buyer=False,is_supplier=True,source='admin_created')
+                     is_buyer=False,is_supplier=True,source='admin_created',verified_status='verified',profile_status='incomplete')
     db.add(org);db.flush()
     if payload.contact_name or phone or email:
         db.add(Contact(org_id=org.id,name=payload.contact_name,phone=phone,email=email,permission_to_notify=False))
+    verification=Verification(org_id=org.id,cr_number=org.cr_number,status='approved',reviewer_id=admin.id,
+        reviewer_notes='Automatically verified when created by an authenticated administrator.',reviewed_at=__import__('datetime').datetime.now(__import__('datetime').UTC))
+    db.add(verification);db.flush()
     audit(db,admin,'supplier.created_by_admin',org.id,org.id)
+    audit(db,admin,'supplier.automatically_verified',org.id,verification.id,source='admin_created')
     db.commit();db.refresh(org)
     return record(org)
 
@@ -261,8 +326,7 @@ def claimable_suppliers(user:User=Depends(current_user),db:Session=Depends(get_d
     query=select(Organization).where(
         Organization.is_supplier.is_(True),
         Organization.is_active.is_(True),
-        Organization.verified_status=='unverified',
-        Organization.source=='admin_created',
+        Organization.source.in_(['admin_created','imported']),
         ~claimed.exists(),
     ).order_by(Organization.name).limit(200)
     return [record(org) for org in db.scalars(query).all()]
