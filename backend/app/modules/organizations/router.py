@@ -3,10 +3,10 @@ from app.response_contracts import ClaimOut, MemberOut, OrganizationOut, ReviewQ
 import os, uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, or_, func
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
-from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,StoredFile
+from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent
 from app.modules.auth.router import norm_phone, norm_email
 from app.identity import normalize_phone as normalize_business_phone
 from app.security import current_user,admin_user,org_member,audit
@@ -16,10 +16,175 @@ from app.config import get_settings
 from app.profile_schema import missing_profile_columns
 from fastapi.responses import FileResponse,RedirectResponse
 from pathlib import Path
+from pydantic import BaseModel, Field
+import re
 
 from app.modules.organizations.public_profile import router as public_profile_router
 
 router=APIRouter(prefix='/organizations',tags=['Organizations & Verification'])
+
+class SupplierProfileAdminUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=2, max_length=220)
+    country: str | None = Field(default=None, max_length=100)
+    city: str | None = Field(default=None, max_length=100)
+    address: str | None = Field(default=None, max_length=300)
+    cr_number: str | None = Field(default=None, max_length=80)
+    vat_number: str | None = Field(default=None, max_length=80)
+    website: str | None = Field(default=None, max_length=300)
+    description: str | None = None
+    contact_name: str | None = Field(default=None, max_length=150)
+    designation: str | None = Field(default=None, max_length=100)
+    business_email: str | None = Field(default=None, max_length=200)
+    business_phone: str | None = Field(default=None, max_length=80)
+
+class SupplierContactAdminInput(BaseModel):
+    name: str | None = Field(default=None, max_length=150)
+    role: str | None = Field(default=None, max_length=100)
+    email: str | None = Field(default=None, max_length=500)
+    phone: str | None = Field(default=None, max_length=300)
+    fax: str | None = Field(default=None, max_length=80)
+
+class SupplierReviewAction(BaseModel):
+    reason: str | None = Field(default=None, min_length=4, max_length=2000)
+
+def _supplier_org(db, org_id):
+    org=db.get(Organization,org_id)
+    if not org or not org.is_supplier: raise HTTPException(404,'Supplier not found')
+    return org
+
+def _refresh_supplier_profile_status(org,db):
+    contacts=db.scalars(select(Contact).where(Contact.org_id==org.id)).all()
+    has_contact=bool(org.contact_name or any(c.name for c in contacts))
+    has_email=False
+    for value in [org.business_email,*[c.email for c in contacts]]:
+        if value:
+            try: norm_email(value);has_email=True;break
+            except ValueError: pass
+    has_phone=bool(any(c.phone_normalized for c in contacts))
+    if org.business_phone:
+        try: normalize_business_phone(org.business_phone);has_phone=True
+        except ValueError: pass
+    has_real_name=bool(org.name and not org.name.startswith('[Imported supplier placeholder:'))
+    org.profile_status='complete' if all((has_real_name,org.city,org.address,org.cr_number,has_contact,has_email,has_phone)) else 'incomplete'
+
+def _contact_data(contact):
+    return {key:getattr(contact,key) for key in ('id','name','role','email','raw_email','phone','raw_phone','phone_normalized','fax','needs_review','created_at')}
+
+@router.get('/admin/suppliers')
+def admin_supplier_list(q:str='', status_filter:str='all', limit:int=Query(26,ge=1,le=100), offset:int=Query(0,ge=0), admin:User=Depends(admin_user), db:Session=Depends(get_db)):
+    if status_filter not in {'all','verified','unverified','incomplete','imported','pending_verification'}: raise HTTPException(422,'Invalid supplier filter')
+    stmt=select(Organization).outerjoin(Contact,Contact.org_id==Organization.id).where(Organization.is_supplier.is_(True))
+    if status_filter=='verified': stmt=stmt.where(Organization.verified_status=='verified')
+    elif status_filter=='unverified': stmt=stmt.where(Organization.verified_status=='unverified')
+    elif status_filter=='incomplete': stmt=stmt.where(Organization.profile_status.in_(['incomplete','pending_onboarding']))
+    elif status_filter=='imported': stmt=stmt.where(Organization.source=='imported')
+    elif status_filter=='pending_verification': stmt=stmt.where(Organization.verified_status=='pending')
+    if q.strip():
+        needle='%'+q.strip().replace('%',r'\%').replace('_',r'\_')+'%'
+        stmt=stmt.where(or_(Organization.name.ilike(needle,escape='\\'),Organization.city.ilike(needle,escape='\\'),Organization.cr_number.ilike(needle,escape='\\'),Organization.business_email.ilike(needle,escape='\\'),Organization.business_phone.ilike(needle,escape='\\'),Contact.email.ilike(needle,escape='\\'),Contact.phone.ilike(needle,escape='\\')))
+    stmt=stmt.distinct().order_by(Organization.name,Organization.id).offset(offset).limit(limit)
+    return [record(org) for org in db.scalars(stmt).all()]
+
+@router.get('/admin/suppliers/{org_id}')
+def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Session=Depends(get_db)):
+    org=_supplier_org(db,org_id)
+    contacts=db.scalars(select(Contact).where(Contact.org_id==org_id).order_by(Contact.created_at,Contact.id)).all()
+    verifications=db.scalars(select(Verification).where(Verification.org_id==org_id).order_by(Verification.created_at.desc())).all()
+    latest=verifications[0] if verifications else None
+    caps=db.scalars(select(Capability).where(Capability.org_id==org_id).order_by(Capability.created_at,Capability.id)).all()
+    cap_items=[]
+    for cap in caps:
+        category=db.get(Category,cap.category_id)
+        parent=db.get(Category,category.parent_id) if category and category.parent_id else None
+        materials=db.scalars(select(Material).where(Material.id.in_(cap.material_ids or []))).all() if cap.material_ids else []
+        cap_items.append({'id':cap.id,'main_category':parent.name_en if parent else (category.name_en if category else None),'subcategory':category.name_en if parent else None,'category_id':cap.category_id,'materials':[{'id':m.id,'name':m.name_en,'unit':m.unit} for m in materials],'units':sorted({m.unit for m in materials if m.unit}),'trade_keywords':cap.trade_keywords,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status,'city':cap.city})
+    trades=db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==org_id).order_by(ImportedSupplierTrade.created_at)).all()
+    files=db.scalars(select(StoredFile).where(StoredFile.organization_id==org_id,StoredFile.status=='available',StoredFile.deleted_at.is_(None))).all()
+    docs=[{'id':v.id,'name':v.document_key.rsplit('/',1)[-1] if v.document_key else 'Verification document','status':v.status,'download_url':f'/organizations/admin/review/verification/{v.id}/document-url'} for v in verifications if v.document_key]
+    for f in files:
+        if not any(x['id']==f.id for x in docs):
+            docs.append({'id':f.id,'name':f.safe_filename,'purpose':f.purpose,'status':f.status,'download_url':f'/files/{f.id}/download-url'})
+    last_audit=db.scalar(select(func.max(AuditEvent.created_at)).where(AuditEvent.org_id==org_id))
+    return {'company':{key:getattr(org,key) for key in ('id','name','country','city','address','cr_number','vat_number','website','description','source','created_at','contact_name','designation','business_email','business_phone')},
+        'contacts':[_contact_data(c) for c in contacts],
+        'status':{'profile_status':org.profile_status,'verification_status':org.verified_status,'onboarding_status':'complete' if db.scalar(select(Member.id).where(Member.organization_id==org_id)) else 'pending_onboarding','source':org.source,'last_updated_at':last_audit or org.created_at,'verified_by':latest.reviewer_id if latest and latest.status=='approved' else None,'verified_at':latest.reviewed_at if latest and latest.status=='approved' else None,'rejected_by':latest.reviewer_id if latest and latest.status=='rejected' else None,'rejected_at':latest.reviewed_at if latest and latest.status=='rejected' else None,'rejection_reason':latest.reviewer_notes if latest and latest.status=='rejected' else None},
+        'capabilities':cap_items,'pending_category_mappings':[{'id':x.id,'raw_trade':x.raw_trade,'raw_type':x.raw_type,'raw_location':x.raw_location,'mapping_status':x.mapping_status} for x in trades if x.mapping_status not in {'approved','mapped'}],
+        'documents':docs,'verification_history':[{'id':v.id,'status':v.status,'cr_number':v.cr_number,'reviewer_id':v.reviewer_id,'reviewer_notes':v.reviewer_notes,'reviewed_at':v.reviewed_at,'created_at':v.created_at} for v in verifications]}
+
+@router.patch('/admin/suppliers/{org_id}')
+def admin_update_supplier(org_id:str,payload:SupplierProfileAdminUpdate,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    org=_supplier_org(db,org_id)
+    values=payload.model_dump(exclude_unset=True)
+    if 'name' in values and values['name'] is None: raise HTTPException(422,'Company name cannot be cleared')
+    for key,value in values.items():
+        if value is not None and isinstance(value,str): value=value.strip() or None
+        setattr(org,key,value)
+    if 'name' in values and org.name: org.name_normalized=org.name.strip().casefold()
+    _refresh_supplier_profile_status(org,db)
+    audit(db,admin,'supplier.profile_updated',org_id,org_id,fields=list(values))
+    db.commit(); return {'saved':True,'profile_status':org.profile_status}
+
+def _save_admin_contact(org_id,payload,admin,db,contact=None):
+    values=payload.model_dump(exclude_unset=True)
+    if contact is None: contact=Contact(org_id=org_id,permission_to_notify=False)
+    if 'name' in values: contact.name=(values['name'] or '').strip() or None
+    if 'role' in values: contact.role=(values['role'] or '').strip() or None
+    if 'fax' in values: contact.fax=(values['fax'] or '').strip() or None
+    review=False
+    if 'email' in values:
+        raw=(values['email'] or '').strip()
+        contact.raw_email=raw or None
+        emails=[part.strip() for part in re.split(r'[,;/]',raw) if part.strip()]
+        valid=next((e.casefold() for e in emails if re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+',e)),None)
+        contact.email=valid
+        review=bool(raw and not valid)
+    if 'phone' in values:
+        raw=(values['phone'] or '').strip();contact.raw_phone=raw or None;contact.phone=raw or None;contact.phone_normalized=None
+        if raw:
+            try: contact.phone_normalized=normalize_business_phone(raw);contact.phone=contact.phone_normalized
+            except ValueError: review=True
+    contact.needs_review=review
+    is_new=contact.id is None
+    db.add(contact);db.flush();_refresh_supplier_profile_status(db.get(Organization,org_id),db);audit(db,admin,'supplier.contact_added' if is_new else 'supplier.contact_updated',org_id,contact.id)
+    db.commit();db.refresh(contact);return _contact_data(contact)
+
+@router.post('/admin/suppliers/{org_id}/contacts',status_code=201)
+def admin_add_supplier_contact(org_id:str,payload:SupplierContactAdminInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);return _save_admin_contact(org_id,payload,admin,db)
+
+@router.patch('/admin/suppliers/{org_id}/contacts/{contact_id}')
+def admin_edit_supplier_contact(org_id:str,contact_id:str,payload:SupplierContactAdminInput,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    _supplier_org(db,org_id);contact=db.get(Contact,contact_id)
+    if not contact or contact.org_id!=org_id:raise HTTPException(404,'Supplier contact not found')
+    return _save_admin_contact(org_id,payload,admin,db,contact)
+
+def _supplier_review(org_id,admin,db,status,reason=None):
+    org=_supplier_org(db,org_id)
+    if status=='approved' and org.verified_status=='verified': raise HTTPException(409,'Supplier is already verified')
+    if status=='approved' and db.scalar(select(Verification.id).where(Verification.org_id==org_id,Verification.document_key.is_not(None),Verification.status.in_(['pending','needs_information']))):
+        raise HTTPException(409,'Uploaded verification evidence requires the existing document scanner review before approval')
+    if status=='approved' and org.cr_number and db.scalar(select(Organization.id).where(Organization.id!=org.id,Organization.cr_number==org.cr_number,Organization.verified_status=='verified')):
+        raise HTTPException(409,'A verified company already uses this CR')
+    now=__import__('datetime').datetime.now(__import__('datetime').UTC)
+    item=Verification(org_id=org.id,cr_number=org.cr_number,status=status,reviewer_id=admin.id,reviewer_notes=reason,reviewed_at=now)
+    db.add(item);db.flush();org.verified_status={'approved':'verified','needs_information':'pending','rejected':'rejected'}[status]
+    db.add(Outbox(event='company.verification_updated',payload={'org_id':org.id,'status':org.verified_status},dedupe_key=f'company-verification:{item.id}'))
+    audit(db,admin,{'approved':'supplier.verified','needs_information':'supplier.information_requested','rejected':'supplier.rejected'}[status],org.id,item.id,reason=reason)
+    db.commit();db.refresh(item);return {'id':item.id,'status':item.status,'verified_status':org.verified_status,'reviewed_at':item.reviewed_at}
+
+@router.post('/admin/suppliers/{org_id}/verify')
+def admin_verify_supplier(org_id:str,payload:SupplierReviewAction,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    return _supplier_review(org_id,admin,db,'approved',payload.reason)
+
+@router.post('/admin/suppliers/{org_id}/request-information')
+def admin_request_supplier_information(org_id:str,payload:SupplierReviewAction,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    if not payload.reason:raise HTTPException(422,'Request details are required')
+    return _supplier_review(org_id,admin,db,'needs_information',payload.reason)
+
+@router.post('/admin/suppliers/{org_id}/reject')
+def admin_reject_supplier(org_id:str,payload:SupplierReviewAction,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    if not payload.reason:raise HTTPException(422,'A rejection reason is required')
+    return _supplier_review(org_id,admin,db,'rejected',payload.reason)
 # Publication preferences reuse the organization authorization boundary.
 router.include_router(public_profile_router)
 
@@ -244,7 +409,7 @@ def verification_decision(verification_id:str,payload:Decision,admin:User=Depend
     )):
         raise HTTPException(409,'A verified company already uses this CR')
     # Without documents, verification is still a manual attestation recorded by the admin.
-    item.status='approved' if payload.approve else 'rejected';item.reviewer_id=admin.id;item.reviewer_notes=payload.notes
+    item.status='approved' if payload.approve else 'rejected';item.reviewer_id=admin.id;item.reviewer_notes=payload.notes;item.reviewed_at=__import__('datetime').datetime.now(__import__('datetime').UTC)
     org=db.get(Organization,item.org_id)
     org.verified_status='verified' if payload.approve else 'rejected'
     org.cr_number=item.cr_number

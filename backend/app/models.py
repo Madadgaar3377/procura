@@ -155,6 +155,7 @@ class Contact(TimeID, Base):
     raw_email: Mapped[str | None] = mapped_column(String(500), nullable=True)
     needs_review: Mapped[bool] = mapped_column(Boolean, default=False, server_default='false')
     permission_to_notify: Mapped[bool] = mapped_column(Boolean, default=False)
+    role: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 class ContactInquiry(TimeID, Base):
     __tablename__='contact_inquiries'
@@ -189,11 +190,12 @@ class CompanyClaim(TimeID, Base):
 class Verification(TimeID, Base):
     __tablename__='verifications'
     org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
-    cr_number: Mapped[str] = mapped_column(String(80))
+    cr_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
     document_key: Mapped[str | None] = mapped_column(String(400), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default='pending')
     reviewer_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
     reviewer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class Category(TimeID, Base):
     __tablename__='categories'
