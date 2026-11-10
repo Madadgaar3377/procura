@@ -118,6 +118,7 @@ class Organization(TimeID, Base):
     region: Mapped[str | None] = mapped_column(String(100), nullable=True)
     source: Mapped[str] = mapped_column(String(30), default='registered')
     verified_status: Mapped[str] = mapped_column(String(30), default='unverified', index=True)
+    profile_status: Mapped[str] = mapped_column(String(30), default='incomplete', server_default='incomplete', index=True)
     is_buyer: Mapped[bool] = mapped_column(Boolean, default=True)
     is_supplier: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 from pathlib import Path
 
 from pydantic import AliasChoices, Field, field_validator
@@ -15,7 +16,31 @@ class Settings(BaseSettings):
     refresh_days: int = 7
     admin_bootstrap_key: str = ''
     redis_url: str = ''
-    cors_origins: str = 'http://localhost:3000,http://127.0.0.1:3000,https://procumaterial.com,https://www.procumaterial.com'
+    cors_origins: str = 'https://www.procumaterial.com,https://procumaterial.com,http://localhost:3000'
+
+    @field_validator('cors_origins', mode='before')
+    @classmethod
+    def _normalize_cors_origins(cls, value: object) -> str:
+        """Accept the comma-separated and JSON-array forms used in deployments."""
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith('['):
+                try:
+                    value = json.loads(candidate)
+                except json.JSONDecodeError as exc:
+                    raise ValueError('CORS_ORIGINS must be a comma-separated list or JSON array') from exc
+            else:
+                value = candidate.split(',')
+        if not isinstance(value, (list, tuple)) or not all(isinstance(origin, str) for origin in value):
+            raise ValueError('CORS_ORIGINS must be a comma-separated list or JSON array')
+        origins = [origin.strip().rstrip('/') for origin in value if origin.strip()]
+        if any(origin == '*' for origin in origins):
+            raise ValueError('CORS_ORIGINS cannot include wildcard origins')
+        return ','.join(dict.fromkeys(origins))
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [origin for origin in self.cors_origins.split(',') if origin]
     database_connect_timeout: int = Field(default=5,ge=1,le=30)
     database_lock_timeout_ms: int = Field(default=3000,ge=100,le=30000)
     database_statement_timeout_ms: int = Field(default=15000,ge=1000,le=120000)

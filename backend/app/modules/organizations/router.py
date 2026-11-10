@@ -113,6 +113,9 @@ def update(org_id:str,payload:OrgUpdate,user:User=Depends(current_user),db:Sessi
         if key in missing:continue
         if value is not None or key in {'trading_name','company_type','description','contact_name','designation','business_email','business_phone','country','region','address','vat_number','website'}: setattr(org,key,value)
     if payload.name:org.name_normalized=payload.name.strip().casefold()
+    if org.source=='imported' and org.verified_status!='verified':
+        org.profile_status='complete' if (not org.name.startswith('[Imported supplier placeholder:') and
+            all((org.business_email,org.business_phone,org.city,org.address,org.contact_name))) else 'incomplete'
     audit(db,user,'organization.updated',org_id,org_id)
     db.commit();return record(org)
 

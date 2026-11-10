@@ -93,10 +93,10 @@ def _chunks(rows):
     return [rows[i:i + BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
 
 
-def _progress(batch_id, total, index, batch_count, imported, skipped, issues, batch_size=BATCH_SIZE):
+def _progress(batch_id, total, index, batch_count, imported, skipped, issues, batch_size=BATCH_SIZE, incomplete=0):
     return {"type": "progress", "batch_id": batch_id, "total_rows": total, "batch_size": batch_size,
         "completed_batches": index, "batches_total": batch_count, "imported": imported, "skipped": skipped,
-        "failed": len(issues), "progress_percent": round(index / batch_count * 100, 2) if batch_count else 100,
+        "incomplete": incomplete, "failed": len(issues), "progress_percent": round(index / batch_count * 100, 2) if batch_count else 100,
         "issues": issues[-50:]}
 
 
@@ -129,10 +129,17 @@ def _material_row(db, row, number, batch, user, category_cache, unit_cache, cand
 
 
 def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen):
-    name, contact_name, email, phone, country, city, address, main_name, sub_name, desc, unit = (row[k] for k in SUPPLIER_HEADERS)
+    name, contact_name, email, phone, country, city, address, main_name, sub_name, desc, unit = (row.get(k, "") for k in SUPPLIER_HEADERS)
     email_key = email.casefold().strip()
-    reason = ("Company Name is required" if not name else "Valid email is required" if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email_key) else
-        "Valid phone is required" if not re.fullmatch(r"\+?[0-9 ()-]{8,20}", phone) else "City is required" if not city else
+    email_valid = not email_key or bool(re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email_key))
+    phone_valid = not phone or bool(re.fullmatch(r"\+?[0-9 ()-]{8,20}", phone))
+    missing = [label for label, value in (("Company Name", name), ("Email", email), ("Phone", phone), ("City", city), ("Address", address), ("Contact Person", contact_name)) if not value]
+    if not name and not email_key and not phone:
+        return "failed", "Company Name or a reliable email/phone identifier is required"
+    if not name:
+        name = f"[Imported supplier placeholder: {email_key or phone}]"
+    reason = ("Valid email is required when provided" if not email_valid else
+        "Valid phone is required when provided" if not phone_valid else
         "Main Category is required" if not main_name else "Subcategory is required" if not sub_name else
         "Material Description is required" if not desc else "Unit is required" if not unit else "")
     if reason: return "failed", reason
@@ -150,21 +157,38 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
                 Material.normalized_description == material_key[1], Material.unit == material_key[2], Material.active.is_(True)))
         material = material_cache[material_key]
         if not material: return "failed", f"Material not found in the Materials database: {desc} ({unit})"
-        org = org_cache.get(email_key)
+        phone_key = re.sub(r"\D", "", phone)
+        identity = email_key or phone_key or "name:" + normalize_text(name)
+        org = org_cache.get(identity)
         if not org:
-            org = db.scalar(select(Organization).where(func.lower(func.trim(Organization.business_email)) == email_key, Organization.is_supplier.is_(True)))
+            predicates = [func.lower(func.trim(Organization.business_email)) == email_key] if email_key else []
+            if phone:
+                predicates.extend([Organization.business_phone == phone, Organization.id.in_(select(Contact.org_id).where(Contact.phone == phone))])
+            if name and not name.startswith("[Imported supplier placeholder:"):
+                predicates.append(Organization.name_normalized == normalize_text(name))
+            org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True), *predicates).limit(1)) if predicates else None
             if not org:
-                contact = db.scalar(select(Contact).where(func.lower(func.trim(Contact.email)) == email_key))
+                contact = db.scalar(select(Contact).where(func.lower(func.trim(Contact.email)) == email_key)) if email_key else None
                 org = db.get(Organization, contact.org_id) if contact else None
             if not org:
                 org = Organization(name=name.strip(), name_normalized=" ".join(name.casefold().split())[:220], country=country or None,
-                    city=city or None, address=address or None, business_email=email_key, business_phone=phone,
-                    contact_name=contact_name or None, source="imported", is_supplier=True, is_buyer=False, verified_status="unverified")
+                    city=city or None, address=address or None, business_email=email or None, business_phone=phone or None,
+                    contact_name=contact_name or None, source="imported", is_supplier=True, is_buyer=False,
+                    verified_status="unverified", profile_status="incomplete")
                 db.add(org); db.flush()
-            org_cache[email_key] = org
-            if contact_name or phone or email_key:
-                existing_contact = db.scalar(select(Contact.id).where(Contact.org_id == org.id, func.lower(func.trim(Contact.email)) == email_key))
-                if not existing_contact: db.add(Contact(org_id=org.id, name=contact_name or None, email=email_key, phone=phone, permission_to_notify=False))
+            else:
+                if not org.business_email and email: org.business_email = email
+                if not org.business_phone and phone: org.business_phone = phone
+                if not org.city and city: org.city = city
+                if not org.address and address: org.address = address
+                if not org.contact_name and contact_name: org.contact_name = contact_name
+            org.profile_status = "complete" if (not org.name.startswith("[Imported supplier placeholder:") and
+                all((org.business_email, org.business_phone, org.city, org.address, org.contact_name))) else "incomplete"
+            org_cache[identity] = org
+            existing_contact = db.scalar(select(Contact.id).where(Contact.org_id == org.id,
+                ((func.lower(func.trim(Contact.email)) == email_key) if email_key else (Contact.phone == phone if phone else Contact.name == contact_name))))
+            if not existing_contact and (contact_name or phone or email_key):
+                db.add(Contact(org_id=org.id, name=contact_name or None, email=email or None, phone=phone or None, permission_to_notify=False))
         ident = (org.id, sub.id, city.casefold().strip())
         cap = cap_cache.get(ident)
         if not cap:
@@ -178,21 +202,21 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
         if duplicate in seen or material.id in (cap.material_ids or []): return "skipped", ""
         cap.material_ids = [*(cap.material_ids or []), material.id]
         seen.add(duplicate)
-        return "imported", ""
+        return ("incomplete" if missing else "imported"), ", ".join(f"{field} missing" for field in missing)
     except (HTTPException, ValueError) as exc:
         return "failed", str(getattr(exc, "detail", None) or str(exc) or "Database rejected this row")
 
 
 def _stream_import(kind, rows, filename, user_id):
     chunks = _chunks(rows); batch_count = len(chunks); db = SessionLocal(); issues = []
-    imported = skipped = completed_rows = 0; category_cache = {}; unit_cache = {}; seen = set()
+    imported = skipped = incomplete = completed_rows = 0; category_cache = {}; unit_cache = {}; seen = set()
     org_cache = {}; cap_cache = {}; supplier_categories = {}; material_cache = {}
     batch = ImportBatch(kind=kind, filename=filename[:200], status="processing", stage="apply", rows=len(rows), initiated_by=user_id)
     try:
         db.add(batch); db.commit(); db.refresh(batch)
         yield json.dumps({**_progress(batch.id, len(rows), 0, batch_count, imported, skipped, issues), "type": "started"}) + "\n"
         for index, chunk in enumerate(chunks, 1):
-            before = (imported, skipped, len(issues)); batch_failures = []
+            before = (imported, skipped, incomplete, len(issues)); batch_failures = []; batch_incomplete = []
             try:
                 if kind == "materials":
                     descriptions = {normalize_text(row.get("Description", "")) for _, row in chunk if row.get("Description")}
@@ -232,19 +256,24 @@ def _stream_import(kind, rows, filename, user_id):
                             if status == "failed":
                                 batch_failures.append((number, row, reason)); _record_issue(db, batch, number, row, reason)
                             elif status == "imported": imported += 1
+                            elif status == "incomplete":
+                                incomplete += 1
+                                batch_incomplete.append((number, row, reason))
+                                db.add(ImportedRow(batch_id=batch.id, row_number=number, raw=row, status="incomplete", issue=reason[:300]))
                             else: skipped += 1
                     except Exception as exc:
                         category_cache.clear(); unit_cache.clear(); supplier_categories.clear(); material_cache.clear(); org_cache.clear(); cap_cache.clear()
                         batch_failures.append((number, row, str(exc) or "Database rejected this row")); _record_issue(db, batch, number, row, str(exc) or "Database rejected this row")
                 db.flush()
-                batch.created = imported; batch.unchanged_count = skipped; batch.errors = len(issues) + len(batch_failures)
+                batch.created = imported; batch.unchanged_count = skipped
+                batch.errors = sum(1 for issue in issues if not issue.get("incomplete")) + len(batch_failures)
                 batch.completed_rows = completed_rows + len(chunk)
                 db.commit()
             except Exception as exc:
                 failed_batch_id = batch.id
                 db.rollback(); db.close(); db = SessionLocal()
                 category_cache.clear(); unit_cache.clear(); supplier_categories.clear(); material_cache.clear(); org_cache.clear(); cap_cache.clear()
-                imported, skipped = before[0], before[1]
+                imported, skipped, incomplete = before[0], before[1], before[2]
                 batch_failures = [(number, row, f"Batch {index} database error: {str(exc)[:180]}") for number, row in chunk]
                 fallback = SessionLocal()
                 try:
@@ -259,16 +288,19 @@ def _stream_import(kind, rows, filename, user_id):
                 finally: fallback.close()
                 batch = db.get(ImportBatch, failed_batch_id)
             issues.extend({"row": number, "reason": reason} for number, _, reason in batch_failures)
+            issues.extend({"row": number, "reason": reason, "incomplete": True} for number, _, reason in batch_incomplete)
             completed_rows += len(chunk)
             if kind == "materials" and imported > before[0]: catalog_cache.invalidate()
-            yield json.dumps(_progress(batch.id, len(rows), index, batch_count, imported, skipped, issues)) + "\n"
+            yield json.dumps(_progress(batch.id, len(rows), index, batch_count, imported, skipped, [x for x in issues if not x.get('incomplete')], incomplete=incomplete)) + "\n"
         batch = db.get(ImportBatch, batch.id)
-        batch.status = "completed_with_errors" if issues else "completed"; batch.stage = "complete"
-        audit(db, db.get(User, user_id), f"{kind[:-1]}_import.completed", entity_id=batch.id, rows=len(rows), created=imported, errors=len(issues))
+        batch.status = "completed_with_errors" if any(not x.get('incomplete') for x in issues) else "completed"; batch.stage = "complete"
+        batch.errors = sum(1 for x in issues if not x.get('incomplete'))
+        audit(db, db.get(User, user_id), f"{kind[:-1]}_import.completed", entity_id=batch.id, rows=len(rows), created=imported, errors=batch.errors)
         db.commit()
         yield json.dumps({"type":"complete", "batch_id":batch.id, "total_rows":len(rows), "batch_size":BATCH_SIZE,
             "completed_batches":batch_count, "batches_total":batch_count, "imported":imported, "skipped":skipped,
-            "failed":len(issues), "progress_percent":100, "issues":issues}) + "\n"
+            "incomplete":incomplete, "failed":sum(1 for x in issues if not x.get('incomplete')), "progress_percent":100,
+            "issues":[x for x in issues if not x.get('incomplete')], "incomplete_rows":[x for x in issues if x.get('incomplete')]}) + "\n"
     except Exception as exc:
         db.rollback()
         yield json.dumps({"type":"error","message":str(exc) or "The import failed while writing to PostgreSQL."}) + "\n"
@@ -295,9 +327,24 @@ def upload_suppliers(file: UploadFile = File(...), user: User = Depends(admin_us
 def error_report(batch_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
     batch = db.get(ImportBatch, batch_id)
     if not batch: raise HTTPException(404, "Import report not found")
-    rows = db.scalars(select(ImportedRow).where(ImportedRow.batch_id == batch_id).order_by(ImportedRow.row_number)).all()
+    rows = db.scalars(select(ImportedRow).where(ImportedRow.batch_id == batch_id, ImportedRow.status == "invalid").order_by(ImportedRow.row_number)).all()
     if not rows: raise HTTPException(404, "This import has no failed rows")
     book=Workbook(); sheet=book.active; sheet.title="Failed rows"; sheet.append(["Excel row", "Reason", *list(rows[0].raw.keys())])
     for item in rows: sheet.append([item.row_number,item.issue,*[item.raw.get(k,"") for k in rows[0].raw.keys()]])
     out=BytesIO();book.save(out);out.seek(0)
     return StreamingResponse(out,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":f'attachment; filename="{batch.kind}-errors.xlsx"'})
+
+
+@router.get("/suppliers/{batch_id}/incomplete")
+def incomplete_supplier_report(batch_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
+    batch = db.get(ImportBatch, batch_id)
+    if not batch or batch.kind != "suppliers": raise HTTPException(404, "Supplier import report not found")
+    rows = db.scalars(select(ImportedRow).where(ImportedRow.batch_id == batch_id, ImportedRow.status == "incomplete").order_by(ImportedRow.row_number)).all()
+    if not rows: raise HTTPException(404, "This import has no incomplete suppliers")
+    book = Workbook(); sheet = book.active; sheet.title = "Incomplete suppliers"
+    source_keys = list(rows[0].raw.keys())
+    sheet.append(["Excel row", "Missing fields", *source_keys])
+    for item in rows: sheet.append([item.row_number, item.issue or "", *[item.raw.get(key, "") for key in source_keys]])
+    out = BytesIO(); book.save(out); out.seek(0)
+    return StreamingResponse(out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="supplier-import-{batch_id}-incomplete.xlsx"'})
