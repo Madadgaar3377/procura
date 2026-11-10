@@ -8,7 +8,7 @@ from sqlalchemy.orm import with_expression
 
 PROFILE_COLUMNS = frozenset({
     'trading_name', 'company_type', 'description', 'contact_name', 'designation',
-    'business_email', 'business_phone', 'country', 'region',
+    'business_email', 'business_phone', 'country', 'region', 'profile_status',
 })
 
 
