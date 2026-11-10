@@ -111,3 +111,19 @@ def test_supplier_admin_routes_reject_non_admin_users():
         assert client.post(f"/organizations/admin/suppliers/{ids['org']}/verify",json={}).status_code==403
     finally:
         client.close();engine.dispose()
+
+
+def test_admin_supplier_list_search_matches_contacts_without_duplicate_rows():
+    client,sessions,engine,ids,app=setup_client()
+    try:
+        set_actor(app,sessions,ids['admin'])
+        with sessions() as db:
+            db.add(Contact(org_id=ids['org'],name='Second Contact',email='second@example.com',permission_to_notify=False))
+            db.commit()
+        response=client.get('/organizations/admin/suppliers',params={'q':'second@example.com','status_filter':'all'})
+        assert response.status_code==200
+        assert [row['id'] for row in response.json()]==[ids['org']]
+        incomplete=client.get('/organizations/admin/suppliers',params={'status_filter':'incomplete'})
+        assert incomplete.status_code==200 and len(incomplete.json())==1
+    finally:
+        client.close();engine.dispose()

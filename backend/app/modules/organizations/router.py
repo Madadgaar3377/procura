@@ -3,7 +3,7 @@ from app.response_contracts import ClaimOut, MemberOut, OrganizationOut, ReviewQ
 import os, uuid
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import select, or_, func
+from sqlalchemy import select, or_, func, literal
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
 from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent
@@ -73,16 +73,24 @@ def _contact_data(contact):
 @router.get('/admin/suppliers')
 def admin_supplier_list(q:str='', status_filter:str='all', limit:int=Query(26,ge=1,le=100), offset:int=Query(0,ge=0), admin:User=Depends(admin_user), db:Session=Depends(get_db)):
     if status_filter not in {'all','verified','unverified','incomplete','imported','pending_verification'}: raise HTTPException(422,'Invalid supplier filter')
-    stmt=select(Organization).outerjoin(Contact,Contact.org_id==Organization.id).where(Organization.is_supplier.is_(True))
+    missing=missing_profile_columns(db)
+    stmt=select(Organization).where(Organization.is_supplier.is_(True))
     if status_filter=='verified': stmt=stmt.where(Organization.verified_status=='verified')
     elif status_filter=='unverified': stmt=stmt.where(Organization.verified_status=='unverified')
-    elif status_filter=='incomplete': stmt=stmt.where(Organization.profile_status.in_(['incomplete','pending_onboarding']))
+    elif status_filter=='incomplete': stmt=stmt.where(literal(True) if 'profile_status' in missing else Organization.profile_status.in_(['incomplete','pending_onboarding']))
     elif status_filter=='imported': stmt=stmt.where(Organization.source=='imported')
     elif status_filter=='pending_verification': stmt=stmt.where(Organization.verified_status=='pending')
     if q.strip():
-        needle='%'+q.strip().replace('%',r'\%').replace('_',r'\_')+'%'
-        stmt=stmt.where(or_(Organization.name.ilike(needle,escape='\\'),Organization.city.ilike(needle,escape='\\'),Organization.cr_number.ilike(needle,escape='\\'),Organization.business_email.ilike(needle,escape='\\'),Organization.business_phone.ilike(needle,escape='\\'),Contact.email.ilike(needle,escape='\\'),Contact.phone.ilike(needle,escape='\\')))
-    stmt=stmt.distinct().order_by(Organization.name,Organization.id).offset(offset).limit(limit)
+        needle='%'+q.strip().replace('!','!!').replace('%','!%').replace('_','!_')+'%'
+        contact_match=select(Contact.id).where(Contact.org_id==Organization.id,or_(Contact.email.ilike(needle,escape='!'),Contact.phone.ilike(needle,escape='!'))).exists()
+        terms=[Organization.name.ilike(needle,escape='!'),Organization.city.ilike(needle,escape='!'),Organization.cr_number.ilike(needle,escape='!'),contact_match]
+        if 'business_email' not in missing: terms.append(Organization.business_email.ilike(needle,escape='!'))
+        if 'business_phone' not in missing: terms.append(Organization.business_phone.ilike(needle,escape='!'))
+        stmt=stmt.where(or_(*terms))
+    # Do not use DISTINCT on the full Organization entity: PostgreSQL cannot
+    # compare its JSON quote_automation column for DISTINCT. Contact search is
+    # correlated with EXISTS above, so a supplier can only appear once.
+    stmt=stmt.order_by(Organization.name,Organization.id).offset(offset).limit(limit)
     return [record(org) for org in db.scalars(stmt).all()]
 
 @router.get('/admin/suppliers/{org_id}')
