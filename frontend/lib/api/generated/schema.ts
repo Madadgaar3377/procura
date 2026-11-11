@@ -147,7 +147,7 @@ export interface Schemas {
   "SubscriptionChange": { "status": "active" | "suspended" | "cancelled"; "expires_at"?: string | null };
   "SubscriptionDetailOut": { "org_id": string; "plan_id": string; "status": string; "expires_at": string | null; "starts_at": string | null; "price_snapshot": string | null; "currency_snapshot": string | null; "billing_interval": string; "premium_snapshot": boolean; "plan_snapshot": Record<string, unknown> | null; "id": string; "created_at": string; "plan_name": string };
   "SubscriptionOut": { "org_id": string; "plan_id": string; "status": string; "expires_at": string | null; "starts_at": string | null; "price_snapshot": string | null; "currency_snapshot": string | null; "billing_interval": string; "premium_snapshot": boolean; "plan_snapshot": Record<string, unknown> | null; "id": string; "created_at": string };
-  "SupplierArchiveInput": { "confirm": boolean; "reason": string };
+  "SupplierArchiveInput": { "confirm": boolean; "reason"?: string };
   "SupplierCapabilityAdminInput": { "category_id": string; "city"?: string; "trade_keywords"?: string; "material_ids"?: Array<string> };
   "SupplierContactAdminInput": { "name"?: string | null; "role"?: string | null; "email"?: string | null; "phone"?: string | null; "fax"?: string | null; "is_primary"?: boolean | null };
   "SupplierContactCapabilityInput": { "category_id": string; "material_ids"?: Array<string>; "is_primary"?: boolean };

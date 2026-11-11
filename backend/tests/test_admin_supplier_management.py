@@ -40,6 +40,25 @@ def set_actor(app,sessions,user_id):
         app.dependency_overrides[current_user]=lambda:actor
 
 
+def test_supplier_delete_without_reason_is_admin_only_and_preserves_related_records():
+    client,sessions,engine,ids,app=setup_client()
+    try:
+        path=f"/organizations/admin/suppliers/{ids['org']}/archive"
+        set_actor(app,sessions,ids['normal'])
+        assert client.post(path,json={'confirm':True}).status_code==403
+        set_actor(app,sessions,ids['admin'])
+        assert client.post(path,json={'confirm':False}).status_code==422
+        assert client.post(path,json={'confirm':True}).status_code==200
+        assert client.post(path,json={'confirm':True}).status_code==200
+        with sessions() as db:
+            assert db.get(Organization,ids['org']).is_active is False
+            assert db.get(Contact,ids['contact']) is not None
+            assert db.scalar(select(Capability).where(Capability.org_id==ids['org'])) is not None
+            assert db.scalar(select(AuditEvent).where(AuditEvent.action=='supplier.archived',AuditEvent.org_id==ids['org']))
+    finally:
+        client.close();engine.dispose()
+
+
 def test_supplier_details_contacts_capabilities_and_explicit_verification_persist():
     client,sessions,engine,ids,app=setup_client()
     try:

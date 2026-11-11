@@ -20813,14 +20813,13 @@
           "reason": {
             "type": "string",
             "maxLength": 1000,
-            "minLength": 4,
-            "title": "Reason"
+            "title": "Reason",
+            "default": ""
           }
         },
         "type": "object",
         "required": [
-          "confirm",
-          "reason"
+          "confirm"
         ],
         "title": "SupplierArchiveInput"
       },

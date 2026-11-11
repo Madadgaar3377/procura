@@ -85,7 +85,7 @@ class SupplierContactCapabilityInput(BaseModel):
 
 class SupplierArchiveInput(BaseModel):
     confirm: bool
-    reason: str = Field(min_length=4,max_length=1000)
+    reason: str = Field(default='',max_length=1000)
 
 def _supplier_org(db, org_id):
     org=db.get(Organization,org_id)
