@@ -5426,6 +5426,149 @@
         }
       }
     },
+    "/api/v1/imports/bulk/suppliers/jobs": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Enqueue",
+        "operationId": "enqueue_api_v1_imports_bulk_suppliers_jobs_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_enqueue_api_v1_imports_bulk_suppliers_jobs_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierJobProgress"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/jobs/{batch_id}": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Progress",
+        "operationId": "progress_api_v1_imports_bulk_suppliers_jobs__batch_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierJobProgress"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/jobs/{batch_id}/retry": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Retry",
+        "operationId": "retry_api_v1_imports_bulk_suppliers_jobs__batch_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierJobProgress"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/imports/suppliers/reprocess/preview": {
       "get": {
         "tags": [
@@ -12469,6 +12612,20 @@
           "unit"
         ],
         "title": "AutomationMaterial"
+      },
+      "Body_enqueue_api_v1_imports_bulk_suppliers_jobs_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_enqueue_api_v1_imports_bulk_suppliers_jobs_post"
       },
       "Body_preview_api_v1_imports_materials_preview_post": {
         "properties": {
@@ -20467,6 +20624,35 @@
         "type": "object",
         "title": "SettingsInput"
       },
+      "SourceIssue": {
+        "properties": {
+          "row": {
+            "type": "integer",
+            "title": "Row"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "sheet": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sheet"
+          }
+        },
+        "type": "object",
+        "required": [
+          "row",
+          "reason"
+        ],
+        "title": "SourceIssue"
+      },
       "SubcategoryMaterialIn": {
         "properties": {
           "code": {
@@ -21006,6 +21192,174 @@
           "completed_rows"
         ],
         "title": "SupplierImportConfirmation"
+      },
+      "SupplierJobProgress": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "total_rows": {
+            "type": "integer",
+            "title": "Total Rows"
+          },
+          "total_supplier_records_identified": {
+            "type": "integer",
+            "title": "Total Supplier Records Identified"
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size"
+          },
+          "batches_total": {
+            "type": "integer",
+            "title": "Batches Total"
+          },
+          "completed_batches": {
+            "type": "integer",
+            "title": "Completed Batches"
+          },
+          "progress_percent": {
+            "type": "number",
+            "title": "Progress Percent"
+          },
+          "new_suppliers_saved": {
+            "type": "integer",
+            "title": "New Suppliers Saved",
+            "default": 0
+          },
+          "existing_suppliers_reused": {
+            "type": "integer",
+            "title": "Existing Suppliers Reused",
+            "default": 0
+          },
+          "suppliers_updated": {
+            "type": "integer",
+            "title": "Suppliers Updated",
+            "default": 0
+          },
+          "suppliers_incomplete": {
+            "type": "integer",
+            "title": "Suppliers Incomplete",
+            "default": 0
+          },
+          "contacts_created": {
+            "type": "integer",
+            "title": "Contacts Created",
+            "default": 0
+          },
+          "contacts_updated": {
+            "type": "integer",
+            "title": "Contacts Updated",
+            "default": 0
+          },
+          "category_assignments_created": {
+            "type": "integer",
+            "title": "Category Assignments Created",
+            "default": 0
+          },
+          "capabilities_saved": {
+            "type": "integer",
+            "title": "Capabilities Saved",
+            "default": 0
+          },
+          "capabilities_skipped": {
+            "type": "integer",
+            "title": "Capabilities Skipped",
+            "default": 0
+          },
+          "categories_created": {
+            "type": "integer",
+            "title": "Categories Created",
+            "default": 0
+          },
+          "materials_created": {
+            "type": "integer",
+            "title": "Materials Created",
+            "default": 0
+          },
+          "pending_category_mappings": {
+            "type": "integer",
+            "title": "Pending Category Mappings",
+            "default": 0
+          },
+          "imported": {
+            "type": "integer",
+            "title": "Imported",
+            "default": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "default": 0
+          },
+          "incomplete": {
+            "type": "integer",
+            "title": "Incomplete",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "supplier_failures": {
+            "type": "integer",
+            "title": "Supplier Failures",
+            "default": 0
+          },
+          "failed_rows": {
+            "type": "integer",
+            "title": "Failed Rows",
+            "default": 0
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/SourceIssue"
+            },
+            "type": "array",
+            "title": "Issues"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/SourceIssue"
+            },
+            "type": "array",
+            "title": "Warnings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "status",
+          "stage",
+          "total_rows",
+          "total_supplier_records_identified",
+          "batch_size",
+          "batches_total",
+          "completed_batches",
+          "progress_percent"
+        ],
+        "title": "SupplierJobProgress"
       },
       "SupplierProfileAdminUpdate": {
         "properties": {

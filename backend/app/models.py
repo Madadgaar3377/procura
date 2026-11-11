@@ -299,6 +299,11 @@ class MaterialRevision(TimeID, Base):
 
 class ImportBatch(TimeID, Base):
     __tablename__='import_batches'
+    __table_args__ = (
+        Index('uq_supplier_bulk_file_admin', 'initiated_by', 'source_sha256', unique=True,
+              postgresql_where=text("kind = 'supplier_bulk'"), sqlite_where=text("kind = 'supplier_bulk'")),
+        Index('ix_import_job_queue', 'kind', 'status', 'created_at'),
+        )
     kind: Mapped[str] = mapped_column(String(30))
     filename: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(30), default='processing')
@@ -350,6 +355,7 @@ class StoredFile(TimeID, Base):
 
 class ImportedRow(TimeID, Base):
     __tablename__='import_rows'
+    __table_args__ = (Index('ix_import_row_job_status', 'batch_id', 'status', 'created_at'),)
     batch_id: Mapped[str] = mapped_column(ForeignKey('import_batches.id'), index=True)
     row_number: Mapped[int] = mapped_column(Integer)
     raw: Mapped[dict] = mapped_column(JSON)

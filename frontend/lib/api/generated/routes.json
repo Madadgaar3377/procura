@@ -283,6 +283,15 @@
   "imports/bulk/suppliers/{batch_id}/incomplete": [
     "GET"
   ],
+  "imports/bulk/suppliers/jobs": [
+    "POST"
+  ],
+  "imports/bulk/suppliers/jobs/{batch_id}": [
+    "GET"
+  ],
+  "imports/bulk/suppliers/jobs/{batch_id}/retry": [
+    "POST"
+  ],
   "imports/suppliers/reprocess/preview": [
     "GET"
   ],

@@ -56,6 +56,8 @@ def _process_import_queue_once() -> None:
     with SessionLocal() as db:
         process_queued_material_imports(db)
         process_queued_supplier_imports(db)
+        from app.modules.imports.supplier_jobs import process_supplier_jobs
+        process_supplier_jobs(db)
 
 
 async def _development_import_worker() -> None:

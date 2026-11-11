@@ -9,6 +9,7 @@ import time
 from app.database import SessionLocal
 from app.modules.imports.materials import process_queued_material_imports
 from app.modules.imports.router import process_queued_supplier_imports
+from app.modules.imports.supplier_jobs import process_supplier_jobs
 
 
 def main() -> None:
@@ -19,9 +20,18 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
     while True:
-        with SessionLocal() as db:
-            completed = process_queued_material_imports(db)
-            supplier_completed = process_queued_supplier_imports(db)
+        try:
+            with SessionLocal() as db:
+                completed = process_queued_material_imports(db)
+                supplier_completed = process_queued_supplier_imports(db)
+                process_supplier_jobs(db)
+        except Exception as exc:
+            # A temporary database outage must not terminate the durable runner.
+            logger.error('Import worker poll failed type=%s', type(exc).__name__)
+            if args.once:
+                raise
+            time.sleep(max(0.25, args.interval))
+            continue
         if completed:
             logger.info('Completed Material Master import batches: %s', ', '.join(completed))
         if supplier_completed:

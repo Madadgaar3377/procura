@@ -2,6 +2,7 @@ import { ApiError } from './errors';
 
 export function apiUrl(path:string):string {
   const configured=process.env.NEXT_PUBLIC_API_URL;
+  if(!configured&&typeof window!=='undefined'&&['procumaterial.com','www.procumaterial.com'].includes(window.location.hostname))throw new Error('The API address is missing. Configure NEXT_PUBLIC_API_URL with the deployed FastAPI URL and rebuild the frontend.');
   const fallback=typeof window==='undefined'?'http://127.0.0.1:8000/api/v1':`${window.location.protocol}//${window.location.hostname}:8000/api/v1`;
   const base=(configured||fallback).replace(/\/$/,'');
   if(!/^https?:\/\//.test(base))throw new Error('NEXT_PUBLIC_API_URL must be an absolute backend URL');
@@ -44,7 +45,7 @@ async function perform<T>(path:string,init:RequestInit):Promise<T> {
   const data:unknown=await response.json().catch(()=>null);
   if(!response.ok){
     if(response.status===401&&!publicAuth&&typeof window!=='undefined')window.dispatchEvent(new Event('procura:session-expired'));
-    throw new ApiError(response.status,data&&typeof data==='object'&&'detail' in data?data.detail:null,response.headers.get('Retry-After'));
+    throw new ApiError(response.status,data&&typeof data==='object'&&'detail' in data?data.detail:null,response.headers.get('Retry-After'),response.headers.get('X-Request-ID'));
   }
   if(data&&typeof data==='object'){delete (data as Record<string,unknown>).development_otp;delete (data as Record<string,unknown>).development_code;}
   if((init.method||'GET').toUpperCase()!=='GET'&&typeof window!=='undefined'){window.dispatchEvent(new Event('procura:data-changed'));try{localStorage.setItem('procura:data-changed',`${Date.now()}:${Math.random()}`);}catch{/* Storage may be disabled. */}}
@@ -79,7 +80,7 @@ export function upload<T>(path: string, body: FormData, onProgress: (percent: nu
       try{data=JSON.parse(request.responseText);}catch{}
       if(request.status<200||request.status>=300){
         if(request.status===401&&typeof window!=='undefined')window.dispatchEvent(new Event('procura:session-expired'));
-        reject(new ApiError(request.status,data&&typeof data==='object'&&'detail'in data?data.detail:null,request.getResponseHeader('Retry-After')));
+        reject(new ApiError(request.status,data&&typeof data==='object'&&'detail'in data?data.detail:null,request.getResponseHeader('Retry-After'),request.getResponseHeader('X-Request-ID')));
         return;
       }
       resolve(data as T);
@@ -95,6 +96,7 @@ export function uploadStream<T>(path:string,body:FormData,onProgress:(percent:nu
   return new Promise((resolve,reject)=>{
     const request=new XMLHttpRequest();let consumed=0;let pending='';let completed:T|undefined;
     const parse=()=>{
+      if(request.status < 200 || request.status >= 300)return;
       const text=request.responseText.slice(consumed);consumed=request.responseText.length;pending+=text;
       const lines=pending.split(/\r?\n/);pending=lines.pop()||'';
       for(const line of lines){if(!line.trim())continue;try{const event=JSON.parse(line) as Record<string,unknown>;onEvent(event);if(event.type==='complete')completed=event as T;if(event.type==='error')reject(new Error(String(event.message||'The import failed while saving a batch.')));}catch(error){if(error instanceof SyntaxError)reject(new Error('The import returned an unreadable progress event.'));}}
@@ -106,7 +108,7 @@ export function uploadStream<T>(path:string,body:FormData,onProgress:(percent:nu
     request.addEventListener('load',async()=>{
       parse();if(pending.trim()){try{const event=JSON.parse(pending) as Record<string,unknown>;onEvent(event);if(event.type==='complete')completed=event as T;if(event.type==='error'){reject(new Error(String(event.message||'The import failed while saving a batch.')));return;}}catch{}}
       if(request.status===401&&attempt===0&&await refreshBrowserSession()){try{resolve(await uploadStream<T>(path,body,onProgress,onEvent,1));}catch(error){reject(error);}return;}
-      if(request.status<200||request.status>=300){let data:unknown;try{data=JSON.parse(request.responseText);}catch{};reject(new ApiError(request.status,data&&typeof data==='object'&&'detail'in data?data.detail:null,request.getResponseHeader('Retry-After')));return;}
+      if(request.status<200||request.status>=300){let data:unknown;try{data=JSON.parse(request.responseText);}catch{};reject(new ApiError(request.status,data&&typeof data==='object'&&'detail'in data?data.detail:null,request.getResponseHeader('Retry-After'),request.getResponseHeader('X-Request-ID')));return;}
       if(completed)resolve(completed);else reject(new Error('The server closed the import stream before confirming the final database result.'));
     });
     request.addEventListener('error',()=>reject(new Error('The upload could not reach the API. Check your connection and retry; committed batches are safe to retry.')));

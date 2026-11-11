@@ -43,6 +43,8 @@ from app.modules.imports.supplier_mapping import (DISCIPLINES, apply_supplier_tr
 
 router.include_router(material_imports)
 router.include_router(bulk_imports)
+from app.modules.imports.supplier_jobs import router as supplier_jobs
+router.include_router(supplier_jobs)
 
 ALIASES={
     'supplier_name':{'suppliers name','supplier name','company name','company','supplier','legal name','supplier company','supplier company name','company / supplier name'},
@@ -235,6 +237,8 @@ def _valid_phone_list(value:str)->bool:
 
 def _apply_supplier_rows(db:Session,user:User,batch:ImportBatch,rows:Sequence[ImportedRow])->tuple[int,int,int]:
     """Apply validated, persisted supplier rows without reparsing the uploaded workbook."""
+    from app.modules.imports.bulk import _supplier_write_lock
+    _supplier_write_lock(db)
     names={supplier_norm(field(item.raw,'supplier_name')) for item in rows
            if item.status=='valid' and field(item.raw,'supplier_name')}
     companies=db.scalars(select(Organization).where(Organization.source=='imported',

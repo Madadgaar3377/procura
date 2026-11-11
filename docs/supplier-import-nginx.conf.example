@@ -1,0 +1,18 @@
+# Merge into the API virtual host after reviewing its existing routing.
+# This is a reference snippet, not a complete virtual host or a deployed change.
+# TLS and the frontend's Vercel configuration are managed separately.
+location /api/ {
+    client_max_body_size 9m; # Backend validates an 8,000,000-byte workbook.
+    proxy_pass http://127.0.0.1:8000; # No trailing slash: preserve /api/v1/...
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 30s;
+    proxy_read_timeout 30s;
+    # Forward OPTIONS to FastAPI. FastAPI owns the exact-origin CORS policy.
+    # Do not redirect API preflights to a canonical frontend hostname.
+    # No long request timeout is needed for queued supplier processing.
+}

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=2, ge=0, le=50, validation_alias=AliasChoices('db_max_overflow', 'DB_MAX_OVERFLOW'))
     db_pool_timeout: int = Field(default=10, ge=1, le=60, validation_alias=AliasChoices('db_pool_timeout', 'DB_POOL_TIMEOUT'))
     db_pool_recycle: int = Field(default=1800, ge=60, le=7200, validation_alias=AliasChoices('db_pool_recycle', 'DB_POOL_RECYCLE'))
+    supplier_import_batch_size: int = Field(default=10, ge=1, le=35)
     mock_notifications: bool = True
     auth_delivery_auto_dispatch: bool = True
     recovery_minutes: int = Field(default=10, ge=5, le=30)

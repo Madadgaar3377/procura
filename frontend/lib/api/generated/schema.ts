@@ -9,6 +9,7 @@ export interface Schemas {
   "Assign": { "org_id": string; "plan_id": string; "billing_interval"?: "monthly" | "yearly"; "expires_at"?: string | null };
   "AuditOut": { "actor_user_id": string | null; "org_id": string | null; "action": string; "entity_id": string | null; "metadata_json": Record<string, unknown>; "id": string; "created_at": string };
   "AutomationMaterial": { "id": string; "description": string; "unit": string };
+  "Body_enqueue_api_v1_imports_bulk_suppliers_jobs_post": { "file": string };
   "Body_preview_api_v1_imports_materials_preview_post": { "file": string; "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null };
   "Body_preview_categories_api_v1_taxonomy_categories_import_preview_post": { "file": string; "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null };
   "Body_update_preview_options_api_v1_imports_materials__batch_id__preview_options_post": { "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null };
@@ -142,6 +143,7 @@ export interface Schemas {
   "ReviewQueue": { "verifications": Array<Schemas["VerificationOut"]>; "claims": Array<Schemas["ClaimOut"]> };
   "SessionOut": { "id": string; "created_at": string; "expires_at": string; "current"?: boolean };
   "SettingsInput": { "free_launch_mode"?: boolean; "paid_memberships_enabled"?: boolean; "proposed_paid_launch_date"?: string | null; "default_free_plan"?: string | null; "premium_promotion_enabled"?: boolean; "featured_rfqs_enabled"?: boolean };
+  "SourceIssue": { "row": number; "reason": string; "sheet"?: string | null };
   "SubcategoryMaterialIn": { "code"?: string | null; "name_en": string; "name_ar"?: string; "parent_id": string; "sort_order"?: number; "material_description"?: string | null; "unit"?: string | null };
   "SubcategoryMaterialOut": { "category": Schemas["CategoryOut"]; "material": Schemas["MaterialOut"] | null };
   "SubscriptionChange": { "status": "active" | "suspended" | "cancelled"; "expires_at"?: string | null };
@@ -152,6 +154,7 @@ export interface Schemas {
   "SupplierContactAdminInput": { "name"?: string | null; "role"?: string | null; "email"?: string | null; "phone"?: string | null; "fax"?: string | null; "is_primary"?: boolean | null };
   "SupplierContactCapabilityInput": { "category_id": string; "material_ids"?: Array<string>; "is_primary"?: boolean };
   "SupplierImportConfirmation": { "batch_id": string; "status": "queued"; "rows": number; "created": number; "unchanged": number; "errors": number; "completed_rows": number };
+  "SupplierJobProgress": { "batch_id": string; "status": string; "stage": string; "message"?: string | null; "total_rows": number; "total_supplier_records_identified": number; "batch_size": number; "batches_total": number; "completed_batches": number; "progress_percent": number; "new_suppliers_saved"?: number; "existing_suppliers_reused"?: number; "suppliers_updated"?: number; "suppliers_incomplete"?: number; "contacts_created"?: number; "contacts_updated"?: number; "category_assignments_created"?: number; "capabilities_saved"?: number; "capabilities_skipped"?: number; "categories_created"?: number; "materials_created"?: number; "pending_category_mappings"?: number; "imported"?: number; "skipped"?: number; "incomplete"?: number; "failed"?: number; "supplier_failures"?: number; "failed_rows"?: number; "issues"?: Array<Schemas["SourceIssue"]>; "warnings"?: Array<Schemas["SourceIssue"]> };
   "SupplierProfileAdminUpdate": { "name"?: string | null; "country"?: string | null; "city"?: string | null; "address"?: string | null; "cr_number"?: string | null; "vat_number"?: string | null; "website"?: string | null; "description"?: string | null; "contact_name"?: string | null; "designation"?: string | null; "business_email"?: string | null; "business_phone"?: string | null };
   "SupplierReviewAction": { "reason"?: string | null };
   "SupplierTradeMappingIn": { "category_id": string; "city"?: string };
@@ -274,6 +277,9 @@ export interface Operations {
   "GET /api/v1/imports/bulk/{batch_id}/errors": { body: never; response: unknown };
   "GET /api/v1/imports/bulk/suppliers/{batch_id}/warnings": { body: never; response: unknown };
   "GET /api/v1/imports/bulk/suppliers/{batch_id}/incomplete": { body: never; response: unknown };
+  "POST /api/v1/imports/bulk/suppliers/jobs": { body: never; response: Schemas["SupplierJobProgress"] };
+  "GET /api/v1/imports/bulk/suppliers/jobs/{batch_id}": { body: never; response: Schemas["SupplierJobProgress"] };
+  "POST /api/v1/imports/bulk/suppliers/jobs/{batch_id}/retry": { body: never; response: Schemas["SupplierJobProgress"] };
   "GET /api/v1/imports/suppliers/reprocess/preview": { body: never; response: unknown };
   "POST /api/v1/imports/suppliers/reprocess": { body: never; response: unknown };
   "POST /api/v1/imports/{kind}": { body: never; response: unknown };

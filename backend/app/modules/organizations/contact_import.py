@@ -149,7 +149,7 @@ def _add_channel(db: Session, contact: Contact, kind: str, value: str, normalize
 
 def import_contact_row(db: Session, org_id: str, name_value: str | None, raw_email: str | None,
                        raw_phone: str | None, country: str | None, source_reference: str | None,
-                       *, return_ids: bool = False):
+                       *, return_ids: bool = False, metrics: dict | None = None):
     """Upsert row contacts; ambiguous name/address alignment remains a review record."""
     raw_name, raw_email, raw_phone = clean(name_value), clean(raw_email), clean(raw_phone)
     # Serialize contact identity checks for this supplier across concurrent imports.
@@ -220,4 +220,7 @@ def import_contact_row(db: Session, org_id: str, name_value: str | None, raw_ema
                 raw_name=raw_name[:500] or None,raw_email=raw_email[:1000] or None,raw_phone=raw_phone[:1000] or None))
         if contact.id not in contact_ids:contact_ids.append(contact.id)
     result=(made,bool(invalid_email or invalid_phone or ambiguous))
+    if metrics is not None:
+        metrics['created_ids'] = list(created_ids)
+        metrics['updated_ids'] = list(updated_ids)
     return (*result,contact_ids,len(updated_ids)) if return_ids else result

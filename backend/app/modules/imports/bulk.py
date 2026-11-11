@@ -6,12 +6,13 @@ import json
 import unicodedata
 from io import BytesIO
 from math import ceil
+from zipfile import ZipFile
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook, load_workbook
 from openpyxl.worksheet.datavalidation import DataValidation
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -47,10 +48,14 @@ def _read(content: bytes, filename: str, headers: list[str]):
             sheets = [(sheet.name, [[sheet.cell_value(r, c) for c in range(sheet.ncols)] for r in range(sheet.nrows)]) for sheet in book.sheets()]
             book.release_resources()
         else:
+            with ZipFile(BytesIO(content)) as archive:
+                if sum(item.file_size for item in archive.infolist()) > 64_000_000:
+                    raise HTTPException(413, 'Expanded workbook exceeds the 64 MB parsing limit')
             book = load_workbook(BytesIO(content), read_only=True, data_only=True, keep_links=False)
             sheets=[]
             for sheet in book.worksheets:
                 if sheet.max_row > 30_001: raise HTTPException(413, f"Worksheet {sheet.title} exceeds the 30,000-row limit")
+                if sheet.max_column > 120: raise HTTPException(413, 'Workbook exceeds the 120-column parsing limit')
                 sheets.append((sheet.title,list(sheet.iter_rows(values_only=True))) )
             book.close()
     except HTTPException: raise
@@ -109,6 +114,7 @@ def _read(content: bytes, filename: str, headers: list[str]):
                 row={display_keys[key]:value for key,value in canonical_row.items() if key in display_keys}
                 row["_source_sheet"]=sheet_name;row["_source_row"]=physical_row;row["_raw_excel"]=raw_excel
                 parsed.append((physical_row,row))
+                if len(parsed) > 30_000: raise HTTPException(413, 'Workbook exceeds the 30,000-row limit across worksheets')
         if not parsed: raise HTTPException(422,"No worksheet contains a supplier company-name header")
         return parsed
     values=sheets[0][1]
@@ -260,8 +266,16 @@ def _material_row(db, row, number, batch, user, category_cache, unit_cache, cand
         return "failed", str(getattr(exc, "detail", None) or str(exc) or "Database rejected this row")
 
 
-def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen):
+def _supplier_write_lock(db):
+    if db.get_bind().dialect.name == 'postgresql':
+        db.execute(text('SELECT pg_advisory_xact_lock(717341392)'))
+
+
+def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen, metrics=None):
+    _supplier_write_lock(db)
     name=_clean(row.get("Company Name"));contact_name=_clean(row.get("Contact Person"))
+    if len(name) > 220:
+        raise ValueError('Company Name must contain at most 220 characters')
     raw_email=row.get("Contact Email") or row.get("Email","");raw_phone=row.get("Contact Phone") or row.get("Phone","")
     country=_clean(row.get("Country"));city=_clean(row.get("City"));address=_clean(row.get("Address"))
     main_name=_clean(row.get("Main Category"));sub_name=_clean(row.get("Subcategory"))
@@ -309,12 +323,21 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
         if org is None:
             contact = db.scalar(select(Contact).where(func.lower(func.trim(Contact.email)) == valid_email["value"].casefold()))
             org = db.get(Organization, contact.org_id) if contact else None
+        if org and not org.is_supplier:
+            raise ValueError('Contact email belongs to an unrelated organization; review this supplier')
     if org is None and valid_phone:
         org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True),
             Organization.business_phone == valid_phone["normalized"]).limit(1))
         if org is None:
             contact = db.scalar(select(Contact).where(Contact.phone_normalized == valid_phone["normalized"]))
             org = db.get(Organization, contact.org_id) if contact else None
+        if org and not org.is_supplier:
+            raise ValueError('Contact phone belongs to an unrelated organization; review this supplier')
+    if org and name_key and org.name_normalized and ' '.join(unicodedata.normalize('NFKC', org.name_normalized).casefold().split()) != name_key and not org.name.startswith('[Imported supplier placeholder:'):
+        raise ValueError('Company name conflicts with an existing contact identity; review this supplier')
+    profile_fields = ('business_email', 'business_phone', 'city', 'address', 'contact_name', 'country',
+                      'website', 'cr_number', 'vat_number', 'description', 'profile_status')
+    before_profile = tuple(getattr(org, field) for field in profile_fields) if org else None
     if org is None:
         company_name = name or f"[Imported supplier placeholder: {reliable_key.split(':', 1)[-1]}]"
         org = Organization(name=company_name[:220], name_normalized=(name_key or company_name.casefold())[:220],
@@ -344,11 +367,14 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     org_cache[reliable_key] = org
 
     source_row = row.get("_source_row", number)
+    contact_changes = {}
     contacts_added, contacts_need_review, contact_ids, contacts_updated = import_contact_row(db, org.id, contact_name, raw_email, raw_phone,
-        country or "SA", f"{batch.id}:{source_row}", return_ids=True)
+        country or "SA", f"{batch.id}:{row.get('_source_sheet', '')}:{source_row}", return_ids=True, metrics=contact_changes)
     for contact_id in contact_ids:
         imported_contact=db.get(Contact,contact_id)
-        if imported_contact and contact_designation and not imported_contact.role:imported_contact.role=contact_designation[:100]
+        if imported_contact and contact_designation and not imported_contact.role:
+            imported_contact.role=contact_designation[:100]
+            contact_changes['updated_ids'].append(contact_id)
         if imported_contact and _clean(row.get("Is Primary Contact")).casefold() in {"yes","y","true","1"}:
             db.query(Contact).filter(Contact.org_id==org.id,Contact.id!=imported_contact.id).update({Contact.is_primary:False},synchronize_session=False)
             imported_contact.is_primary=True
@@ -374,6 +400,11 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     missing = [label for label, value in (("Company Name", not org.name.startswith("[Imported supplier placeholder:")),
         ("Email", org.business_email), ("Phone", org.business_phone), ("City", org.city),
         ("Address", org.address), ("Contact Person", org.contact_name)) if not value]
+    if metrics is not None:
+        metrics['contacts_updated'] = contacts_updated
+        metrics['contacts_created_ids'] = contact_changes['created_ids']
+        metrics['contacts_updated_ids'] = contact_changes['updated_ids']
+        metrics['company_updated'] = bool(before_profile is not None and before_profile != tuple(getattr(org, field) for field in profile_fields))
     return org, created, missing, contact_warnings, contacts_added, mapping
 
 
@@ -427,12 +458,14 @@ def _supplier_contact_category_capability(db,org,mapping):
     material_name=_clean(mapping.get('contact_material'))
     warning=None
     if material_name:
-        normalized=normalize_text(material_name)
-        material=db.scalar(select(Material).where(Material.active.is_(True),Material.normalized_description==normalized,
-            or_(Material.category_id==category.id,Material.main_category_id==category.id,Material.subcategory_id==category.id)).limit(1))
-        if material:
-            if material.id not in (capability.material_ids or []):capability.material_ids=[*(capability.material_ids or []),material.id]
-        else:warning=f'Material was not matched to the selected category: {material_name}'
+        names = list(dict.fromkeys(part.strip() for part in re.split(r'[;\n]+', material_name) if part.strip()))
+        keys = {normalize_text(name) for name in names}
+        materials = db.scalars(select(Material).where(Material.active.is_(True),Material.normalized_description.in_(keys),
+            or_(Material.category_id==category.id,Material.main_category_id==category.id,Material.subcategory_id==category.id))).all()
+        capability.material_ids = list(dict.fromkeys([*(capability.material_ids or []), *(material.id for material in materials)]))
+        matched = {material.normalized_description for material in materials}
+        missing = [name for name in names if normalize_text(name) not in matched]
+        if missing:warning=f'Material was not matched to the selected category: {"; ".join(missing)}'
     return {'status':'saved','reason':None,'capability_id':capability.id,'capability_created':created,
         'material_warning':warning,'categories_created':0,'materials_created':0}
 
@@ -528,7 +561,13 @@ def _supplier_identity_key(row):
 
 
 def _stream_import(kind, rows, filename, user_id):
-    chunks = _chunks(rows); batch_count = len(chunks); db = SessionLocal()
+    if kind == 'suppliers':
+        # Batch suppliers, keeping all of a company's contact/capability rows together.
+        from app.modules.imports.supplier_jobs import _groups
+        chunks = [[tuple(item) for group in chunk for item in group] for chunk in _chunks(_groups(rows))]
+    else:
+        chunks = _chunks(rows)
+    batch_count = len(chunks); db = SessionLocal()
     issues = []; warnings = []; incomplete_rows = []; imported = skipped = incomplete = completed_rows = 0
     capability_saved = capability_skipped = contacts_created = categories_created = materials_created = contact_assignments_created = contacts_updated = duplicate_rows_skipped = 0; category_cache = {}; unit_cache = {}; seen = set()
     pending_category_mappings = 0
@@ -678,7 +717,7 @@ def _stream_import(kind, rows, filename, user_id):
             "warnings":warnings, "incomplete_rows":incomplete_rows, "issues":issues}) + "\n"
     except Exception as exc:
         db.rollback()
-        yield json.dumps({"type":"error","message":str(exc) or "The import failed while writing to PostgreSQL."}) + "\n"
+        yield json.dumps({"type":"error","message":"The import failed while writing to the database. Committed progress is preserved."}) + "\n"
     finally: db.close()
 
 
@@ -704,8 +743,16 @@ def error_report(batch_id: str, user: User = Depends(admin_user), db: Session = 
     if not batch: raise HTTPException(404, "Import report not found")
     rows = db.scalars(select(ImportedRow).where(ImportedRow.batch_id == batch_id, ImportedRow.status == "invalid").order_by(ImportedRow.row_number)).all()
     if not rows: raise HTTPException(404, "This import has no failed rows")
-    book=Workbook(); sheet=book.active; sheet.title="Failed rows"; sheet.append(["Excel row", "Reason", *list(rows[0].raw.keys())])
-    for item in rows: sheet.append([item.row_number,item.issue,*[item.raw.get(k,"") for k in rows[0].raw.keys()]])
+    book=Workbook(); sheet=book.active; sheet.title="Failed rows"
+    sheet.append(["Worksheet", "Excel row", "Reason", "Source data"])
+    def safe(value):
+        text = str(value or '')
+        return "'" + text if text.lstrip().startswith(('=', '+', '-', '@')) else text
+    for item in rows:
+        source_rows = item.raw.get('source_rows') or [[item.row_number, item.raw]]
+        for number, raw in source_rows:
+            sheet.append([safe(raw.get('_source_sheet', '')), number, safe(item.issue),
+                          safe(json.dumps(raw, ensure_ascii=False))])
     out=BytesIO();book.save(out);out.seek(0)
     return StreamingResponse(out,media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",headers={"Content-Disposition":f'attachment; filename="{batch.kind}-errors.xlsx"'})
 
@@ -713,7 +760,16 @@ def error_report(batch_id: str, user: User = Depends(admin_user), db: Session = 
 @router.get("/suppliers/{batch_id}/warnings")
 def supplier_warning_report(batch_id: str, user: User = Depends(admin_user), db: Session = Depends(get_db)):
     batch = db.get(ImportBatch, batch_id)
-    if not batch or batch.kind != "suppliers": raise HTTPException(404, "Supplier import report not found")
+    if not batch or batch.kind not in {"suppliers", "supplier_bulk"}: raise HTTPException(404, "Supplier import report not found")
+    if batch.kind == 'supplier_bulk':
+        book = Workbook(); sheet = book.active; sheet.title = 'Supplier warnings'
+        sheet.append(['Excel row', 'Warning'])
+        for item in (batch.preview_metadata or {}).get('warnings', []):
+            reason = str(item.get('reason') or '')
+            sheet.append([item.get('row'), "'" + reason if reason.lstrip().startswith(('=', '+', '-', '@')) else reason])
+        out = BytesIO(); book.save(out); out.seek(0)
+        return StreamingResponse(out, media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={'Content-Disposition': f'attachment; filename="supplier-import-{batch_id}-warnings.xlsx"'})
     rows = db.scalars(select(ImportedRow).where(ImportedRow.batch_id == batch_id,
         or_(ImportedRow.status == "warning", ImportedRow.status == "incomplete")).order_by(ImportedRow.row_number)).all()
     if not rows: raise HTTPException(404, "This import has no supplier warnings")
