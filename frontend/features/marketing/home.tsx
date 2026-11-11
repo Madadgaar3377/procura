@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import './home-motion.css';
 import Promotions from './promotions';
 import {marketingFont as geist} from './fonts';
 import {IconArrowRight,IconCheck,IconChevronDown,IconClock,IconFileText,IconLayoutDashboard,IconLock,IconMail,IconSearch,IconShieldCheck,IconUsers,IconWorld} from '@tabler/icons-react';
@@ -12,7 +13,7 @@ export default function MarketingHome({locale='en'}:{locale?:MarketingLocale}){
   const c=marketingCopy[locale];const valueIcons=[IconUsers,IconFileText,IconLayoutDashboard,IconClock];
   const automationIcons=[IconSearch,IconMail,IconLock,IconClock];
   const trustIcons=[IconShieldCheck,IconCheck,IconUsers,IconLock,IconShieldCheck,IconFileText];
-  return <div className={`procura-marketing pm-home ${geist.variable}`} lang={locale} dir={locale==='ar'?'rtl':'ltr'} id="top"><MarketingEnhancements/><MarketingHeader locale={locale}/>
+  return <div className={`procura-marketing pm-home ${geist.variable}`} lang={locale} dir={locale==='ar'?'rtl':'ltr'} id="top"><MarketingEnhancements locale={locale}/><MarketingHeader locale={locale}/>
     <main id="main-content">
       <section className="pm-hero"><div className="pm-container pm-hero-grid"><div className="pm-hero-copy"><span className="pm-eyebrow pm-enter pm-enter-1"><i/>{c.heroEyebrow}</span><h1 className="pm-enter pm-enter-2">{c.heroFirst}<br/><em>{c.heroSecond}</em></h1><p className="pm-hero-body pm-enter pm-enter-3">{c.heroBody}</p><div className="pm-hero-actions pm-enter pm-enter-4"><MarketingCTA>{c.createRFQ}</MarketingCTA><MarketingCTA role="supplier" className="pm-button-secondary">{c.joinSupplier}</MarketingCTA></div><p className="pm-hero-note pm-enter pm-enter-4"><IconWorld size={16}/>{c.heroNote}</p><div className="pm-hero-capabilities pm-enter pm-enter-4">{c.heroLabels.map(label=><span key={label}><IconCheck size={14}/>{label}</span>)}</div></div><div className="pm-hero-product pm-enter pm-enter-5"><WorkflowPreview locale={locale}/></div></div></section>
 

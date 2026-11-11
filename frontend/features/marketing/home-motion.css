@@ -1,0 +1,45 @@
+/* Motion only. All approved layout, colors, content and dimensions live in marketing.css. */
+@media (prefers-reduced-motion: no-preference) {
+  .pm-home .pm-enter { animation-duration: 550ms; animation-timing-function: cubic-bezier(.2,.65,.3,1); }
+  .pm-home .pm-enter-1 { animation-delay: 0ms; }
+  .pm-home .pm-enter-2 { animation-delay: 60ms; }
+  .pm-home .pm-enter-3 { animation-delay: 140ms; }
+  .pm-home .pm-enter-4 { animation-delay: 220ms; }
+  .pm-home .pm-enter-5 { animation-delay: 280ms; }
+  .pm-home .pm-hero-actions > :nth-child(2) { animation: pm-home-button-enter 500ms 300ms cubic-bezier(.2,.65,.3,1) backwards; }
+
+  .pm-home :is(.pm-desktop-nav a, .pm-language, .pm-signin, .pm-drawer nav a, .pm-footer a) {
+    transition: color 180ms ease, opacity 180ms ease;
+  }
+  .pm-home .pm-button { transition-duration: 180ms; }
+  .pm-home :is(.pm-text-link, .pm-plan-card > a) svg { transition: translate 180ms ease; }
+  .pm-home .pm-plan-card > a:hover svg { translate: 3px 0; }
+  .pm-home:dir(rtl) .pm-plan-card > a:hover svg { translate: -3px 0; }
+  .pm-home :is(.pm-directory-card, .pm-plan-card, .pm-automation-grid > article, .pm-matching-node) {
+    transition: translate 200ms ease;
+  }
+  .pm-home :is(.pm-value-grid > div, .pm-process-timeline > li, .pm-automation-grid > article, .pm-matching-node) svg {
+    transition: translate 180ms ease;
+  }
+  .pm-home .pm-faq-list details > div { animation: none; }
+  .pm-home .pm-faq-list summary > svg { transition-duration: 180ms; }
+
+  /* Existing illustrative cursor/connectors remain static, not fake live activity. */
+  .pm-home .pm-flow-connector i { animation: none; }
+  .pm-home .pm-edit-cursor { animation: none; }
+
+  .pm-home .pm-drawer { --pm-drawer-entry: 12px; animation: pm-home-drawer-enter 200ms ease-out; }
+  .pm-home:dir(rtl) .pm-drawer { --pm-drawer-entry: -12px; animation-name: pm-home-drawer-enter; }
+  .pm-home .pm-drawer[open]::backdrop { animation: pm-home-backdrop-enter 180ms ease-out; }
+}
+
+@media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .pm-home :is(.pm-directory-card, .pm-plan-card, .pm-automation-grid > article, .pm-matching-node):hover { translate: 0 -2px; }
+  .pm-home :is(.pm-value-grid > div, .pm-process-timeline > li, .pm-automation-grid > article, .pm-matching-node):hover svg { translate: 0 -2px; }
+  .pm-home .pm-form-composition:hover .pm-edit-cursor { animation: pm-home-cursor 500ms ease-in-out 2; }
+}
+
+@keyframes pm-home-button-enter { from { opacity: 0; translate: 0 8px; } to { opacity: 1; translate: 0 0; } }
+@keyframes pm-home-drawer-enter { from { opacity: 0; translate: var(--pm-drawer-entry) 0; } to { opacity: 1; translate: 0 0; } }
+@keyframes pm-home-backdrop-enter { from { opacity: 0; } to { opacity: 1; } }
+@keyframes pm-home-cursor { 50% { opacity: .3; } }

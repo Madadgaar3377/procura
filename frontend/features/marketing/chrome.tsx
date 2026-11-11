@@ -6,6 +6,7 @@ import {useEffect, useRef, useState, type MouseEvent} from 'react';
 import {IconArrowRight, IconArrowUp, IconMenu2, IconWorld, IconX} from '@tabler/icons-react';
 import {useLocale} from '@/lib/locale';
 import {marketingCopy, type MarketingLocale} from './copy';
+import {mountHomeMotion} from './home-motion';
 
 const navigation=['/#buyers','/#suppliers','/#how-it-works','/industries','/suppliers','/pricing','/contact'];
 
@@ -55,16 +56,30 @@ export function MarketingBrand({inverse=false}:{inverse?:boolean}){
 
 export function MarketingHeader({locale}:{locale?:MarketingLocale}){
   const {arabic}=useLocale();const current=locale||(arabic?'ar':'en');const c=marketingCopy[current];
-  const pathname=usePathname();const dialog=useRef<HTMLDialogElement>(null);
+  const pathname=usePathname();const dialog=useRef<HTMLDialogElement>(null);const closingMotion=useRef<Animation|null>(null);
   const [open,setOpen]=useState(false),[scrolled,setScrolled]=useState(false),[active,setActive]=useState(''),[interactive,setInteractive]=useState(false);
   useEffect(()=>{setInteractive(true);const scroll=()=>setScrolled(window.scrollY>12);scroll();window.addEventListener('scroll',scroll,{passive:true});return()=>window.removeEventListener('scroll',scroll);},[]);
   useEffect(()=>{if(!open)return;const previous=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=previous;};},[open]);
   useEffect(()=>{
-    if(pathname!=='/')return;
+    if(pathname!=='/'||typeof window.IntersectionObserver!=='function')return;
     const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting)setActive('/#'+entry.target.id);},{rootMargin:'-15% 0px -65% 0px'});
     document.querySelectorAll('section[id]').forEach(node=>observer.observe(node));return()=>observer.disconnect();
   },[pathname]);
-  function close(){dialog.current?.close();setOpen(false);}
+  useEffect(()=>{
+    const preference=window.matchMedia('(prefers-reduced-motion: reduce)');
+    const reduce=()=>{if(preference.matches&&closingMotion.current){closingMotion.current.cancel();closingMotion.current=null;dialog.current?.close();setOpen(false);}};
+    preference.addEventListener('change',reduce);
+    return()=>{preference.removeEventListener('change',reduce);closingMotion.current?.cancel();};
+  },[]);
+  function close(){
+    const node=dialog.current;
+    if(!node?.open||closingMotion.current)return;
+    const finish=()=>{node.close();setOpen(false);};
+    if(pathname!=='/'||window.matchMedia('(prefers-reduced-motion: reduce)').matches||!node.animate){finish();return;}
+    const animation=node.animate([{opacity:1,translate:'0 0'},{opacity:0,translate:`${current==='ar'?-12:12}px 0`}],{duration:180,easing:'ease-out'});
+    closingMotion.current=animation;
+    animation.onfinish=()=>{closingMotion.current=null;finish();};
+  }
   const links=(mobile=false)=>c.nav.map((label,index)=>{
     const href=navigation[index];const selected=href.includes('#')?pathname==='/'&&active===href:pathname.startsWith(href);
     return <Link href={href} key={href} aria-current={selected?(href.includes('#')?'location':'page'):undefined} onClick={mobile?close:undefined}>{label}</Link>;
@@ -77,7 +92,7 @@ export function MarketingHeader({locale}:{locale?:MarketingLocale}){
         <div className="pm-nav-actions"><MarketingLanguage locale={current}/><Link href="/login" prefetch={false} className="pm-signin">{c.signIn}</Link><MarketingCTA role="auto" className="pm-header-cta">{c.getStarted}</MarketingCTA><button type="button" className="pm-menu-button" aria-label={c.openMenu} aria-expanded={open} aria-controls="pm-navigation-drawer" onClick={()=>{dialog.current?.showModal();setOpen(true);}}><IconMenu2 size={22}/></button></div>
       </div>
     </header>
-    <dialog ref={dialog} id="pm-navigation-drawer" className="pm-drawer" onClose={()=>setOpen(false)} aria-label={current==='ar'?'قائمة التنقل':'Navigation menu'} onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();if(event.target===event.currentTarget&&(event.clientX<rect.left||event.clientX>rect.right))close();}}>
+    <dialog ref={dialog} id="pm-navigation-drawer" className="pm-drawer" onCancel={event=>{if(pathname==='/'){event.preventDefault();close();}}} onClose={()=>{closingMotion.current?.cancel();closingMotion.current=null;setOpen(false);}} aria-label={current==='ar'?'قائمة التنقل':'Navigation menu'} onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();if(event.target===event.currentTarget&&(event.clientX<rect.left||event.clientX>rect.right))close();}}>
       <div className="pm-drawer-head"><MarketingBrand/><button type="button" className="pm-menu-button" onClick={close} aria-label={c.closeMenu}><IconX size={23}/></button></div>
       <nav>{links(true)}</nav><div className="pm-drawer-actions"><Link href="/login" className="pm-button pm-button-secondary" onClick={close}>{c.signIn}</Link><MarketingCTA role="auto">{c.getStarted}</MarketingCTA></div><p dir="ltr">{c.tagline}</p>
     </dialog>
@@ -95,13 +110,10 @@ export function MarketingFooter({locale}:{locale?:MarketingLocale}){
   </div></footer>;
 }
 
-export function MarketingEnhancements(){
+export function MarketingEnhancements({locale}:{locale?:MarketingLocale}){
   useEffect(()=>{
-    const root=document.querySelector('.pm-home');if(!root||window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
-    root.setAttribute('data-motion','ready');
-    const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting){entry.target.classList.add('is-visible');observer.unobserve(entry.target);}},{threshold:0.06});
-    root.querySelectorAll('.pm-reveal').forEach(node=>observer.observe(node));
-    return()=>{observer.disconnect();root.removeAttribute('data-motion');};
-  },[]);
+    const root=document.querySelector<HTMLElement>('.pm-home');if(!root)return;
+    return mountHomeMotion(root);
+  },[locale]);
   return null;
 }
