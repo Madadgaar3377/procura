@@ -218,15 +218,14 @@ def match_and_invite(
         exact_subcategory_items = set()
         main_category_items = set()
         for item_id, (main, sub) in item_scope.items():
-            for c in approved_caps:
-                if sub and c.category_id == sub and category_parents.get(c.category_id) == main:
-                    covered.add(item_id)
-                    exact_subcategory_items.add(item_id)
-                    break
-                if c.category_id == main:
-                    covered.add(item_id)
-                    main_category_items.add(item_id)
-                    break
+            exact_subcategory = sub and any(c.category_id == sub and category_parents.get(c.category_id) == main for c in approved_caps)
+            main_category = any(c.category_id == main for c in approved_caps)
+            if exact_subcategory:
+                covered.add(item_id)
+                exact_subcategory_items.add(item_id)
+            elif main_category:
+                covered.add(item_id)
+                main_category_items.add(item_id)
 
         if not covered:
             ineligible_diagnostics[org_id] = {

@@ -2,7 +2,8 @@
 export interface Schemas {
   "AccountPreferencesIn": { "events"?: Record<string, boolean> | null; "in_app_enabled"?: boolean | null };
   "AdminPlanOut": { "name": string; "slug": string; "publication_status": string; "visible_on_website": boolean; "available_for_subscription": boolean; "billing_intervals": Array<string>; "feature_details": Array<Record<string, unknown>>; "available_from": string | null; "available_until": string | null; "archived_at": string | null; "updated_at": string; "version": number; "description": string; "monthly_price": string; "yearly_price": string; "currency": string; "features": Array<string>; "active": boolean; "archived": boolean; "recommended": boolean; "premium": boolean; "display_order": number; "quote_limit": number; "auto_drafts": boolean; "team_limit": number; "id": string; "created_at": string; "subscribers"?: number };
-  "AdminSupplierCreate": { "name": string; "contact_name"?: string | null; "phone"?: string | null; "email"?: string | null; "cr_number"?: string | null; "city"?: string | null; "website"?: string | null };
+  "AdminSupplierContactCreate": { "name"?: string | null; "designation"?: string | null; "email"?: string | null; "phone"?: string | null; "category_ids"?: Array<string>; "material_ids"?: Array<string>; "is_primary"?: boolean };
+  "AdminSupplierCreate": { "name": string; "country"?: string | null; "address"?: string | null; "description"?: string | null; "contacts"?: Array<Schemas["AdminSupplierContactCreate"]>; "contact_name"?: string | null; "phone"?: string | null; "email"?: string | null; "cr_number"?: string | null; "vat_number"?: string | null; "city"?: string | null; "website"?: string | null };
   "AdminUserCreate": { "username": string; "phone_country"?: string | null; "phone": string; "email"?: string | null; "password": string; "is_admin"?: boolean; "phone_verified"?: boolean; "email_verified"?: boolean };
   "AdminUserUpdate": { "username"?: string | null; "phone"?: string | null; "email"?: string | null; "password"?: string | null; "is_admin"?: boolean | null; "is_active"?: boolean | null; "phone_verified"?: boolean | null; "email_verified"?: boolean | null };
   "Assign": { "org_id": string; "plan_id": string; "billing_interval"?: "monthly" | "yearly"; "expires_at"?: string | null };
@@ -54,11 +55,19 @@ export interface Schemas {
   "Feature": { "label": string; "included"?: boolean };
   "HTTPValidationError": { "detail"?: Array<Schemas["ValidationError"]> };
   "ImportBatchOut": { "kind": string; "filename": string; "status": string; "rows": number; "created": number; "errors": number; "updated_count": number; "unchanged_count": number; "categories_created": number; "completed_rows": number; "stage": string; "retry_count": number; "source_bytes": number; "upload_duration_ms": number; "parse_duration_ms": number; "apply_duration_ms": number; "updated_at": string; "initiated_by": string; "id": string; "created_at": string };
+  "IndustryCatalogPage": { "disciplines": Array<Schemas["IndustryDiscipline"]>; "categories": Array<Schemas["IndustryCategoryCard"]>; "total": number; "page": number; "limit": number };
+  "IndustryCategoryCard": { "id": string; "name_en": string; "name_ar"?: string; "main_category_id": string; "main_category": string; "main_category_ar"?: string; "subcategory_id"?: string | null; "subcategory"?: string | null; "subcategory_ar"?: string; "material_count": number; "materials"?: Array<Schemas["IndustryMaterialPreview"]> };
+  "IndustryDiscipline": { "id": string; "name_en": string; "name_ar"?: string; "category_count": number; "material_count": number };
+  "IndustryMaterialPreview": { "id": string; "name_en": string; "name_ar"?: string; "description"?: string; "description_ar"?: string; "unit"?: string };
+  "IndustryTaxonomyReviewCandidate": { "id": string; "code": string; "name_en": string; "name_ar"?: string; "parent_id"?: string | null; "parent_name_en"?: string | null; "reason": string };
   "InvitationOut": { "rfq_id": string; "supplier_org_id": string; "status": string; "invited_at": string; "id": string; "created_at": string };
   "InvitationSummary": { "rfq_id": string; "supplier_org_id": string; "status": string; "invited_at": string; "id": string; "created_at": string; "rfq_reference": string; "title": string; "item_descriptions": Array<string> };
   "Login": { "phone_country"?: string | null; "identifier": string; "password": string };
-  "MatchResults": { "matches": Array<Schemas["MatchSummary"]>; "invitations": Array<Schemas["BuyerInvitation"]>; "progress": "draft" | "matching_queued" | "matching_in_progress" | "matching_failed" | "invitations_available" | "no_eligible_suppliers" | "closed"; "pending_invitation_ids": Array<string>; "matched_suppliers"?: number; "invited_suppliers"?: number; "pending_suppliers"?: number; "deliveries"?: Record<string, number>; "reminder_available_at"?: string | null; "limit"?: number; "offset"?: number };
-  "MatchSummary": { "rfq_id": string; "supplier_org_id": string; "score": number; "reasons": Array<string>; "status": string; "id": string; "created_at": string; "supplier_name": string; "covered_items": Array<string>; "coverage": string };
+  "MatchResults": { "matches": Array<Schemas["MatchSummary"]>; "invitations": Array<Schemas["BuyerInvitation"]>; "progress": "draft" | "published" | "matching_queued" | "matching_in_progress" | "matching_completed" | "matching_failed" | "invitations_available" | "no_eligible_suppliers" | "closed"; "pending_invitation_ids": Array<string>; "matched_suppliers"?: number; "invited_suppliers"?: number; "pending_suppliers"?: number; "suppliers_evaluated"?: number; "quotations_received"?: number; "explanation"?: string | null; "deliveries"?: Record<string, number>; "reminder_available_at"?: string | null; "limit"?: number; "offset"?: number };
+  "MatchSummary": { "rfq_id": string; "supplier_org_id": string; "score": number; "reasons": Array<string>; "status": string; "id": string; "created_at": string; "supplier_name": string; "covered_items": Array<string>; "coverage": string; "verification_status"?: string | null; "description"?: string | null; "website"?: string | null; "business_email"?: string | null; "business_phone"?: string | null; "service_locations"?: Array<string>; "matched_categories"?: Array<string>; "invitation_status"?: string | null; "quotation_status"?: string | null; "profile_url"?: string | null };
+  "MatchingDiagnosticOut": { "rfq_id": string; "rfq_items": number; "active_suppliers_checked": number; "category_candidate_organizations": number; "approved_matching_capabilities": number; "rejected_by_location": number; "rejected_by_verification_or_eligibility": number; "matches_created": number; "invitations_created": number; "job_status": Array<Schemas["OutboxOut"]>; "supplier_reasons": Array<Schemas["MatchingSupplierDiagnostic"]> };
+  "MatchingRerunOut": { "rfq_id": string; "job_id": string; "job_status": "pending" | "retry" | "processing"; "deduplicated": boolean };
+  "MatchingSupplierDiagnostic": { "supplier_org_id": string; "supplier_name": string; "status": string; "reasons": Array<string> };
   "MaterialFilterPage": { "items": Array<Record<string, unknown>>; "total": number; "limit": number; "offset": number; "filters"?: Record<string, unknown> };
   "MaterialImportPreview": { "batch_id"?: string | null; "status": string; "discipline"?: string | null; "sheets"?: Array<Schemas["MaterialImportSheet"]>; "selected_sheet"?: string | null; "headers"?: Array<string>; "mapping"?: Record<string, string>; "rows"?: number; "valid"?: number; "invalid"?: number; "create"?: number; "update"?: number; "unchanged"?: number; "duplicate_rows"?: number; "created"?: number; "updated_count"?: number; "unchanged_count"?: number; "categories_created"?: number; "completed_rows"?: number; "progress_percent"?: number; "stage"?: string | null; "failure_reason"?: string | null; "new_categories"?: Array<Record<string, unknown>>; "upload_duration_ms"?: number; "parse_duration_ms"?: number; "apply_duration_ms"?: number; "updated_at"?: string | null; "sample"?: Array<Record<string, unknown>>; "issues"?: Array<Record<string, unknown>>; "warnings"?: Array<Record<string, unknown>> };
   "MaterialImportResult": { "batch_id": string; "status": string; "rows": number; "created": number; "updated": number; "unchanged": number; "errors": number; "categories_created": number };
@@ -99,6 +108,8 @@ export interface Schemas {
   "PublicCategory": { "id": string; "name_en": string; "name_ar"?: string; "trade_keywords"?: Array<string>; "materials"?: Array<string>; "units"?: Array<string> };
   "PublicCompanyDetails": { "trading_name"?: string | null; "company_type"?: string | null; "description"?: string | null; "website"?: string | null; "business_phone"?: string | null; "business_email"?: string | null; "address"?: string | null; "region"?: string | null; "country"?: string | null };
   "PublicSupplier": { "profile"?: Schemas["PublicCompanyDetails"] | null; "capability_groups"?: Array<Schemas["PublicCapabilityGroup"]>; "shared_subcategories"?: Array<Schemas["PublicCategory"]>; "service_cities"?: Array<string>; "capability_labels"?: Array<string>; "capability_labels_ar"?: Array<string>; "id": string; "name": string; "city": string | null; "verified": boolean; "main_categories"?: Array<string>; "main_categories_ar"?: Array<string> };
+  "PublicSupplierProduct": { "id": string; "name": string; "name_ar"?: string; "description"?: string; "description_ar"?: string; "brand"?: string; "model"?: string; "unit"?: string | null; "specifications"?: Record<string, unknown>; "main_category_id": string; "main_category": string; "main_category_ar"?: string; "subcategory_id"?: string | null; "subcategory"?: string | null; "subcategory_ar"?: string; "source": "material_master" | "supplier_description" };
+  "PublicSupplierProductPage": { "items": Array<Schemas["PublicSupplierProduct"]>; "total": number; "page": number; "limit": number };
   "PublicationPreferences": { "fields"?: Array<"trading_name" | "company_type" | "description" | "website" | "business_phone" | "business_email" | "address" | "region" | "country"> };
   "QuotationOut": { "invitation_id": string; "rfq_id": string; "supplier_org_id": string; "status": string; "price_basis": string; "currency": string; "vat_rate": string; "submitted_at": string | null; "revision": number; "submission_source": string; "review_required": boolean; "review_reasons": Array<unknown>; "policy_revision": number | null; "id": string; "created_at": string };
   "QuotationSummary": { "invitation_id": string; "rfq_id": string; "supplier_org_id": string; "status": string; "price_basis": string; "currency": string; "vat_rate": string; "submitted_at": string | null; "revision": number; "submission_source": string; "review_required": boolean; "review_reasons": Array<unknown>; "policy_revision": number | null; "id": string; "created_at": string; "supplier_name": string; "rfq_reference": string; "rfq_title": string; "totals": Schemas["Totals"] };
@@ -111,7 +122,7 @@ export interface Schemas {
   "RFQAttachmentOut": { "id": string; "filename": string; "content_type": string; "size": number };
   "RFQAttachmentRemovalOut": { "removed": boolean };
   "RFQDetail": { "rfq": Schemas["RFQOut"]; "items": Array<Schemas["RFQItemOut"]>; "attachments"?: Array<Schemas["RFQAttachmentOut"]> };
-  "RFQIn": { "buyer_org_id": string; "title": string; "city": string; "response_deadline": string; "items": Array<Schemas["RFQLineIn"]>; "required_qualifications"?: Array<string>; "project_name"?: string; "required_delivery_date"?: string | null; "additional_instructions"?: string };
+  "RFQIn": { "buyer_org_id": string; "title": string; "city"?: string; "response_deadline": string; "items": Array<Schemas["RFQLineIn"]>; "required_qualifications"?: Array<string>; "project_name"?: string; "required_delivery_date"?: string | null; "additional_instructions"?: string };
   "RFQItemOut": { "rfq_id": string; "material_id": string | null; "main_category_id": string | null; "subcategory_id": string | null; "description": string; "specifications": string; "unit": string; "quantity": string; "id": string; "created_at": string };
   "RFQLineIn": { "material_id"?: string | null; "main_category_id"?: string | null; "subcategory_id"?: string | null; "description": string; "specifications"?: string; "unit": string; "quantity": number | string };
   "RFQOut": { "public_display_authorized": boolean; "reference": string; "buyer_org_id": string; "title": string; "city": string; "response_deadline": string; "status": string; "published_at": string | null; "required_qualifications": Array<string>; "project_name": string; "required_delivery_date": string | null; "additional_instructions": string; "id": string; "created_at": string };
@@ -136,8 +147,10 @@ export interface Schemas {
   "SubscriptionChange": { "status": "active" | "suspended" | "cancelled"; "expires_at"?: string | null };
   "SubscriptionDetailOut": { "org_id": string; "plan_id": string; "status": string; "expires_at": string | null; "starts_at": string | null; "price_snapshot": string | null; "currency_snapshot": string | null; "billing_interval": string; "premium_snapshot": boolean; "plan_snapshot": Record<string, unknown> | null; "id": string; "created_at": string; "plan_name": string };
   "SubscriptionOut": { "org_id": string; "plan_id": string; "status": string; "expires_at": string | null; "starts_at": string | null; "price_snapshot": string | null; "currency_snapshot": string | null; "billing_interval": string; "premium_snapshot": boolean; "plan_snapshot": Record<string, unknown> | null; "id": string; "created_at": string };
+  "SupplierArchiveInput": { "confirm": boolean; "reason": string };
   "SupplierCapabilityAdminInput": { "category_id": string; "city"?: string; "trade_keywords"?: string; "material_ids"?: Array<string> };
-  "SupplierContactAdminInput": { "name"?: string | null; "role"?: string | null; "email"?: string | null; "phone"?: string | null; "fax"?: string | null };
+  "SupplierContactAdminInput": { "name"?: string | null; "role"?: string | null; "email"?: string | null; "phone"?: string | null; "fax"?: string | null; "is_primary"?: boolean | null };
+  "SupplierContactCapabilityInput": { "category_id": string; "material_ids"?: Array<string>; "is_primary"?: boolean };
   "SupplierImportConfirmation": { "batch_id": string; "status": "queued"; "rows": number; "created": number; "unchanged": number; "errors": number; "completed_rows": number };
   "SupplierProfileAdminUpdate": { "name"?: string | null; "country"?: string | null; "city"?: string | null; "address"?: string | null; "cr_number"?: string | null; "vat_number"?: string | null; "website"?: string | null; "description"?: string | null; "contact_name"?: string | null; "designation"?: string | null; "business_email"?: string | null; "business_phone"?: string | null };
   "SupplierReviewAction": { "reason"?: string | null };
@@ -194,6 +207,9 @@ export interface Operations {
   "PATCH /api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/channels/{channel_id}": { body: Schemas["ContactChannelUpdateInput"]; response: unknown };
   "PATCH /api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/review": { body: Schemas["ContactReviewInput"]; response: unknown };
   "POST /api/v1/organizations/admin/suppliers/{org_id}/contacts/merge": { body: Schemas["ContactMergeInput"]; response: unknown };
+  "POST /api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities": { body: Schemas["SupplierContactCapabilityInput"]; response: unknown };
+  "DELETE /api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities/{capability_id}": { body: never; response: unknown };
+  "POST /api/v1/organizations/admin/suppliers/{org_id}/archive": { body: Schemas["SupplierArchiveInput"]; response: unknown };
   "POST /api/v1/organizations/admin/suppliers/{org_id}/capabilities": { body: Schemas["SupplierCapabilityAdminInput"]; response: unknown };
   "PATCH /api/v1/organizations/admin/suppliers/{org_id}/capabilities/{capability_id}": { body: Schemas["SupplierCapabilityAdminInput"]; response: unknown };
   "DELETE /api/v1/organizations/admin/suppliers/{org_id}/capabilities/{capability_id}": { body: never; response: unknown };
@@ -223,6 +239,8 @@ export interface Operations {
   "DELETE /api/v1/organizations/{org_id}/favorites/{supplier_id}": { body: never; response: Schemas["FavoriteStateOut"] };
   "POST /api/v1/taxonomy/categories/import/preview": { body: never; response: Schemas["CategoryImportPreview"] };
   "POST /api/v1/taxonomy/categories/import/{batch_id}/confirm": { body: never; response: Schemas["CategoryImportResult"] };
+  "GET /api/v1/taxonomy/industry-review-candidates": { body: never; response: Array<Schemas["IndustryTaxonomyReviewCandidate"]> };
+  "GET /api/v1/taxonomy/industry-catalog": { body: never; response: Schemas["IndustryCatalogPage"] };
   "GET /api/v1/taxonomy/categories": { body: never; response: Array<Schemas["CategoryOut"]> };
   "POST /api/v1/taxonomy/categories": { body: Schemas["CategoryIn"]; response: Schemas["CategoryOut"] };
   "GET /api/v1/taxonomy/categories/archived": { body: never; response: Array<Schemas["CategoryOut"]> };
@@ -250,6 +268,7 @@ export interface Operations {
   "GET /api/v1/imports/materials": { body: never; response: Schemas["MaterialSearchPage"] };
   "GET /api/v1/imports/bulk/materials/template": { body: never; response: unknown };
   "GET /api/v1/imports/bulk/suppliers/template": { body: never; response: unknown };
+  "GET /api/v1/imports/bulk/suppliers/export": { body: never; response: unknown };
   "POST /api/v1/imports/bulk/materials": { body: never; response: unknown };
   "POST /api/v1/imports/bulk/suppliers": { body: never; response: unknown };
   "GET /api/v1/imports/bulk/{batch_id}/errors": { body: never; response: unknown };
@@ -271,6 +290,7 @@ export interface Operations {
   "GET /api/v1/capabilities/{org_id}": { body: never; response: Array<Schemas["CapabilityOut"]> };
   "POST /api/v1/capabilities/{capability_id}/confirm": { body: never; response: Schemas["CapabilityOut"] };
   "PATCH /api/v1/capabilities/{capability_id}/eligibility": { body: Schemas["CapabilityEligibilityIn"]; response: Schemas["CapabilityOut"] };
+  "GET /api/v1/directory/suppliers/{supplier_id}/products": { body: never; response: Schemas["PublicSupplierProductPage"] };
   "GET /api/v1/directory/suppliers": { body: never; response: Array<Schemas["PublicSupplier"]> };
   "GET /api/v1/directory/suppliers/{supplier_id}": { body: never; response: Schemas["PublicSupplier"] };
   "GET /api/v1/directory/suppliers/{supplier_id}/related": { body: never; response: Array<Schemas["PublicSupplier"]> };
@@ -285,6 +305,8 @@ export interface Operations {
   "POST /api/v1/rfqs/{rfq_id}/attachments": { body: never; response: Schemas["RFQAttachmentOut"] };
   "GET /api/v1/rfqs/{rfq_id}/attachments/{attachment_id}": { body: never; response: unknown };
   "DELETE /api/v1/rfqs/{rfq_id}/attachments/{attachment_id}": { body: never; response: Schemas["RFQAttachmentRemovalOut"] };
+  "GET /api/v1/matching/admin/rfqs/{rfq_id}/diagnostics": { body: never; response: Schemas["MatchingDiagnosticOut"] };
+  "POST /api/v1/matching/admin/rfqs/{rfq_id}/rerun": { body: never; response: Schemas["MatchingRerunOut"] };
   "POST /api/v1/matching/rfqs/{rfq_id}/dispatch": { body: never; response: unknown };
   "GET /api/v1/matching/rfqs/{rfq_id}/results": { body: never; response: Schemas["MatchResults"] };
   "GET /api/v1/matching/invitations": { body: never; response: Array<Schemas["InvitationSummary"]> };

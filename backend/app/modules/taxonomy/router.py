@@ -9,7 +9,8 @@ from app import catalog_cache
 from app.database import get_db
 from app.models import Category, Material, MaterialRevision, MeasurementUnit, User, uid, Capability
 from app.modules.taxonomy.category_imports import router as category_imports
-from app.response_contracts import CategoryOut, CategorySummary, MaterialOut, SubcategoryMaterialOut
+from app.response_contracts import (CategoryOut, CategorySummary, IndustryCatalogPage,
+                                    IndustryTaxonomyReviewCandidate, MaterialOut, SubcategoryMaterialOut)
 from app.schemas import CategoryIn, CategoryEdit, SubcategoryMaterialIn, MaterialIn, MaterialMasterIn, MaterialRevisionOut, MeasurementUnitIn, MaterialFilterPage
 from app.security import admin_user, audit
 from app.serializers import record
@@ -45,6 +46,119 @@ class TaxonomyRoute(APIRoute):
 
 router=APIRouter(prefix='/taxonomy',tags=['Material Master'],route_class=TaxonomyRoute)
 router.include_router(category_imports)
+
+@router.get('/industry-review-candidates',response_model=list[IndustryTaxonomyReviewCandidate])
+def industry_review_candidates(user:User=Depends(admin_user),db:Session=Depends(get_db),
+                               limit:int=Query(100,ge=1,le=250),offset:int=Query(0,ge=0)):
+    """Read-only review queue for suspicious active labels or missing discipline assignments."""
+    parent=aliased(Category)
+    known=('civil','electrical','mechanical')
+    name_flags=[func.lower(Category.name_en).like(f'%{word}%') for word in ('qa','test','sample','bulk')]
+    name_flags.extend(func.lower(parent.name_en).like(f'%{word}%') for word in ('qa','test','sample','bulk'))
+    material_link=or_(Material.category_id==Category.id,Material.main_category_id==Category.id,
+                      Material.subcategory_id==Category.id)
+    unknown_discipline=select(Material.id).where(material_link,Material.active.is_(True),or_(
+        Material.discipline.is_(None),func.lower(Material.discipline).not_in(known))).exists()
+    linked_category=or_(Material.subcategory_id==Category.id,and_(Material.subcategory_id.is_(None),
+        Material.category_id==Category.id))
+    mismatched_parent=select(Material.id).where(linked_category,Material.active.is_(True),
+        Material.main_category_id.is_not(None),Material.main_category_id!=func.coalesce(Category.parent_id,Category.id)).exists()
+    supported_material=select(Material.id).where(material_link,Material.active.is_(True),
+        func.lower(Material.discipline).in_(known)).exists()
+    rows=db.execute(select(Category,parent,(~supported_material).label('no_supported_material'),
+        mismatched_parent.label('mismatched_parent')).outerjoin(parent,parent.id==Category.parent_id).where(
+        Category.active.is_(True),or_(*name_flags,unknown_discipline,mismatched_parent,~supported_material)).distinct()
+        .order_by(Category.name_en,Category.id).offset(offset).limit(limit)).all()
+    return [{'id':category.id,'code':category.code,'name_en':category.name_en,'name_ar':category.name_ar or '',
+        'parent_id':category.parent_id,'parent_name_en':parent.name_en if parent else None,
+        'reason':'Category label resembles test or bulk data; review before public use.'
+            if any(word in (category.name_en+' '+(parent.name_en if parent else '')).casefold()
+                   for word in ('qa','test','sample','bulk'))
+            else 'Material main category and subcategory parent do not agree.'
+                if mismatched
+            else 'No active Material Master record assigns a supported discipline to this category.'
+                if no_supported else 'Linked active material has no supported discipline assignment.'}
+        for category,parent,no_supported,mismatched in rows]
+
+@router.get('/industry-catalog',response_model=IndustryCatalogPage)
+def industry_catalog(q:str=Query('',max_length=100),discipline:str|None=None,
+                     page:int=Query(1,ge=1,le=10000),limit:int=Query(9,ge=1,le=24),
+                     db:Session=Depends(get_db)):
+    """Bounded public industry categories with grouped Material Master previews."""
+    names=('civil','electrical','mechanical')
+    discipline_labels={'civil':('Civil','مدني'),'electrical':('Electrical','كهربائي'),'mechanical':('Mechanical','ميكانيكي')}
+    stats_card=aliased(Category);stats_parent=aliased(Category);stats_main=aliased(Category)
+    stats_card_id=func.coalesce(Material.subcategory_id,Material.category_id)
+    stats_main_id=func.coalesce(Material.main_category_id,stats_parent.id,stats_card.id)
+    discipline_stats=db.execute(select(func.lower(Material.discipline),
+        func.count(func.distinct(stats_main.id)),func.count(func.distinct(Material.id))).select_from(Material)
+        .join(stats_card,stats_card.id==stats_card_id).outerjoin(stats_parent,stats_parent.id==stats_card.parent_id)
+        .join(stats_main,stats_main.id==stats_main_id).where(Material.active.is_(True),
+        stats_card.active.is_(True),stats_main.active.is_(True),func.lower(Material.discipline).in_(names),
+        or_(Material.main_category_id.is_(None),Material.main_category_id==func.coalesce(stats_parent.id,stats_card.id)))
+        .group_by(func.lower(Material.discipline))).all()
+    stats={name:(int(categories or 0),int(materials or 0)) for name,categories,materials in discipline_stats}
+    disciplines=[{'id':discipline_labels[name][0],'name_en':discipline_labels[name][0],
+        'name_ar':discipline_labels[name][1],'category_count':stats.get(name,(0,0))[0],
+        'material_count':stats.get(name,(0,0))[1]} for name in names]
+    selected=discipline.casefold() if discipline else 'civil'
+    if selected not in names:selected='civil'
+
+    card=aliased(Category);parent=aliased(Category);main=aliased(Category)
+    card_id=func.coalesce(Material.subcategory_id,Material.category_id)
+    main_id=func.coalesce(Material.main_category_id,parent.id,card.id)
+    predicates=[Material.active.is_(True),func.lower(Material.discipline)==selected,
+        card.active.is_(True),main.active.is_(True),
+        or_(Material.main_category_id.is_(None),Material.main_category_id==func.coalesce(parent.id,card.id))]
+    normalized=' '.join(q.casefold().split())
+    if normalized:
+        escaped=normalized.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
+        pattern=f'%{escaped}%'
+        predicates.append(or_(card.name_en.ilike(pattern,escape='\\'),card.name_ar.ilike(pattern,escape='\\'),
+            main.name_en.ilike(pattern,escape='\\'),main.name_ar.ilike(pattern,escape='\\'),
+            Material.name_en.ilike(pattern,escape='\\'),Material.name_ar.ilike(pattern,escape='\\'),
+            Material.description.ilike(pattern,escape='\\'),Material.normalized_description.ilike(pattern,escape='\\')))
+    grouped=(select(func.lower(Material.discipline).label('discipline'),card.id.label('id'),
+        card.name_en.label('name_en'),card.name_ar.label('name_ar'),main.id.label('main_category_id'),
+        main.name_en.label('main_category'),main.name_ar.label('main_category_ar'),
+        func.count(func.distinct(Material.id)).label('material_count')).select_from(Material)
+        .join(card,card.id==card_id).outerjoin(parent,parent.id==card.parent_id)
+        .join(main,main.id==main_id).where(*predicates)
+        .group_by(func.lower(Material.discipline),card.id,card.name_en,card.name_ar,main.id,main.name_en,main.name_ar))
+    total=int(db.scalar(select(func.count()).select_from(grouped.subquery())) or 0)
+    rows=db.execute(grouped.order_by('main_category','name_en','id')
+        .offset((page-1)*limit).limit(limit)).all()
+    preview_by_category={item.id:[] for item in rows}
+    if rows:
+        row_ids=[item.id for item in rows]
+        category_key=func.coalesce(Material.subcategory_id,Material.category_id)
+        material_main_id=func.coalesce(Material.main_category_id,parent.id,card.id)
+        numbered=(select(Material.id,category_key.label('category_id'),material_main_id.label('main_category_id'),
+            func.lower(Material.discipline).label('discipline'),Material.name_en,Material.name_ar,
+            Material.description,Material.arabic_description,Material.normalized_description,Material.unit,
+            func.row_number().over(partition_by=(func.lower(Material.discipline),material_main_id,category_key),
+                order_by=(Material.code,Material.id)).label('position')).select_from(Material)
+            .join(card,card.id==category_key).outerjoin(parent,parent.id==card.parent_id)
+            .where(Material.active.is_(True),func.lower(Material.discipline)==selected,card.active.is_(True),
+                material_main_id.in_({item.main_category_id for item in rows}),category_key.in_(row_ids),
+                or_(Material.main_category_id.is_(None),Material.main_category_id==func.coalesce(parent.id,card.id))))
+        numbered_query=numbered.subquery()
+        preview_rows=db.execute(select(numbered_query).where(numbered_query.c.position<=5)
+            .order_by(numbered_query.c.main_category_id,numbered_query.c.category_id,numbered_query.c.position)).all()
+        for item in preview_rows:
+            if item.category_id in preview_by_category:
+                preview_by_category[item.category_id].append({'id':item.id,'name_en':item.name_en,
+                    'name_ar':item.name_ar or '','description':item.description or item.normalized_description or item.name_en,
+                    'description_ar':item.arabic_description or item.name_ar or '',
+                    'unit':item.unit or ''})
+    cards=[{'id':item.id,'name_en':item.name_en,'name_ar':item.name_ar or item.name_en,
+        'main_category_id':item.main_category_id,'main_category':item.main_category,
+        'main_category_ar':item.main_category_ar or item.main_category,
+        'subcategory_id':item.id if item.id!=item.main_category_id else None,
+        'subcategory':item.name_en if item.id!=item.main_category_id else None,
+        'subcategory_ar':item.name_ar or item.name_en if item.id!=item.main_category_id else '',
+        'material_count':int(item.material_count or 0),'materials':preview_by_category.get(item.id,[])} for item in rows]
+    return {'disciplines':disciplines,'categories':cards,'total':total,'page':page,'limit':limit}
 
 @router.get('/categories',response_model=list[CategoryOut])
 def categories(parent_id:str|None=None,q:str='',limit:int|None=Query(None,ge=1,le=250),

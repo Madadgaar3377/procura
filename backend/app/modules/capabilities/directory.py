@@ -7,9 +7,69 @@ from sqlalchemy.orm import Session, aliased
 from app.database import get_db
 from app.models import Capability, Category, Material, Organization
 from app.modules.capabilities.public_details import published_details
-from app.response_contracts import PublicSupplier
+from app.response_contracts import PublicSupplier, PublicSupplierProductPage
 
 router=APIRouter(prefix='/directory',tags=['Verified Supplier Directory'])
+
+@router.get('/suppliers/{supplier_id}/products',response_model=PublicSupplierProductPage)
+def supplier_products(supplier_id:str,db:Annotated[Session,Depends(get_db)],q:str=Query('',max_length=100),
+        main_category_id:str|None=None,subcategory_id:str|None=None,page:int=Query(1,ge=1,le=10000),
+        limit:int=Query(20,ge=1,le=100)):
+    """Paginated public product view built only from approved capabilities and linked Material Master rows."""
+    from fastapi import HTTPException
+    org=db.scalar(select(Organization.id).where(Organization.id==supplier_id,Organization.is_supplier.is_(True),
+        Organization.is_active.is_(True),Organization.verified_status=='verified'))
+    if not org:raise HTTPException(404,'Supplier not found')
+    capabilities=db.execute(select(Capability,Category).join(Category,Category.id==Capability.category_id).where(
+        Capability.org_id==supplier_id,Capability.confirmed.is_(True),Capability.accepts_rfqs.is_(True),
+        Capability.eligibility_status=='enabled',Category.active.is_(True))).all()
+    sub_ids={category.id for _,category in capabilities if category.parent_id}
+    main_ids={category.parent_id or category.id for _,category in capabilities}
+    if main_category_id:main_ids &= {main_category_id}
+    if subcategory_id:sub_ids &= {subcategory_id}
+    caps=[(cap,cat) for cap,cat in capabilities if (cat.parent_id or cat.id) in main_ids and
+        (not subcategory_id or cat.id==subcategory_id) and (not main_category_id or cat.parent_id==main_category_id or cat.id==main_category_id)]
+    ids={material_id for cap,_ in caps for material_id in (cap.material_ids or [])}
+    materials=db.scalars(select(Material).where(Material.id.in_(ids),Material.active.is_(True))).all() if ids else []
+    taxonomy_ids=main_ids|sub_ids|{value for material in materials for value in (material.category_id,material.main_category_id,material.subcategory_id) if value}
+    taxonomy={category.id:category for category in db.scalars(select(Category).where(Category.id.in_(taxonomy_ids))).all()}
+    rows=[];needle=' '.join(q.split()).casefold()
+    for material in materials:
+        main_id=material.main_category_id or (taxonomy[material.category_id].parent_id if material.category_id in taxonomy else None) or material.category_id
+        sub_id=material.subcategory_id or (material.category_id if material.category_id!=main_id else None)
+        main=taxonomy.get(main_id);sub=taxonomy.get(sub_id) if sub_id else None
+        if not main or (main_category_id and main.id!=main_category_id) or (subcategory_id and (not sub or sub.id!=subcategory_id)):continue
+        haystack=' '.join([material.name_en,material.name_ar,material.description,material.arabic_description,material.unit,
+            str(material.specs_template or {}),main.name_en,main.name_ar,sub.name_en if sub else '',sub.name_ar if sub else '']).casefold()
+        if needle and needle not in haystack:continue
+        structured=dict(material.specs_template or {})
+        normalized_fields={str(key).strip().casefold().replace(' ','_'):value for key,value in structured.items()}
+        brand=next((str(normalized_fields[key]).strip() for key in ('brand','manufacturer')
+                    if normalized_fields.get(key) not in (None,'')), '')
+        model=next((str(normalized_fields[key]).strip() for key in ('model','model_number')
+                    if normalized_fields.get(key) not in (None,'')), '')
+        rows.append({'id':material.id,'name':material.name_en,'name_ar':material.name_ar or material.arabic_description or '',
+            'description':material.description or '', 'description_ar':material.arabic_description or '',
+            'brand':brand,'model':model,
+            'unit':material.unit,'specifications':material.specs_template or {},'main_category_id':main.id,'main_category':main.name_en,
+            'main_category_ar':main.name_ar or main.name_en,'subcategory_id':sub.id if sub else None,
+            'subcategory':sub.name_en if sub else None,'subcategory_ar':(sub.name_ar or sub.name_en) if sub else '',
+            'source':'material_master'})
+    seen_descriptions=set()
+    for cap,cat in caps:
+        main=taxonomy.get(cat.parent_id) if cat.parent_id else cat
+        for idx,description in enumerate(x.strip() for x in (cap.trade_keywords or '').split(' | ') if x.strip()):
+            identity=(cat.id,description.casefold())
+            if identity in seen_descriptions or (needle and needle not in f'{description} {cat.name_en} {main.name_en}'.casefold()):continue
+            seen_descriptions.add(identity)
+            rows.append({'id':f'{cap.id}:description:{idx}','name':description,'name_ar':'','description':'','description_ar':'','brand':'','model':'',
+                'unit':None,'specifications':{},'main_category_id':main.id,'main_category':main.name_en,
+                'main_category_ar':main.name_ar or main.name_en,'subcategory_id':cat.id if cat.parent_id else None,
+                'subcategory':cat.name_en if cat.parent_id else None,'subcategory_ar':(cat.name_ar or cat.name_en) if cat.parent_id else '',
+                'source':'supplier_description'})
+    rows.sort(key=lambda row:(row['main_category'].casefold(),(row['subcategory'] or '').casefold(),row['name'].casefold(),row['id']))
+    total=len(rows);start=(page-1)*limit
+    return {'items':rows[start:start+limit],'total':total,'page':page,'limit':limit}
 
 
 def public_profiles(db: Session, organizations, include_categories=False):

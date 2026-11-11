@@ -222,6 +222,31 @@ class MatchResults(ResponseModel):
     limit: int = 25
     offset: int = 0
 
+class MatchingSupplierDiagnostic(ResponseModel):
+    supplier_org_id: str
+    supplier_name: str
+    status: str
+    reasons: list[str]
+
+class MatchingDiagnosticOut(ResponseModel):
+    rfq_id: str
+    rfq_items: int
+    active_suppliers_checked: int
+    category_candidate_organizations: int
+    approved_matching_capabilities: int
+    rejected_by_location: int
+    rejected_by_verification_or_eligibility: int
+    matches_created: int
+    invitations_created: int
+    job_status: list[OutboxOut]
+    supplier_reasons: list[MatchingSupplierDiagnostic]
+
+class MatchingRerunOut(ResponseModel):
+    rfq_id: str
+    job_id: str
+    job_status: Literal['pending','retry','processing']
+    deduplicated: bool
+
 class ReviewQueue(ResponseModel):
     verifications: list[VerificationOut]
     claims: list[ClaimOut]
@@ -273,6 +298,74 @@ class PublicSupplier(ResponseModel):
     verified: bool
     main_categories: list[str] = Field(default_factory=list)
     main_categories_ar: list[str] = Field(default_factory=list)
+
+class PublicSupplierProduct(ResponseModel):
+    id: str
+    name: str
+    name_ar: str = ''
+    description: str = ''
+    description_ar: str = ''
+    brand: str = ''
+    model: str = ''
+    unit: str | None = None
+    specifications: dict = Field(default_factory=dict)
+    main_category_id: str
+    main_category: str
+    main_category_ar: str = ''
+    subcategory_id: str | None = None
+    subcategory: str | None = None
+    subcategory_ar: str = ''
+    source: Literal['material_master','supplier_description']
+
+class PublicSupplierProductPage(ResponseModel):
+    items: list[PublicSupplierProduct]
+    total: int
+    page: int
+    limit: int
+
+class IndustryMaterialPreview(ResponseModel):
+    id: str
+    name_en: str
+    name_ar: str = ''
+    description: str = ''
+    description_ar: str = ''
+    unit: str = ''
+
+class IndustryDiscipline(ResponseModel):
+    id: str
+    name_en: str
+    name_ar: str = ''
+    category_count: int
+    material_count: int
+
+class IndustryCategoryCard(ResponseModel):
+    id: str
+    name_en: str
+    name_ar: str = ''
+    main_category_id: str
+    main_category: str
+    main_category_ar: str = ''
+    subcategory_id: str | None = None
+    subcategory: str | None = None
+    subcategory_ar: str = ''
+    material_count: int
+    materials: list[IndustryMaterialPreview] = Field(default_factory=list)
+
+class IndustryCatalogPage(ResponseModel):
+    disciplines: list[IndustryDiscipline]
+    categories: list[IndustryCategoryCard]
+    total: int
+    page: int
+    limit: int
+
+class IndustryTaxonomyReviewCandidate(ResponseModel):
+    id: str
+    code: str
+    name_en: str
+    name_ar: str = ''
+    parent_id: str | None = None
+    parent_name_en: str | None = None
+    reason: str
 
 class ReportActivity(ResponseModel):
     month: str

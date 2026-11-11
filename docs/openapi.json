@@ -1781,6 +1781,188 @@
         }
       }
     },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Assign Contact Capability",
+        "operationId": "admin_assign_contact_capability_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__capabilities_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierContactCapabilityInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities/{capability_id}": {
+      "delete": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Unassign Contact Capability",
+        "operationId": "admin_unassign_contact_capability_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__capabilities__capability_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          },
+          {
+            "name": "capability_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Capability Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/archive": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Archive Supplier",
+        "operationId": "admin_archive_supplier_api_v1_organizations_admin_suppliers__org_id__archive_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SupplierArchiveInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/organizations/admin/suppliers/{org_id}/capabilities": {
       "post": {
         "tags": [
@@ -3340,6 +3522,157 @@
         }
       }
     },
+    "/api/v1/taxonomy/industry-review-candidates": {
+      "get": {
+        "tags": [
+          "Material Master"
+        ],
+        "summary": "Industry Review Candidates",
+        "description": "Read-only review queue for suspicious active labels or missing discipline assignments.",
+        "operationId": "industry_review_candidates_api_v1_taxonomy_industry_review_candidates_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 250,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/IndustryTaxonomyReviewCandidate"
+                  },
+                  "title": "Response Industry Review Candidates Api V1 Taxonomy Industry Review Candidates Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/taxonomy/industry-catalog": {
+      "get": {
+        "tags": [
+          "Material Master"
+        ],
+        "summary": "Industry Catalog",
+        "description": "Bounded public industry categories with grouped Material Master previews.",
+        "operationId": "industry_catalog_api_v1_taxonomy_industry_catalog_get",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "discipline",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Discipline"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 10000,
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 24,
+              "minimum": 1,
+              "default": 9,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IndustryCatalogPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/taxonomy/categories": {
       "get": {
         "tags": [
@@ -4840,6 +5173,31 @@
         ]
       }
     },
+    "/api/v1/imports/bulk/suppliers/export": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Export Suppliers",
+        "operationId": "export_suppliers_api_v1_imports_bulk_suppliers_export_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/imports/bulk/materials": {
       "post": {
         "tags": [
@@ -5965,6 +6323,116 @@
         }
       }
     },
+    "/api/v1/directory/suppliers/{supplier_id}/products": {
+      "get": {
+        "tags": [
+          "Verified Supplier Directory"
+        ],
+        "summary": "Supplier Products",
+        "description": "Paginated public product view built only from approved capabilities and linked Material Master rows.",
+        "operationId": "supplier_products_api_v1_directory_suppliers__supplier_id__products_get",
+        "parameters": [
+          {
+            "name": "supplier_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Supplier Id"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "main_category_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Main Category Id"
+            }
+          },
+          {
+            "name": "subcategory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subcategory Id"
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 10000,
+              "minimum": 1,
+              "default": 1,
+              "title": "Page"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicSupplierProductPage"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/directory/suppliers": {
       "get": {
         "tags": [
@@ -6904,6 +7372,101 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RFQAttachmentRemovalOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/matching/admin/rfqs/{rfq_id}/diagnostics": {
+      "get": {
+        "tags": [
+          "Supplier Matching"
+        ],
+        "summary": "Admin Diagnostics",
+        "description": "Explain persisted match outcomes and queue state to authorized administrators.",
+        "operationId": "admin_diagnostics_api_v1_matching_admin_rfqs__rfq_id__diagnostics_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchingDiagnosticOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/matching/admin/rfqs/{rfq_id}/rerun": {
+      "post": {
+        "tags": [
+          "Supplier Matching"
+        ],
+        "summary": "Admin Rerun",
+        "operationId": "admin_rerun_api_v1_matching_admin_rfqs__rfq_id__rerun_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MatchingRerunOut"
                 }
               }
             }
@@ -11388,6 +11951,81 @@
         ],
         "title": "AdminPlanOut"
       },
+      "AdminSupplierContactCreate": {
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 150
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "designation": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Designation"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone"
+          },
+          "category_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Category Ids"
+          },
+          "material_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Material Ids"
+          },
+          "is_primary": {
+            "type": "boolean",
+            "title": "Is Primary",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "AdminSupplierContactCreate"
+      },
       "AdminSupplierCreate": {
         "properties": {
           "name": {
@@ -11395,6 +12033,50 @@
             "maxLength": 220,
             "minLength": 2,
             "title": "Name"
+          },
+          "country": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Country"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 5000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "contacts": {
+            "items": {
+              "$ref": "#/components/schemas/AdminSupplierContactCreate"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Contacts"
           },
           "contact_name": {
             "anyOf": [
@@ -11413,8 +12095,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 30,
-                "minLength": 8
+                "maxLength": 300
               },
               {
                 "type": "null"
@@ -11426,7 +12107,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 200
+                "maxLength": 500
               },
               {
                 "type": "null"
@@ -11445,6 +12126,18 @@
               }
             ],
             "title": "Cr Number"
+          },
+          "vat_number": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vat Number"
           },
           "city": {
             "anyOf": [
@@ -13859,6 +14552,248 @@
         ],
         "title": "ImportBatchOut"
       },
+      "IndustryCatalogPage": {
+        "properties": {
+          "disciplines": {
+            "items": {
+              "$ref": "#/components/schemas/IndustryDiscipline"
+            },
+            "type": "array",
+            "title": "Disciplines"
+          },
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/IndustryCategoryCard"
+            },
+            "type": "array",
+            "title": "Categories"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "disciplines",
+          "categories",
+          "total",
+          "page",
+          "limit"
+        ],
+        "title": "IndustryCatalogPage"
+      },
+      "IndustryCategoryCard": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar",
+            "default": ""
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "main_category": {
+            "type": "string",
+            "title": "Main Category"
+          },
+          "main_category_ar": {
+            "type": "string",
+            "title": "Main Category Ar",
+            "default": ""
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "subcategory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory"
+          },
+          "subcategory_ar": {
+            "type": "string",
+            "title": "Subcategory Ar",
+            "default": ""
+          },
+          "material_count": {
+            "type": "integer",
+            "title": "Material Count"
+          },
+          "materials": {
+            "items": {
+              "$ref": "#/components/schemas/IndustryMaterialPreview"
+            },
+            "type": "array",
+            "title": "Materials"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name_en",
+          "main_category_id",
+          "main_category",
+          "material_count"
+        ],
+        "title": "IndustryCategoryCard"
+      },
+      "IndustryDiscipline": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar",
+            "default": ""
+          },
+          "category_count": {
+            "type": "integer",
+            "title": "Category Count"
+          },
+          "material_count": {
+            "type": "integer",
+            "title": "Material Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name_en",
+          "category_count",
+          "material_count"
+        ],
+        "title": "IndustryDiscipline"
+      },
+      "IndustryMaterialPreview": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar",
+            "default": ""
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "description_ar": {
+            "type": "string",
+            "title": "Description Ar",
+            "default": ""
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name_en"
+        ],
+        "title": "IndustryMaterialPreview"
+      },
+      "IndustryTaxonomyReviewCandidate": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar",
+            "default": ""
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "parent_name_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Name En"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name_en",
+          "reason"
+        ],
+        "title": "IndustryTaxonomyReviewCandidate"
+      },
       "InvitationOut": {
         "properties": {
           "rfq_id": {
@@ -14013,8 +14948,10 @@
             "type": "string",
             "enum": [
               "draft",
+              "published",
               "matching_queued",
               "matching_in_progress",
+              "matching_completed",
               "matching_failed",
               "invitations_available",
               "no_eligible_suppliers",
@@ -14043,6 +14980,27 @@
             "type": "integer",
             "title": "Pending Suppliers",
             "default": 0
+          },
+          "suppliers_evaluated": {
+            "type": "integer",
+            "title": "Suppliers Evaluated",
+            "default": 0
+          },
+          "quotations_received": {
+            "type": "integer",
+            "title": "Quotations Received",
+            "default": 0
+          },
+          "explanation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Explanation"
           },
           "deliveries": {
             "additionalProperties": {
@@ -14130,6 +15088,108 @@
           "coverage": {
             "type": "string",
             "title": "Coverage"
+          },
+          "verification_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verification Status"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "website": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Website"
+          },
+          "business_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Email"
+          },
+          "business_phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Phone"
+          },
+          "service_locations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Service Locations"
+          },
+          "matched_categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Matched Categories"
+          },
+          "invitation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invitation Status"
+          },
+          "quotation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quotation Status"
+          },
+          "profile_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Url"
           }
         },
         "type": "object",
@@ -14146,6 +15206,139 @@
           "coverage"
         ],
         "title": "MatchSummary"
+      },
+      "MatchingDiagnosticOut": {
+        "properties": {
+          "rfq_id": {
+            "type": "string",
+            "title": "Rfq Id"
+          },
+          "rfq_items": {
+            "type": "integer",
+            "title": "Rfq Items"
+          },
+          "active_suppliers_checked": {
+            "type": "integer",
+            "title": "Active Suppliers Checked"
+          },
+          "category_candidate_organizations": {
+            "type": "integer",
+            "title": "Category Candidate Organizations"
+          },
+          "approved_matching_capabilities": {
+            "type": "integer",
+            "title": "Approved Matching Capabilities"
+          },
+          "rejected_by_location": {
+            "type": "integer",
+            "title": "Rejected By Location"
+          },
+          "rejected_by_verification_or_eligibility": {
+            "type": "integer",
+            "title": "Rejected By Verification Or Eligibility"
+          },
+          "matches_created": {
+            "type": "integer",
+            "title": "Matches Created"
+          },
+          "invitations_created": {
+            "type": "integer",
+            "title": "Invitations Created"
+          },
+          "job_status": {
+            "items": {
+              "$ref": "#/components/schemas/OutboxOut"
+            },
+            "type": "array",
+            "title": "Job Status"
+          },
+          "supplier_reasons": {
+            "items": {
+              "$ref": "#/components/schemas/MatchingSupplierDiagnostic"
+            },
+            "type": "array",
+            "title": "Supplier Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rfq_id",
+          "rfq_items",
+          "active_suppliers_checked",
+          "category_candidate_organizations",
+          "approved_matching_capabilities",
+          "rejected_by_location",
+          "rejected_by_verification_or_eligibility",
+          "matches_created",
+          "invitations_created",
+          "job_status",
+          "supplier_reasons"
+        ],
+        "title": "MatchingDiagnosticOut"
+      },
+      "MatchingRerunOut": {
+        "properties": {
+          "rfq_id": {
+            "type": "string",
+            "title": "Rfq Id"
+          },
+          "job_id": {
+            "type": "string",
+            "title": "Job Id"
+          },
+          "job_status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "retry",
+              "processing"
+            ],
+            "title": "Job Status"
+          },
+          "deduplicated": {
+            "type": "boolean",
+            "title": "Deduplicated"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rfq_id",
+          "job_id",
+          "job_status",
+          "deduplicated"
+        ],
+        "title": "MatchingRerunOut"
+      },
+      "MatchingSupplierDiagnostic": {
+        "properties": {
+          "supplier_org_id": {
+            "type": "string",
+            "title": "Supplier Org Id"
+          },
+          "supplier_name": {
+            "type": "string",
+            "title": "Supplier Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "supplier_org_id",
+          "supplier_name",
+          "status",
+          "reasons"
+        ],
+        "title": "MatchingSupplierDiagnostic"
       },
       "MaterialFilterPage": {
         "properties": {
@@ -17372,6 +18565,147 @@
         ],
         "title": "PublicSupplier"
       },
+      "PublicSupplierProduct": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar",
+            "default": ""
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "description_ar": {
+            "type": "string",
+            "title": "Description Ar",
+            "default": ""
+          },
+          "brand": {
+            "type": "string",
+            "title": "Brand",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": ""
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "specifications": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Specifications"
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "main_category": {
+            "type": "string",
+            "title": "Main Category"
+          },
+          "main_category_ar": {
+            "type": "string",
+            "title": "Main Category Ar",
+            "default": ""
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "subcategory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory"
+          },
+          "subcategory_ar": {
+            "type": "string",
+            "title": "Subcategory Ar",
+            "default": ""
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "material_master",
+              "supplier_description"
+            ],
+            "title": "Source"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "main_category_id",
+          "main_category",
+          "source"
+        ],
+        "title": "PublicSupplierProduct"
+      },
+      "PublicSupplierProductPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicSupplierProduct"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit"
+        ],
+        "title": "PublicSupplierProductPage"
+      },
       "PublicationPreferences": {
         "properties": {
           "fields": {
@@ -18190,8 +19524,8 @@
           "city": {
             "type": "string",
             "maxLength": 120,
-            "minLength": 2,
-            "title": "City"
+            "title": "City",
+            "default": ""
           },
           "response_deadline": {
             "type": "string",
@@ -18244,7 +19578,6 @@
         "required": [
           "buyer_org_id",
           "title",
-          "city",
           "response_deadline",
           "items"
         ],
@@ -19471,6 +20804,26 @@
         ],
         "title": "SubscriptionOut"
       },
+      "SupplierArchiveInput": {
+        "properties": {
+          "confirm": {
+            "type": "boolean",
+            "title": "Confirm"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 4,
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "confirm",
+          "reason"
+        ],
+        "title": "SupplierArchiveInput"
+      },
       "SupplierCapabilityAdminInput": {
         "properties": {
           "category_id": {
@@ -19567,10 +20920,49 @@
               }
             ],
             "title": "Fax"
+          },
+          "is_primary": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Primary"
           }
         },
         "type": "object",
         "title": "SupplierContactAdminInput"
+      },
+      "SupplierContactCapabilityInput": {
+        "properties": {
+          "category_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Category Id"
+          },
+          "material_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Material Ids"
+          },
+          "is_primary": {
+            "type": "boolean",
+            "title": "Is Primary",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id"
+        ],
+        "title": "SupplierContactCapabilityInput"
       },
       "SupplierImportConfirmation": {
         "properties": {

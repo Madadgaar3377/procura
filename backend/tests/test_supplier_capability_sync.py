@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.database import Base
 from app.models import Capability, Category, Material, Member, Organization, PriceBookItem, RFQ, RFQItem
 from app.modules.capabilities.directory import add_coverage, public_profiles
+from app.modules.capabilities.directory import supplier_products
 from app.modules.capabilities.router import review_capability
 from app.modules.matching.service import match_and_invite
 from app.modules.pricebooks.service import save_rate
@@ -26,7 +27,8 @@ def test_private_rate_creates_pending_capability_then_approval_publishes_and_mat
                        normalized_name='architectural insulation', parent_id=main.id, active=True)
         db.add(sub); db.flush()
         material = Material(code='INS-1', category_id=sub.id, main_category_id=main.id,
-                            subcategory_id=sub.id, name_en='Supplier insulation', unit='PCS', active=True)
+                            subcategory_id=sub.id, name_en='Supplier insulation', unit='PCS',
+                            specs_template={'Brand': 'ABB', 'model': 'X-1'}, active=True)
         db.add(material); db.flush()
         user = SimpleNamespace(id='supplier-user', is_admin=False)
         db.add(Member(user_id=user.id, organization_id=company.id, role='owner'))
@@ -73,6 +75,13 @@ def test_private_rate_creates_pending_capability_then_approval_publishes_and_mat
         assert profile[0]['capability_groups'][0]['subcategories'][0]['materials'] == ['Supplier insulation']
         assert profile[0]['capability_groups'][0]['subcategories'][0]['units'] == ['PCS']
         assert 'unit_price' not in profile[0]
+        products=supplier_products(company.id,db,q='',page=1,limit=20)
+        assert products['total']==2
+        material_row=next(item for item in products['items'] if item['source']=='material_master')
+        description_row=next(item for item in products['items'] if item['source']=='supplier_description')
+        assert material_row['name']=='Supplier insulation' and material_row['unit']=='PCS'
+        assert material_row['brand']=='ABB' and material_row['model']=='X-1'
+        assert description_row['name']=='Panels / MV' and description_row['unit'] is None
         outcome = match_and_invite(db, rfq)
         assert outcome['eligible_suppliers'] == 1
         assert outcome['new_invitations'] == 1

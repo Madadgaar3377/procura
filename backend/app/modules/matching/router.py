@@ -1,18 +1,64 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from app.database import get_db
-from app.models import RFQ, Invitation, Member, Organization, Outbox, Quotation, RFQItem, RFQMatch, User
+from app.models import RFQ, Invitation, Member, Organization, Outbox, Quotation, RFQItem, RFQMatch, Capability, Category, Material, User
 from app.modules.matching.service import match_and_invite
-from app.response_contracts import InvitationOut, InvitationSummary, MatchResults
+from app.response_contracts import InvitationOut, InvitationSummary, MatchResults, MatchingDiagnosticOut, MatchingRerunOut
 from app.search import ListSearch
 from app.security import as_utc, audit, current_user, org_member
 from app.serializers import record
 
 router=APIRouter(prefix='/matching',tags=['Supplier Matching'])
+
+@router.get('/admin/rfqs/{rfq_id}/diagnostics',response_model=MatchingDiagnosticOut)
+def admin_diagnostics(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Explain persisted match outcomes and queue state to authorized administrators."""
+    if not user.is_admin:raise HTTPException(403,'Admin required')
+    rfq=db.get(RFQ,rfq_id)
+    if not rfq:raise HTTPException(404,'RFQ not found')
+    items=db.execute(select(RFQItem,Material).outerjoin(Material,Material.id==RFQItem.material_id).where(RFQItem.rfq_id==rfq.id)).all()
+    scopes=set()
+    for item,material in items:
+        main=item.main_category_id or (material.main_category_id if material else None)
+        sub=item.subcategory_id or (material.subcategory_id if material and not item.main_category_id else None)
+        if not main and material:
+            leaf=db.get(Category,material.category_id)
+            if leaf:main=leaf.parent_id or leaf.id;sub=leaf.id if leaf.parent_id else None
+        if main:scopes.update(x for x in (main,sub) if x)
+    active_checked=int(db.scalar(select(func.count()).select_from(Organization).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id)) or 0)
+    candidates=set(db.scalars(select(Capability.org_id).join(Organization,Organization.id==Capability.org_id).where(Capability.category_id.in_(scopes),Organization.is_supplier.is_(True),Organization.id!=rfq.buyer_org_id).distinct()).all()) if scopes else set()
+    capabilities=int(db.scalar(select(func.count()).select_from(Capability).where(Capability.org_id.in_(candidates),Capability.category_id.in_(scopes),Capability.confirmed.is_(True),Capability.accepts_rfqs.is_(True),Capability.eligibility_status=='enabled')) or 0) if scopes and candidates else 0
+    statuses={status:int(count) for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
+    reasons=[]
+    recorded=set()
+    for match,org in db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id).order_by(Organization.name)).all():
+        reasons.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'reasons':match.reasons or []})
+        recorded.add(org.id)
+    for org in db.scalars(select(Organization).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id).order_by(Organization.name)).all():
+        if org.id not in recorded and org.id not in candidates:
+            reasons.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':'no_capability','reasons':['No supplier capability found for the RFQ category or subcategory.']})
+    jobs=[{**record(job)} for job in db.scalars(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc())).all()]
+    return {'rfq_id':rfq.id,'rfq_items':len(items),'active_suppliers_checked':active_checked,'category_candidate_organizations':len(candidates),'approved_matching_capabilities':capabilities,'rejected_by_location':statuses.get('location_mismatch',0),'rejected_by_verification_or_eligibility':sum(statuses.get(k,0) for k in ('inactive','unverified','pending_approval','ineligible')),'matches_created':statuses.get('eligible',0)+statuses.get('partial',0),'invitations_created':int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0),'job_status':jobs,'supplier_reasons':reasons}
+
+@router.post('/admin/rfqs/{rfq_id}/rerun',response_model=MatchingRerunOut)
+def admin_rerun(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    if not user.is_admin:raise HTTPException(403,'Admin required')
+    rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
+    if not rfq:raise HTTPException(404,'RFQ not found')
+    if rfq.status not in {'published','collecting_quotes'}:raise HTTPException(409,'RFQ is not open for matching')
+    pending=db.scalar(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id,Outbox.status.in_({'pending','retry','processing'})).limit(1))
+    if pending:
+        return {'rfq_id':rfq.id,'job_id':pending.id,'job_status':pending.status,'deduplicated':True}
+    job=Outbox(event='rfq.published',payload={'rfq_id':rfq.id,'requested_by':user.id},dedupe_key=f'rfq-admin-rerun:{rfq.id}:{uuid4().hex}')
+    db.add(job)
+    audit(db,user,'rfq.match_admin_rerun_queued',rfq.buyer_org_id,rfq.id)
+    db.commit()
+    return {'rfq_id':rfq.id,'job_id':job.id,'job_status':'pending','deduplicated':False}
 
 @router.post('/rfqs/{rfq_id}/dispatch')
 def dispatch(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -100,6 +146,12 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         explanation=f"{status_counts['location_mismatch']} supplier(s) match the requested category but do not cover delivery city {rfq.city}."
     elif status_counts.get('pending_approval'):
         explanation=f"{status_counts['pending_approval']} supplier(s) have a matching category pending approval."
+    elif status_counts.get('inactive'):
+        explanation=f"{status_counts['inactive']} supplier(s) have matching capabilities but are inactive or not marked as suppliers."
+    elif status_counts.get('unverified'):
+        explanation=f"{status_counts['unverified']} supplier(s) have matching capabilities but require company verification."
+    elif status_counts.get('ineligible'):
+        explanation=f"{status_counts['ineligible']} supplier(s) have matching capabilities but do not meet other RFQ eligibility requirements."
     elif progress in {'matching_queued','matching_in_progress'}:
         explanation='Supplier matching is queued or processing. Results will refresh automatically.'
     elif evaluated:

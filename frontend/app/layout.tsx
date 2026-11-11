@@ -3,6 +3,7 @@ import { cookies,headers } from "next/headers";
 import "./globals.css";
 import "./workspace.css";
 import "./marketing.css";
+import "./industries.css";
 import "./supplier-profile.css";
 import {configuredSiteURL} from '@/features/marketing/seo';
 import { LocaleProvider } from "@/lib/locale";

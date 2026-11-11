@@ -126,9 +126,10 @@ class PerformanceAndMatchingTestCase(unittest.TestCase):
 
             # Check matches: sup-exact should be ranked first with exact_materials in reasons
             matches = db.scalars(select(RFQMatch).where(RFQMatch.rfq_id == 'rfq-1').order_by(RFQMatch.score.desc())).all()
-            self.assertEqual(len(matches), 2)
+            self.assertEqual(len(matches), 3)  # two eligible suppliers and one persisted location rejection
             self.assertEqual(matches[0].supplier_org_id, 'sup-exact')
             self.assertTrue(any('exact_materials:1/1' in r for r in matches[0].reasons))
+            self.assertTrue(any(m.supplier_org_id=='sup-city' and m.status=='location_mismatch' for m in matches))
 
     def test_automatic_quotation_workflow_idempotency(self):
         """Verify automatic quotations are submitted only when compliant and never duplicated."""

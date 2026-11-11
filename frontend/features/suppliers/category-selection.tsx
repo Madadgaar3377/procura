@@ -30,7 +30,7 @@ export default function CategorySelection(){
  const dirty=selected.length!==baseline.length||selected.some(id=>!baseline.includes(id));
  const matches=(category:Schemas['CategoryOut'])=>`${category.name_en} ${category.name_ar||''}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase());
  const visibleMains=mains.filter(main=>matches(main)||available.some(sub=>sub.parent_id===main.id&&matches(sub)));
- const approved=selected.filter(id=>records.some(cap=>cap.city===city&&cap.category_id===id&&cap.confirmed));
+ const approved=selected.filter(id=>records.some(cap=>cap.city===city&&cap.category_id===id&&cap.confirmed&&cap.accepts_rfqs&&cap.eligibility_status==='enabled'));
  function change(ids:string[]){setDone(false);setError('');setDrafts(previous=>{const next={...previous,[city]:[...new Set(ids)]};try{sessionStorage.setItem(draftKey,JSON.stringify(next));}catch{}return next;});}
  function toggle(id:string){change(selected.includes(id)?selected.filter(value=>value!==id):[...selected,id]);}
  async function save(){

@@ -106,6 +106,15 @@
   "organizations/admin/suppliers/{org_id}/contacts/merge": [
     "POST"
   ],
+  "organizations/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/{contact_id}/capabilities/{capability_id}": [
+    "DELETE"
+  ],
+  "organizations/admin/suppliers/{org_id}/archive": [
+    "POST"
+  ],
   "organizations/admin/suppliers/{org_id}/capabilities": [
     "POST"
   ],
@@ -179,6 +188,12 @@
   "taxonomy/categories/import/{batch_id}/confirm": [
     "POST"
   ],
+  "taxonomy/industry-review-candidates": [
+    "GET"
+  ],
+  "taxonomy/industry-catalog": [
+    "GET"
+  ],
   "taxonomy/categories": [
     "GET",
     "POST"
@@ -250,6 +265,9 @@
   "imports/bulk/suppliers/template": [
     "GET"
   ],
+  "imports/bulk/suppliers/export": [
+    "GET"
+  ],
   "imports/bulk/materials": [
     "POST"
   ],
@@ -313,6 +331,9 @@
   "capabilities/{capability_id}/eligibility": [
     "PATCH"
   ],
+  "directory/suppliers/{supplier_id}/products": [
+    "GET"
+  ],
   "directory/suppliers": [
     "GET"
   ],
@@ -348,6 +369,12 @@
   "rfqs/{rfq_id}/attachments/{attachment_id}": [
     "GET",
     "DELETE"
+  ],
+  "matching/admin/rfqs/{rfq_id}/diagnostics": [
+    "GET"
+  ],
+  "matching/admin/rfqs/{rfq_id}/rerun": [
+    "POST"
   ],
   "matching/rfqs/{rfq_id}/dispatch": [
     "POST"

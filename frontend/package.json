@@ -14,7 +14,8 @@
     "test:http": "node tests/http-smoke.mjs",
     "test:browser": "node tests/http-smoke.mjs --browser",
     "test:directory": "node tests/directory-browser.mjs",
-    "test:supplier-profile": "node tests/supplier-profile-browser.mjs"
+    "test:supplier-profile": "node tests/supplier-profile-browser.mjs",
+    "test:industries-layout": "node tests/industries-viewport.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",
