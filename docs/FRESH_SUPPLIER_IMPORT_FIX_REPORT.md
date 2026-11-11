@@ -1,5 +1,21 @@
 # Fresh supplier import repair — 2026-11-11
 
+## Excel parsing follow-up
+
+The deployed upload returned generic 422 with request ID
+`6f963331-cf71-41fb-a860-9fcecbe66755`. A valid streaming-generated XLSX reproduces
+that error: worksheet dimensions are optional and `sheet.max_row` can be None;
+the bulk parser compared it with 30,001 and raised TypeError. The exact uploaded
+file was not supplied, so this reproduction does not prove its precise failure.
+
+The parser now handles missing dimensions, resets inaccurate dimensions to avoid
+silently losing rows, enforces actual row/column bounds while reading, always
+closes the workbook, and safely logs unexpected failure types. Regression tests
+upload 50 rows with omitted dimensions and with a false A1:A1 dimension; both save
+25 companies and 50 employee responsibilities. Row/column limit tests also pass.
+Full follow-up backend run: **82 passed, 5 skipped**, with opt-in database checks
+disabled. This parser patch requires an API restart and no new migration.
+
 ## Deployment status
 
 Implemented in this checkout. No code was deployed and no production rows or

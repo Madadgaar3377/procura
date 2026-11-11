@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import json
+import logging
 import unicodedata
 from io import BytesIO
 from math import ceil
@@ -37,6 +38,7 @@ COUNTABLE_SUPPLIER_MATERIALS = {
     'batteries', 'light management system', 'generators', 'elevators',
 }
 BATCH_SIZE = 35
+logger = logging.getLogger(__name__)
 
 
 def _clean(value):
@@ -60,15 +62,34 @@ def _read(content: bytes, filename: str, headers: list[str]):
                 if sum(item.file_size for item in archive.infolist()) > 64_000_000:
                     raise HTTPException(413, 'Expanded workbook exceeds the 64 MB parsing limit')
             book = load_workbook(BytesIO(content), read_only=True, data_only=True, keep_links=False)
-            sheets=[]
-            for sheet in book.worksheets:
-                if sheet.max_row > 30_001: raise HTTPException(413, f"Worksheet {sheet.title} exceeds the 30,000-row limit")
-                if sheet.max_column > 120: raise HTTPException(413, 'Workbook exceeds the 120-column parsing limit')
-                sheets.append((sheet.title,list(sheet.iter_rows(values_only=True))) )
-            book.close()
+            try:
+                sheets=[]
+                for sheet in book.worksheets:
+                    if sheet.max_row is not None and sheet.max_row > 30_001:
+                        raise HTTPException(413, f"Worksheet {sheet.title} exceeds the 30,000-row limit")
+                    if sheet.max_column is not None and sheet.max_column > 120:
+                        raise HTTPException(413, 'Workbook exceeds the 120-column parsing limit')
+                    # Streaming writers can omit dimensions, and some exporters
+                    # incorrectly declare A1:A1. Read actual rows in either case.
+                    sheet.reset_dimensions()
+                    values=[]
+                    for number, row in enumerate(sheet.iter_rows(values_only=True), 1):
+                        if number > 30_001:
+                            raise HTTPException(413, f"Worksheet {sheet.title} exceeds the 30,000-row limit")
+                        if len(row) > 120:
+                            raise HTTPException(413, 'Workbook exceeds the 120-column parsing limit')
+                        values.append(row)
+                    sheets.append((sheet.title, values))
+            finally:
+                book.close()
     except HTTPException: raise
     except ImportError as exc: raise HTTPException(503, "Legacy XLS support is not installed") from exc
-    except Exception as exc: raise HTTPException(422, "The uploaded Excel workbook could not be read") from exc
+    except Exception as exc:
+        # Do not log filenames, workbook cells or exception messages containing
+        # supplier data; retain the parser failure type for deployment diagnosis.
+        logger.warning('Excel parsing failed format=%s bytes=%s type=%s',
+            'xls' if filename.casefold().endswith('.xls') else 'xlsx', len(content), type(exc).__name__)
+        raise HTTPException(422, "The uploaded Excel workbook could not be read") from exc
     if not any(values for _,values in sheets): raise HTTPException(422, "The workbook is empty")
     if headers is SUPPLIER_HEADERS or headers == SUPPLIER_HEADERS:
         aliases={

@@ -107,6 +107,58 @@ def source_workbook(rows):
     return out.getvalue()
 
 
+@pytest.mark.parametrize('dimensions', ['missing', 'underreported'])
+def test_split_xlsx_without_reliable_dimensions_imports_every_row(system, dimensions):
+    from zipfile import ZipFile
+    import re
+    client, sessions, _, _ = system
+    book = Workbook(write_only=dimensions == 'missing')
+    sheet = book.create_sheet() if dimensions == 'missing' else book.active
+    sheet.append(['Suppliers Name', 'Trade/Products', 'Contact Person', 'Mobile/Phone'])
+    for index in range(50):
+        sheet.append([f'Split Company {index // 2}' if index % 2 == 0 else '',
+                      'Electrical / Panels', f'Employee {index}', ''])
+    out = BytesIO()
+    book.save(out)
+    content = out.getvalue()
+    if dimensions == 'underreported':
+        rewritten = BytesIO()
+        with ZipFile(BytesIO(content)) as original, ZipFile(rewritten, 'w') as target:
+            for entry in original.infolist():
+                value = original.read(entry.filename)
+                if entry.filename == 'xl/worksheets/sheet1.xml':
+                    value = re.sub(rb'<dimension ref="[^"]+"\s*/>', b'<dimension ref="A1:A1"/>', value)
+                target.writestr(entry, value)
+        content = rewritten.getvalue()
+    queued = enqueue(client, content)
+    assert queued['total_rows'] == 50 and queued['total_supplier_records_identified'] == 25
+    drain(sessions)
+    result = client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()
+    assert result['status'] == 'completed'
+    assert result['new_suppliers_saved'] == 25
+    assert result['contacts_created'] == result['responsibilities_created'] == 50
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Organization)) == 25
+        assert db.scalar(select(func.count()).select_from(Contact)) == 50
+
+
+@pytest.mark.parametrize('limit', ['rows', 'columns'])
+def test_dimensionless_xlsx_still_enforces_actual_parsing_limits(system, limit):
+    client, *_ = system
+    book = Workbook(write_only=True)
+    sheet = book.create_sheet()
+    if limit == 'columns':
+        sheet.append(['value'] * 121)
+    else:
+        sheet.append(['Suppliers Name', 'Trade/Products'])
+        for _ in range(30_001):
+            sheet.append(['Company', 'Electrical / Panels'])
+    out = BytesIO()
+    book.save(out)
+    response = client.post('/bulk/suppliers/jobs', files={'file': ('split.xlsx', out.getvalue())})
+    assert response.status_code == 413
+
+
 def test_fresh_import_after_archive_preserves_exact_employee_responsibilities(system):
     from app.models import ContactSupplierTrade, ImportedSupplierTrade
     client, sessions, _, _ = system
