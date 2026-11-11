@@ -109,6 +109,7 @@ export interface Schemas {
   "PublicCategory": { "id": string; "name_en": string; "name_ar"?: string; "trade_keywords"?: Array<string>; "materials"?: Array<string>; "units"?: Array<string> };
   "PublicCompanyDetails": { "trading_name"?: string | null; "company_type"?: string | null; "description"?: string | null; "website"?: string | null; "business_phone"?: string | null; "business_email"?: string | null; "address"?: string | null; "region"?: string | null; "country"?: string | null };
   "PublicSupplier": { "profile"?: Schemas["PublicCompanyDetails"] | null; "capability_groups"?: Array<Schemas["PublicCapabilityGroup"]>; "shared_subcategories"?: Array<Schemas["PublicCategory"]>; "service_cities"?: Array<string>; "capability_labels"?: Array<string>; "capability_labels_ar"?: Array<string>; "id": string; "name": string; "city": string | null; "verified": boolean; "main_categories"?: Array<string>; "main_categories_ar"?: Array<string> };
+  "PublicSupplierPage": { "items": Array<Schemas["PublicSupplier"]>; "total": number; "page": number; "limit": number };
   "PublicSupplierProduct": { "id": string; "name": string; "name_ar"?: string; "description"?: string; "description_ar"?: string; "brand"?: string; "model"?: string; "unit"?: string | null; "specifications"?: Record<string, unknown>; "main_category_id": string; "main_category": string; "main_category_ar"?: string; "subcategory_id"?: string | null; "subcategory"?: string | null; "subcategory_ar"?: string; "source": "material_master" | "supplier_description" };
   "PublicSupplierProductPage": { "items": Array<Schemas["PublicSupplierProduct"]>; "total": number; "page": number; "limit": number };
   "PublicationPreferences": { "fields"?: Array<"trading_name" | "company_type" | "description" | "website" | "business_phone" | "business_email" | "address" | "region" | "country"> };
@@ -297,7 +298,7 @@ export interface Operations {
   "POST /api/v1/capabilities/{capability_id}/confirm": { body: never; response: Schemas["CapabilityOut"] };
   "PATCH /api/v1/capabilities/{capability_id}/eligibility": { body: Schemas["CapabilityEligibilityIn"]; response: Schemas["CapabilityOut"] };
   "GET /api/v1/directory/suppliers/{supplier_id}/products": { body: never; response: Schemas["PublicSupplierProductPage"] };
-  "GET /api/v1/directory/suppliers": { body: never; response: Array<Schemas["PublicSupplier"]> };
+  "GET /api/v1/directory/suppliers": { body: never; response: Array<Schemas["PublicSupplier"]> | Schemas["PublicSupplierPage"] };
   "GET /api/v1/directory/suppliers/{supplier_id}": { body: never; response: Schemas["PublicSupplier"] };
   "GET /api/v1/directory/suppliers/{supplier_id}/related": { body: never; response: Array<Schemas["PublicSupplier"]> };
   "POST /api/v1/rfqs": { body: Schemas["RFQIn"]; response: Schemas["RFQDetail"] };

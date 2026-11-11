@@ -6712,7 +6712,7 @@
               "type": "integer",
               "maximum": 100,
               "minimum": 1,
-              "default": 25,
+              "default": 50,
               "title": "Limit"
             }
           },
@@ -6735,6 +6735,16 @@
               "default": false,
               "title": "Include Coverage"
             }
+          },
+          {
+            "name": "paginated",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Paginated"
+            }
           }
         ],
         "responses": {
@@ -6743,10 +6753,17 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/PublicSupplier"
-                  },
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/PublicSupplier"
+                      }
+                    },
+                    {
+                      "$ref": "#/components/schemas/PublicSupplierPage"
+                    }
+                  ],
                   "title": "Response Discover Api V1 Directory Suppliers Get"
                 }
               }
@@ -18721,6 +18738,37 @@
           "verified"
         ],
         "title": "PublicSupplier"
+      },
+      "PublicSupplierPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PublicSupplier"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "page": {
+            "type": "integer",
+            "title": "Page"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "total",
+          "page",
+          "limit"
+        ],
+        "title": "PublicSupplierPage"
       },
       "PublicSupplierProduct": {
         "properties": {

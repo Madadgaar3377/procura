@@ -299,6 +299,13 @@ class PublicSupplier(ResponseModel):
     main_categories: list[str] = Field(default_factory=list)
     main_categories_ar: list[str] = Field(default_factory=list)
 
+class PublicSupplierPage(ResponseModel):
+    items: list[PublicSupplier]
+    total: int
+    page: int
+    limit: int
+
+
 class PublicSupplierProduct(ResponseModel):
     id: str
     name: str

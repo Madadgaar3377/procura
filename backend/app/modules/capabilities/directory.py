@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session, aliased
 from app.database import get_db
 from app.models import Capability, Category, Material, Organization
 from app.modules.capabilities.public_details import published_details
-from app.response_contracts import PublicSupplier, PublicSupplierProductPage
+from app.response_contracts import PublicSupplier, PublicSupplierPage, PublicSupplierProductPage
 
 router=APIRouter(prefix='/directory',tags=['Verified Supplier Directory'])
 
@@ -93,12 +93,12 @@ def public_profiles(db: Session, organizations, include_categories=False):
              'main_categories_ar':[ar for en,ar in sorted(labels[org.id])]}
             for org in organizations]
 
-@router.get('/suppliers',response_model=list[PublicSupplier],response_model_exclude_unset=True)
+@router.get('/suppliers',response_model=list[PublicSupplier]|PublicSupplierPage,response_model_exclude_unset=True)
 def discover(db:Annotated[Session,Depends(get_db)],category_id:str|None=None,city:str|None=None,q:str=Query('',max_length=80),
              main_category_id:str|None=None,subcategory_id:str|None=None,
              service_city:str|None=Query(None,max_length=100),verified:bool|None=None,
-             page:int=Query(1,ge=1,le=10000),limit:int=Query(25,ge=1,le=100),
-             include_categories:bool=False,include_coverage:bool=False):
+             page:int=Query(1,ge=1,le=10000),limit:int=Query(50,ge=1,le=100),
+             include_categories:bool=False,include_coverage:bool=False,paginated:bool=False):
     # A set of organization IDs keeps pagination stable across multiple capabilities.
     parent=aliased(Category)
     capability=select(Capability.org_id).join(Category,Category.id==Capability.category_id).outerjoin(
@@ -130,10 +130,13 @@ def discover(db:Annotated[Session,Depends(get_db)],category_id:str|None=None,cit
         query=query.where(or_(Organization.name.ilike(pattern,escape='\\'),Organization.id.in_(matching)))
     if main_category_id or subcategory_id or category_id or coverage:
         query=query.where(Organization.id.in_(capability))
+    total = db.scalar(select(func.count()).select_from(query.subquery())) if paginated else None
     organizations=db.execute(query.order_by(Organization.name,Organization.id).offset((page-1)*limit).limit(limit)).all()
     profiles=public_profiles(db,organizations,include_categories and not include_coverage)
     if include_coverage:
         add_coverage(db,profiles,include_categories)
+    if paginated:
+        return {'items':profiles,'total':total,'page':page,'limit':limit}
     return profiles
 
 
