@@ -95,7 +95,162 @@ def drain(sessions):
         pytest.fail('Queue did not drain')
 
 
-@pytest.mark.parametrize('count', [1, 10, 28, 35, 36])
+def source_workbook(rows):
+    book = Workbook()
+    sheet = book.active
+    sheet.append(['Suppliers Name', 'Trade/Products', 'Contact Person', 'Mobile/Phone', 'Email',
+                  'Website', 'Location', 'Supplier/Manufacturer', 'Brands', 'Verification Notes'])
+    for row in rows:
+        sheet.append(row)
+    out = BytesIO()
+    book.save(out)
+    return out.getvalue()
+
+
+def test_fresh_import_after_archive_preserves_exact_employee_responsibilities(system):
+    from app.models import ContactSupplierTrade, ImportedSupplierTrade
+    client, sessions, _, _ = system
+    data = source_workbook([
+        ['Fresh Company', 'Electrical / Lighting Fixtures', 'Amir', '+966501234567', '', '', '', '', '', 'Review source'],
+        ['', 'Mechanical / Pumps', 'Amir', '+966501234567'],
+        ['', 'Electrical / Lighting Fixtures', 'Sara', '+966501234568'],
+        ['', 'Unclear special product', 'Sara', '+966501234568'],
+    ])
+    first = enqueue(client, data)
+    # Concurrent same-file submission must still share the active job.
+    assert enqueue(client, data)['batch_id'] == first['batch_id']
+    drain(sessions)
+    progress = client.get(f"/bulk/suppliers/jobs/{first['batch_id']}").json()
+    assert progress['new_suppliers_saved'] == 1
+    assert progress['contacts_created'] == 2
+    assert progress['responsibilities_created'] == 4
+    assert progress['category_assignments_created'] == 3
+    assert progress['capabilities_saved'] == 2
+    assert progress['pending_category_mappings'] == 1
+    assert progress['status'] == 'completed_with_errors'
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(ContactSupplierTrade)) == 4
+        assert db.scalar(select(func.count()).select_from(Contact)) == 2
+        original = db.scalar(select(Organization))
+        original_id = original.id
+        original.is_active = False
+        db.commit()
+    fresh = enqueue(client, data)
+    assert fresh['batch_id'] != first['batch_id']
+    drain(sessions)
+    result = client.get(f"/bulk/suppliers/jobs/{fresh['batch_id']}").json()
+    assert result['new_suppliers_saved'] == 1
+    assert result['existing_suppliers_reused'] == 0
+    assert result['contacts_created'] == 2
+
+    with sessions() as db:
+        assert db.get(Organization, original_id).is_active is False
+        assert db.scalar(select(func.count()).select_from(Organization).where(Organization.is_active.is_(True))) == 1
+        assert db.scalar(select(func.count()).select_from(ContactSupplierTrade)) == 8
+        assert db.scalar(select(func.count()).select_from(ImportedSupplierTrade)) == 6
+    repeat = enqueue(client, data)
+    drain(sessions)
+    result = client.get(f"/bulk/suppliers/jobs/{repeat['batch_id']}").json()
+    for key in ['new_suppliers_saved', 'contacts_created', 'category_assignments_created', 'responsibilities_created', 'capabilities_saved']:
+        assert result[key] == 0, (key, result)
+    assert result['responsibilities_reused'] == 4
+    second = enqueue(client, source_workbook([
+        ['Fresh Company', 'Mechanical / Pumps', 'Lina', '+966501234569'],
+        ['Next Company', 'Electrical / Lighting Fixtures', 'Omar'],
+    ]))
+    drain(sessions)
+    result = client.get(f"/bulk/suppliers/jobs/{second['batch_id']}").json()
+    assert result['new_suppliers_saved'] == result['existing_suppliers_reused'] == 1
+    assert result['contacts_created'] == 2
+
+
+def test_employee_materials_do_not_inherit_colleagues_materials(system):
+    client, sessions, _, app = system
+    from app.modules.organizations.router import router
+    app.include_router(router)
+    book = Workbook()
+    sheet = book.active
+    headers = [*bulk.SUPPLIER_HEADERS, 'Unit']
+    sheet.append(headers)
+    for person, material in [('Ali', 'Panel Board'), ('Sara', 'Transformers'), ('Ali', 'Wiring Devices')]:
+        row = {'Company Name':'Material Scope Co', 'Contact Person':person,
+               'Category':'Electrical', 'Material':material}
+        sheet.append([row.get(key, '') for key in headers])
+    out = BytesIO()
+    book.save(out)
+    job = enqueue(client, out.getvalue())
+    drain(sessions)
+    result = client.get(f"/bulk/suppliers/jobs/{job['batch_id']}").json()
+    assert result['status'] == 'completed'
+    assert result['contacts_created'] == 2 and result['materials_created'] == 3
+    with sessions() as db:
+        org = db.scalar(select(Organization))
+        org_id = org.id
+        for contact in db.scalars(select(Contact)):
+            link = db.scalar(select(ContactCapability).where(ContactCapability.contact_id == contact.id))
+            names = set(db.scalars(select(Material.name_en).where(Material.id.in_(link.material_ids))))
+            assert names == ({'Panel Board','Wiring Devices'} if contact.name == 'Ali' else {'Transformers'})
+    detail = client.get(f'/organizations/admin/suppliers/{org_id}')
+    assert detail.status_code == 200, detail.text
+    for contact in detail.json()['contacts']:
+        names = set(contact['assigned_capabilities'][0]['materials'])
+        assert names == ({'Panel Board','Wiring Devices'} if contact['name'] == 'Ali' else {'Transformers'})
+    listed = client.get('/organizations/admin/suppliers')
+    assert listed.status_code == 200 and 'Material Scope Co' in listed.text
+    repeated = enqueue(client, out.getvalue())
+    drain(sessions)
+    result = client.get(f"/bulk/suppliers/jobs/{repeated['batch_id']}").json()
+    assert result['new_suppliers_saved'] == result['contacts_created'] == result['category_assignments_created'] == result['materials_created'] == 0
+
+
+def test_two_fifty_row_source_files_reuse_companies_and_name_only_contacts(system):
+    client, sessions, _, _ = system
+    for offset, expected_new, expected_reused in [(0, 25, 0), (20, 20, 5)]:
+        content = source_workbook([
+            [f'Source Company {offset + index // 2}' if index % 2 == 0 else '',
+             'Electrical / Panels', f'Employee {offset}-{index}']
+            for index in range(50)])
+        queued = enqueue(client, content)
+        drain(sessions)
+        result = client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()
+        assert result['total_rows'] == 50
+        assert result['new_suppliers_saved'] == expected_new
+        assert result['existing_suppliers_reused'] == expected_reused
+        assert result['contacts_created'] == result['responsibilities_created'] == 50
+        assert result['status'] == 'completed'
+        repeated = enqueue(client, content)
+        drain(sessions)
+        result = client.get(f"/bulk/suppliers/jobs/{repeated['batch_id']}").json()
+        assert result['new_suppliers_saved'] == result['contacts_created'] == result['category_assignments_created'] == result['responsibilities_created'] == 0
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Organization)) == 45
+        assert db.scalar(select(func.count()).select_from(Contact)) == 100
+        assert db.scalar(select(func.count()).select_from(ContactCapability)) == 100
+
+
+def test_archived_supplier_cr_does_not_block_fresh_verified_import(system):
+    client, sessions, _, _ = system
+    with sessions() as db:
+        db.add(Organization(name='CR Supplier', name_normalized='cr supplier', is_supplier=True,
+            is_buyer=False, is_active=False, cr_number='ARCHIVED-CR', verified_status='verified'))
+        db.commit()
+    book = Workbook()
+    sheet = book.active
+    sheet.append(bulk.SUPPLIER_HEADERS)
+    row = {'Company Name':'CR Supplier', 'CR Number':'ARCHIVED-CR', 'Contact Person':'Sales'}
+    sheet.append([row.get(key, '') for key in bulk.SUPPLIER_HEADERS])
+    out = BytesIO()
+    book.save(out)
+    job = enqueue(client, out.getvalue())
+    drain(sessions)
+    result = client.get(f"/bulk/suppliers/jobs/{job['batch_id']}").json()
+    assert result['new_suppliers_saved'] == 1 and result['failed'] == 0
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Organization)) == 2
+        assert db.scalar(select(Organization).where(Organization.is_active.is_(True))).verified_status == 'verified'
+
+
+@pytest.mark.parametrize('count', [1, 10, 28, 35, 36, 50])
 def test_group_counts_and_committed_progress(system, count):
     client, sessions, admin, app = system
     content = workbook(count, repeat_contacts=True)
@@ -113,11 +268,15 @@ def test_group_counts_and_committed_progress(system, count):
         assert db.scalar(select(func.count()).select_from(Organization)) == min(10, count)
     drain(sessions)  # Opens a new session on every chunk, as after a worker restart.
     result = client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()
-    assert result['status'] == 'completed'
+    assert result['status'] == 'completed_with_errors'  # Lighting has no approved taxonomy in this fixture.
     assert result['new_suppliers_saved'] == count
     assert result['progress_percent'] == 100
     assert result['completed_batches'] == ceil(count / 10)
-    assert enqueue(client, content)['batch_id'] == queued['batch_id']
+    repeated = enqueue(client, content)
+    assert repeated['batch_id'] != queued['batch_id']
+    drain(sessions)
+    repeated = client.get(f"/bulk/suppliers/jobs/{repeated['batch_id']}").json()
+    assert repeated['new_suppliers_saved'] == repeated['contacts_created'] == repeated['category_assignments_created'] == 0
     with sessions() as db:
         assert db.scalar(select(func.count()).select_from(Organization)) == count
         assert db.scalar(select(func.count()).select_from(Contact)) == count
@@ -259,12 +418,12 @@ def test_conflicting_contact_cannot_modify_unrelated_company(system):
     job = enqueue(client, workbook())
     drain(sessions)
     result = client.get(f"/bulk/suppliers/jobs/{job['batch_id']}").json()
-    assert result['failed'] == 1
+    assert result['failed'] == 0
     with sessions() as db:
-        assert db.scalar(select(func.count()).select_from(Organization)) == 1
+        assert db.scalar(select(func.count()).select_from(Organization)) == 2
         company = db.get(Organization, company_id)
         assert company.name == 'Protected Company' and company.city == 'Jeddah'
-        assert db.scalar(select(func.count()).select_from(Contact)) == 0
+        assert db.scalar(select(func.count()).select_from(Contact)) == 1
 
 
 def test_contact_update_counts_are_distinct_records(system):
@@ -365,4 +524,4 @@ with SessionLocal() as db:
         assert db.get(ImportBatch, job['batch_id']).completed_rows == 10
     drain(sessions)
     result = client.get(f"/bulk/suppliers/jobs/{job['batch_id']}").json()
-    assert result['new_suppliers_saved'] == 12 and result['status'] == 'completed'
+    assert result['new_suppliers_saved'] == 12 and result['status'] == 'completed_with_errors'

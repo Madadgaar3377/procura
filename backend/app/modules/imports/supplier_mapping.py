@@ -217,12 +217,11 @@ def apply_supplier_trade_mapping(db: Session, *, org: Organization, trade: Impor
         capability.rejection_reason = None
     capability.mapping_source = capability.mapping_source or "supplier_import"
     materials_created = 0
+    material = None
     material_warning = None
-    if not description:
-        material_warning = "Material description is empty; category capability was saved without a material"
-    elif len(description.strip()) < 3 or len(description.strip()) > 250:
+    if description and (len(description.strip()) < 3 or len(description.strip()) > 250):
         material_warning = "Material description must contain 3 to 250 characters; category capability was saved without a material"
-    elif not unit:
+    elif description and not unit:
         material_warning = "Unit is missing; category capability was saved without a material"
     if description and unit and not material_warning:
         normalized_description = normalize_text(description)
@@ -249,10 +248,12 @@ def apply_supplier_trade_mapping(db: Session, *, org: Organization, trade: Impor
                     capability.material_ids = [*(capability.material_ids or []), material.id]
                 elif material is None and not resolved.discipline:
                     material_warning="Discipline is unresolved; no material was created"
-        except Exception:
+        except (ValueError, HTTPException) as exc:
             # A bad material row cannot undo a category capability or supplier.
-            pass
-    trade.mapping_status = "mapped" if auto_confirm else "mapped_pending_approval"
+            material = None
+            material_warning = f"Material requires review: {type(exc).__name__}; category capability and source responsibility were retained"
+    trade.mapping_status = "material_pending_review" if material_warning else ("mapped" if auto_confirm else "mapped_pending_approval")
     return {"status": "saved", "reason": None, "material_warning":material_warning,"categories_created": resolved.categories_created,
+            "material_ids": [material.id] if material else [],
             "materials_created": materials_created, "capability_created": capability_created,
             "capability_id": capability.id, "discipline": resolved.discipline}

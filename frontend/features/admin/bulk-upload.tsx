@@ -5,7 +5,7 @@ import { api, apiUrl, upload, uploadStream } from '@/lib/api/client';
 import { Button } from '@/components/ui/button';
 
 type ImportMessage = { total_rows:number; batch_size:number; completed_batches:number; batches_total:number; imported:number; skipped:number; incomplete:number; failed:number; progress_percent:number; issues:{row:number;reason:string}[]; total_supplier_records_identified?:number; new_suppliers_saved?:number; existing_suppliers_reused?:number; suppliers_incomplete?:number; contacts_created?:number; contacts_updated?:number; category_assignments_created?:number; capabilities_saved?:number; capabilities_skipped?:number; categories_created?:number; materials_created?:number; pending_category_mappings?:number; supplier_failures?:number; warnings?:{row:number;reason:string;capability_saved?:boolean}[] };
-type Progress = ImportMessage & {batch_id?:string;status?:string;stage?:string;message?:string;suppliers_updated?:number;failed_rows?:number};
+type Progress = ImportMessage & {batch_id?:string;status?:string;stage?:string;message?:string;suppliers_updated?:number;failed_rows?:number;responsibilities_created?:number;responsibilities_reused?:number;capabilities_reused?:number;pending_material_mappings?:number};
 type Result = ImportMessage & { batch_id:string };
 
 export function BulkUpload({kind,open,onClose,onDone}:{kind:'materials'|'suppliers';open:boolean;onClose:()=>void;onDone:()=>void}) {
@@ -89,13 +89,13 @@ export function BulkUpload({kind,open,onClose,onDone}:{kind:'materials'|'supplie
    {file&&<p>{file.name} · {(file.size/1024).toFixed(0)} KB</p>}
    <div className="live-actions"><Button disabled={!file||busy} onClick={()=>void submit()}><IconUpload size={16}/>{busy?(saving?'Processing…':'Uploading…'):'Upload'}</Button></div>
    {busy&&!saving&&<div className="import-progress" role="status"><i/><span>{progress===100?'Validating Excel…':`Uploading workbook… ${progress}%`}</span></div>}
-   {jobId&&<div className="live-actions"><Button variant="outline" onClick={()=>void refreshJob()}>Refresh progress</Button>{(live?.status==='failed'||live?.status==='completed_with_errors')&&<Button onClick={()=>void retryJob()}>Retry failed rows</Button>}</div>}
+   {jobId&&<div className="live-actions"><Button variant="outline" onClick={()=>void refreshJob()}>Refresh progress</Button>{(live?.status==='failed'||(live?.status==='completed_with_errors'&&(live.supplier_failures??live.failed)>0))&&<Button onClick={()=>void retryJob()}>Retry failed rows</Button>}</div>}
    {live && (
         <section className="bulk-result" aria-live="polite">
           <h3>{busy ? 'Saving in small batches' : 'Import progress'}</h3>
           {live.status&&<p>Status: {live.status.replaceAll('_',' ')} · Stage: {live.stage?.replaceAll('_',' ')}{live.status==='queued'?' · Waiting for the import worker or saving the next batch.':''}</p>}
           {live.status==='completed'&&<p>Import completed. Successful suppliers and their relationships are saved.</p>}
-          {live.status==='completed_with_errors'&&<p>Partial success. Valid suppliers are saved; download the error report and retry failed rows.</p>}
+          {live.status==='completed_with_errors'&&<p>Import needs review. Valid companies, contacts and raw employee responsibilities are saved. Review pending mappings and warnings; retry failed suppliers.</p>}
           <p>
             {kind === 'suppliers' ? (
               <>
@@ -121,10 +121,14 @@ export function BulkUpload({kind,open,onClose,onDone}:{kind:'materials'|'supplie
               {' ? '}Existing contacts updated: <strong>{live.contacts_updated ?? 0}</strong>
               {' ? '}Contact-category assignments: <strong>{live.category_assignments_created ?? 0}</strong>
               {' ? '}Capabilities saved: <strong>{live.capabilities_saved ?? 0}</strong>
+              {' · '}Capabilities reused: <strong>{live.capabilities_reused ?? 0}</strong>
+              {' · '}Employee responsibilities saved: <strong>{live.responsibilities_created ?? 0}</strong>
+              {' · '}Employee responsibilities reused: <strong>{live.responsibilities_reused ?? 0}</strong>
               {' ? '}Capability rows skipped: <strong>{live.capabilities_skipped ?? 0}</strong>
               {' ? '}Categories created: <strong>{live.categories_created ?? 0}</strong>
               {' ? '}Materials created: <strong>{live.materials_created ?? 0}</strong>
               {' ? '}Pending mappings: <strong>{live.pending_category_mappings ?? 0}</strong>
+              {' · '}Pending material mappings: <strong>{live.pending_material_mappings ?? 0}</strong>
             </p>
           )}
           <p>

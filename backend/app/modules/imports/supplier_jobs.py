@@ -51,12 +51,16 @@ class SupplierJobProgress(BaseModel):
     suppliers_incomplete: int = 0
     contacts_created: int = 0
     contacts_updated: int = 0
+    responsibilities_created: int = 0
+    responsibilities_reused: int = 0
+    capabilities_reused: int = 0
     category_assignments_created: int = 0
     capabilities_saved: int = 0
     capabilities_skipped: int = 0
     categories_created: int = 0
     materials_created: int = 0
     pending_category_mappings: int = 0
+    pending_material_mappings: int = 0
     imported: int = 0
     skipped: int = 0
     incomplete: int = 0
@@ -114,7 +118,8 @@ def enqueue(file: UploadFile = File(...), user: User = Depends(admin_user), db: 
     # Same-file concurrent uploads return the same durable job.
     _lock(db, int(digest[:15], 16))
     existing = db.scalar(select(ImportBatch).where(ImportBatch.kind == KIND,
-        ImportBatch.initiated_by == user.id, ImportBatch.source_sha256 == digest))
+        ImportBatch.initiated_by == user.id, ImportBatch.source_sha256 == digest,
+        ImportBatch.status.in_(['queued', 'processing'])))
     if existing:
         return _snapshot(existing)
     batch = ImportBatch(kind=KIND, filename=(file.filename or 'suppliers.xlsx')[:200],
@@ -172,7 +177,8 @@ def retry(batch_id: str, user: User = Depends(admin_user), db: Session = Depends
 def _apply_group(db, batch, item, user):
     counts = {key: 0 for key in ('contacts_created', 'contacts_updated',
         'category_assignments_created', 'capabilities_saved', 'categories_created',
-        'materials_created', 'pending_category_mappings', 'capabilities_skipped')}
+        'materials_created', 'pending_category_mappings', 'capabilities_skipped',
+        'responsibilities_created', 'responsibilities_reused', 'capabilities_reused', 'pending_material_mappings')}
     created_supplier = False
     updated = False
     warnings = []
@@ -188,6 +194,8 @@ def _apply_group(db, batch, item, user):
         org, created, missing, contact_warnings, contact_count, mapping = result
         created_supplier |= created
         updated |= contact_metrics.get('company_updated', False)
+        counts['responsibilities_created'] += contact_metrics.get('responsibilities_created', 0)
+        counts['responsibilities_reused'] += contact_metrics.get('responsibilities_reused', 0)
         created_contact_ids.update(contact_metrics.get('contacts_created_ids', []))
         updated_contact_ids.update(contact_metrics.get('contacts_updated_ids', []))
         warnings.extend({'row': number, 'sheet': row.get('_source_sheet', ''), 'reason': reason}
@@ -195,21 +203,18 @@ def _apply_group(db, batch, item, user):
         if mapping:
             if mapping.get('contact_category'):
                 mapped = bulk._supplier_contact_category_capability(db, org, mapping)
-                if mapped.get('status') != 'saved':
-                    bulk.ensure_trade_record(db, org, batch,
-                        raw_trade=mapping.get('source_raw_trade') or mapping['contact_category'],
-                        raw_type=mapping['contact_category'], raw_brands='', raw_location=mapping.get('city', ''))
             else:
                 mapped = bulk._process_supplier_capability(db, org, mapping, batch, user, row, number)
             if mapped and mapped.get('status') == 'saved':
                 counts['capabilities_saved'] += int(mapped.get('capability_created', False))
+                counts['capabilities_reused'] += int(not mapped.get('capability_created', False))
                 counts['categories_created'] += mapped.get('categories_created', 0)
                 counts['materials_created'] += mapped.get('materials_created', 0)
                 if mapped.get('capability_id'):
                     counts['category_assignments_created'] += bulk._link_contact_capability(
-                        db, org.id, mapping.get('contact_ids'), mapped['capability_id'])
+                        db, org.id, mapping.get('contact_ids'), mapped['capability_id'], mapped.get('material_ids'))
                 if mapped.get('material_warning'):
-                    counts['capabilities_skipped'] += 1
+                    counts['pending_material_mappings'] += 1
                     warnings.append({'row': number, 'reason': mapped['material_warning']})
             else:
                 counts['pending_category_mappings'] += 1
@@ -278,7 +283,7 @@ def process_supplier_jobs(db: Session):
         batch.unchanged_count = metadata.get('existing_suppliers_reused', 0)
         batch.updated_count = metadata.get('suppliers_updated', 0)
         if batch.completed_rows >= metadata['total_supplier_records_identified']:
-            batch.status = 'completed_with_errors' if batch.errors else 'completed'
+            batch.status = 'completed_with_errors' if batch.errors or metadata.get('capabilities_skipped') or metadata.get('pending_category_mappings') or metadata.get('pending_material_mappings') else 'completed'
             batch.stage = 'complete'
         batch.failure_reason = None
         batch.retry_count = 0

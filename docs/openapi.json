@@ -21272,6 +21272,21 @@
             "title": "Contacts Updated",
             "default": 0
           },
+          "responsibilities_created": {
+            "type": "integer",
+            "title": "Responsibilities Created",
+            "default": 0
+          },
+          "responsibilities_reused": {
+            "type": "integer",
+            "title": "Responsibilities Reused",
+            "default": 0
+          },
+          "capabilities_reused": {
+            "type": "integer",
+            "title": "Capabilities Reused",
+            "default": 0
+          },
           "category_assignments_created": {
             "type": "integer",
             "title": "Category Assignments Created",
@@ -21300,6 +21315,11 @@
           "pending_category_mappings": {
             "type": "integer",
             "title": "Pending Category Mappings",
+            "default": 0
+          },
+          "pending_material_mappings": {
+            "type": "integer",
+            "title": "Pending Material Mappings",
             "default": 0
           },
           "imported": {

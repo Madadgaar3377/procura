@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.identity import normalize_email, normalize_phone
@@ -89,8 +89,8 @@ def parse_phones(raw: str | None, country: str | None = 'SA') -> tuple[list[dict
     return parsed, needs_review
 
 
-def _channel_values(db: Session, contact: Contact, kind: str) -> list[str]:
-    values = list(db.scalars(select(ContactChannel.normalized_value).where(
+def _channel_values(db: Session, contact: Contact, kind: str, channels=None) -> list[str]:
+    values = list(channels.get((contact.id, kind), [])) if channels is not None else list(db.scalars(select(ContactChannel.normalized_value).where(
         ContactChannel.contact_id == contact.id, ContactChannel.kind == kind)))
     legacy = contact.email if kind == 'email' else contact.phone_normalized if kind == 'phone' else contact.fax
     if legacy:
@@ -104,24 +104,27 @@ def _channel_values(db: Session, contact: Contact, kind: str) -> list[str]:
 
 def _find_contact(db: Session, org_id: str, name: str | None, emails: list[str], phones: list[dict]) -> Contact | None:
     contacts = db.scalars(select(Contact).where(Contact.org_id == org_id,Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None)).order_by(Contact.created_at, Contact.id)).all()
+    channels = {}
+    if contacts:
+        for channel in db.scalars(select(ContactChannel).where(ContactChannel.contact_id.in_([item.id for item in contacts]))):
+            channels.setdefault((channel.contact_id, channel.kind), []).append(channel.normalized_value)
     normalized_name = norm_name(name)
     # Email is the strongest identity. Contradictory names are retained for review by caller.
     for email in emails:
         for contact in contacts:
-            if email in _channel_values(db, contact, 'email'):
+            if email in _channel_values(db, contact, 'email', channels):
                 if not (normalized_name and contact.name and normalized_name != norm_name(contact.name)):
                     return contact
     if phones:
         for phone in phones:
             for contact in contacts:
-                if phone['normalized'] not in _channel_values(db, contact, phone['kind']):
+                if phone['normalized'] not in _channel_values(db, contact, phone['kind'], channels):
                     continue
                 names_conflict=bool(normalized_name and contact.name and normalized_name != norm_name(contact.name))
                 if not names_conflict and (phone['label'] == 'mobile' or (normalized_name and normalized_name == norm_name(contact.name))):
                     return contact
     if normalized_name:
-        matches = [contact for contact in contacts if normalized_name == norm_name(contact.name)
-                   and (_channel_values(db, contact, 'email') or _channel_values(db, contact, 'phone'))]
+        matches = [contact for contact in contacts if normalized_name == norm_name(contact.name)]
         if len(matches) == 1:
             return matches[0]
     return None
@@ -152,6 +155,10 @@ def import_contact_row(db: Session, org_id: str, name_value: str | None, raw_ema
                        *, return_ids: bool = False, metrics: dict | None = None):
     """Upsert row contacts; ambiguous name/address alignment remains a review record."""
     raw_name, raw_email, raw_phone = clean(name_value), clean(raw_email), clean(raw_phone)
+    if not any((raw_name, raw_email, raw_phone)):
+        if metrics is not None:
+            metrics.update(created_ids=[], updated_ids=[])
+        return (0, False, [], 0) if return_ids else (0, False)
     # Serialize contact identity checks for this supplier across concurrent imports.
     db.scalar(select(Organization.id).where(Organization.id == org_id).with_for_update())
     emails, invalid_email = parse_emails(raw_email)
@@ -174,18 +181,22 @@ def import_contact_row(db: Session, org_id: str, name_value: str | None, raw_ema
     created_ids=set();updated_ids=set()
     for person, person_emails, person_phones in assignments:
         contact = _find_contact(db, org_id, person, person_emails, person_phones)
-        if ambiguous and len(assignments)==1 and contact is None:
+        if (ambiguous or not person) and len(assignments)==1 and contact is None:
             contact=db.scalar(select(Contact).where(Contact.org_id==org_id,Contact.name.is_(None),Contact.raw_email==(raw_email or None),
                 Contact.raw_phone==(raw_phone or None),Contact.needs_review.is_(True),Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None)).limit(1))
         existing_email_names=[]
         if person and person_emails:
-            for existing in db.scalars(select(Contact).where(Contact.org_id==org_id,Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None))).all():
-                if existing.name and any(email in _channel_values(db,existing,'email') for email in person_emails): existing_email_names.append(existing.name)
+            existing_email_names = db.scalars(select(Contact.name).outerjoin(ContactChannel,
+                (ContactChannel.contact_id == Contact.id) & (ContactChannel.kind == 'email')).where(
+                Contact.org_id == org_id, Contact.merged_into_contact_id.is_(None), Contact.deleted_at.is_(None),
+                Contact.name.is_not(None), or_(Contact.email.in_(person_emails),
+                    ContactChannel.normalized_value.in_(person_emails)))).all()
         identity_conflict=bool(person and any(norm_name(value)!=norm_name(person) for value in existing_email_names))
         identity_conflict = identity_conflict or bool(contact and person and contact.name and norm_name(contact.name) != norm_name(person))
         if identity_conflict:
             # A shared email is useful evidence, but conflicting person names need human review.
-            contact.needs_review = True
+            if contact is not None:
+                contact.needs_review = True
         if contact is None:
             contact = Contact(org_id=org_id, name=(None if ambiguous else person)[:150] if person and not ambiguous else None,
                 raw_email=raw_email[:500] or None, raw_phone=raw_phone[:300] or None,
@@ -204,7 +215,8 @@ def import_contact_row(db: Session, org_id: str, name_value: str | None, raw_ema
             if changed:updated_ids.add(contact.id)
         for email in person_emails:
             if _add_channel(db, contact, 'email', email, email, 'other', raw_email, source_reference) and contact.id not in created_ids:updated_ids.add(contact.id)
-        for phone in ([] if identity_conflict else person_phones):
+        phone_identity_conflict = bool(person and contact.name and norm_name(contact.name) != norm_name(person))
+        for phone in ([] if phone_identity_conflict else person_phones):
             if _add_channel(db, contact, phone['kind'], phone['value'], phone['normalized'], phone['label'], raw_phone, source_reference, phone['extension']) and contact.id not in created_ids:updated_ids.add(contact.id)
         if ambiguous:
             contact.needs_review = True

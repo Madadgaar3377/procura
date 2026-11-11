@@ -97,8 +97,8 @@ class Organization(TimeID, Base):
         'uq_organization_verified_cr',
         'cr_number',
         unique=True,
-        sqlite_where=text("verified_status = 'verified' AND cr_number IS NOT NULL"),
-        postgresql_where=text("verified_status = 'verified' AND cr_number IS NOT NULL"),
+        sqlite_where=text("verified_status = 'verified' AND cr_number IS NOT NULL AND (is_active = true OR is_supplier = false)"),
+        postgresql_where=text("verified_status = 'verified' AND cr_number IS NOT NULL AND (is_active = true OR is_supplier = false)"),
     ),)
     name: Mapped[str] = mapped_column(String(220), index=True)
     name_normalized: Mapped[str] = mapped_column(String(220), index=True)
@@ -201,6 +201,7 @@ class ContactCapability(TimeID, Base):
     )
     contact_id: Mapped[str] = mapped_column(ForeignKey('organization_contacts.id',ondelete='CASCADE'),index=True)
     capability_id: Mapped[str] = mapped_column(ForeignKey('supplier_capabilities.id',ondelete='CASCADE'),index=True)
+    material_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     is_primary: Mapped[bool] = mapped_column(Boolean,default=False,server_default=text('false'))
 
 class ContactInquiry(TimeID, Base):
@@ -301,7 +302,7 @@ class ImportBatch(TimeID, Base):
     __tablename__='import_batches'
     __table_args__ = (
         Index('uq_supplier_bulk_file_admin', 'initiated_by', 'source_sha256', unique=True,
-              postgresql_where=text("kind = 'supplier_bulk'"), sqlite_where=text("kind = 'supplier_bulk'")),
+              postgresql_where=text("kind = 'supplier_bulk' AND status IN ('queued','processing')"), sqlite_where=text("kind = 'supplier_bulk' AND status IN ('queued','processing')")),
         Index('ix_import_job_queue', 'kind', 'status', 'created_at'),
         )
     kind: Mapped[str] = mapped_column(String(30))
@@ -371,6 +372,13 @@ class ImportedSupplierTrade(TimeID, Base):
     raw_type: Mapped[str] = mapped_column(String(150), default='')
     raw_location: Mapped[str] = mapped_column(String(150), default='')
     mapping_status: Mapped[str] = mapped_column(String(30), default='unreviewed')
+
+class ContactSupplierTrade(Base):
+    """Exact source responsibility, retained even before taxonomy approval."""
+    __tablename__ = 'contact_supplier_trades'
+    contact_id: Mapped[str] = mapped_column(ForeignKey('organization_contacts.id'), primary_key=True)
+    trade_id: Mapped[str] = mapped_column(ForeignKey('imported_supplier_trades.id'), primary_key=True, index=True)
+
 
 class Capability(TimeID, Base):
     __tablename__='supplier_capabilities'

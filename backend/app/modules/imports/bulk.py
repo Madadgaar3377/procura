@@ -18,9 +18,9 @@ from sqlalchemy.orm import Session
 
 from app import catalog_cache
 from app.database import SessionLocal, get_db
-from app.models import Capability, Category, Contact, ContactCapability, ContactChannel, ImportBatch, ImportedRow, ImportedSupplierTrade, Material, Organization, User
-from app.modules.materials.service import create_material_record, normalize_text, normalize_unit, resolve_category
-from app.modules.imports.supplier_mapping import apply_supplier_trade_mapping, ensure_import_verification, ensure_trade_record, extract_website
+from app.models import Capability, Category, Contact, ContactCapability, ContactChannel, ContactSupplierTrade, ImportBatch, ImportedRow, ImportedSupplierTrade, Material, Organization, User
+from app.modules.materials.service import create_material_record, material_identity, normalize_text, normalize_unit, resolve_category
+from app.modules.imports.supplier_mapping import apply_supplier_trade_mapping, ensure_import_verification, ensure_trade_record, extract_website, resolve_supplier_path
 from app.modules.organizations.contact_import import import_contact_row, parse_phones
 from app.security import admin_user, audit
 
@@ -28,6 +28,14 @@ router = APIRouter(prefix="/bulk", tags=["Bulk Materials and Suppliers"])
 MATERIAL_HEADERS = ["Discipline", "Main Category", "Subcategory", "Description", "Unit"]
 SUPPLIER_HEADERS = ["Company Name","Country","City","Address","Website","CR Number","VAT Number","Company Description","Contact Person","Contact Designation","Contact Email","Contact Phone","Category","Material","Is Primary Contact"]
 DISCIPLINES = {"civil": "Civil", "electrical": "Electrical", "mechanical": "Mechanical"}
+# These source labels identify discrete equipment. Use the existing Material
+# model's No. unit; quantities/units for cables, mixed trades and acronyms remain
+# reviewable instead of guessing metres, reels or a fabricated material.
+COUNTABLE_SUPPLIER_MATERIALS = {
+    'lighting fixture', 'lighting fixtures', 'street lighting fixture', 'panel board',
+    'panels', 'distribution panels', 'wiring devices', 'transformers', 'ups',
+    'batteries', 'light management system', 'generators', 'elevators',
+}
 BATCH_SIZE = 35
 
 
@@ -68,7 +76,7 @@ def _read(content: bytes, filename: str, headers: list[str]):
             "contact person":{"contact person","contact name","contact person name","representative","sales contact"},
             "contact designation":{"contact designation","designation","job title","contact title","role"},
             "email":{"email","email address","e-mail","contact email"},
-            "phone":{"phone","mobile","mobile phone","mobile phone number","telephone","telephone number","phone number","contact number","tel","contact phone"},
+            "phone":{"phone","mobile","mobile/phone","mobile phone","mobile phone number","telephone","telephone number","phone number","contact number","tel","contact phone"},
             "country":{"country"},"city":{"city","location","supplier location"},"address":{"address","business address"},
             "category":{"category","supplier category","assigned category"},"material":{"material","specific material","assigned material"},
             "is primary contact":{"is primary contact","primary contact","primary"},
@@ -80,6 +88,7 @@ def _read(content: bytes, filename: str, headers: list[str]):
             "website":{"website","web site","url","company website"},"brands":{"brands","brand","brand names"},
             "cr number":{"cr number","commercial registration","commercial registration number","cr no"},
             "vat number":{"vat number","vat registration","vat registration number"},
+            "verification notes":{"verification notes"},
             "company description":{"company description","about company","profile description"}}
         aliases={canonical:{re.sub(r"[^a-z0-9]+"," ",value.casefold()).strip() for value in values} for canonical,values in aliases.items()}
         parsed=[]
@@ -102,15 +111,14 @@ def _read(content: bytes, filename: str, headers: list[str]):
                 if not any(canonical_row.values()): continue
                 name=canonical_row.get("company name","")
                 if name: previous_name=name
-                elif previous_name and any(canonical_row.get(key) for key in ("trade","type","contact person","phone","email","website","city","brands","main category","subcategory","category")):
+                elif previous_name and any(canonical_row.get(key) for key in ("trade","type","contact person","phone","email","website","city","brands","main category","subcategory","category","material","material description")):
                     canonical_row["company name"]=previous_name
-                else: continue
                 display_keys={"company name":"Company Name","contact person":"Contact Person","contact designation":"Contact Designation",
                     "email":"Contact Email","phone":"Contact Phone","country":"Country","city":"City","address":"Address",
                     "website":"Website","cr number":"CR Number","vat number":"VAT Number","company description":"Company Description",
                     "category":"Category","material":"Material","is primary contact":"Is Primary Contact",
                     "main category":"Main Category","subcategory":"Subcategory","material description":"Material Description",
-                    "unit":"Unit","discipline":"Discipline","trade":"Trade","type":"Type","brands":"Brands"}
+                    "unit":"Unit","discipline":"Discipline","trade":"Trade","type":"Type","brands":"Brands","verification notes":"Verification Notes"}
                 row={display_keys[key]:value for key,value in canonical_row.items() if key in display_keys}
                 row["_source_sheet"]=sheet_name;row["_source_row"]=physical_row;row["_raw_excel"]=raw_excel
                 parsed.append((physical_row,row))
@@ -315,21 +323,21 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     org = org_cache.get(reliable_key)
     created = False
     if org is None and name_key:
-        org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True),
-            func.lower(func.trim(Organization.name_normalized)) == name_key).limit(1))
-    if org is None and valid_email:
-        org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True),
+        org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True), Organization.is_active.is_(True),
+            Organization.name_normalized == name_key).limit(1))
+    if org is None and valid_email and not name_key:
+        org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True), Organization.is_active.is_(True),
             func.lower(func.trim(Organization.business_email)) == valid_email["value"].casefold()).limit(1))
         if org is None:
-            contact = db.scalar(select(Contact).where(func.lower(func.trim(Contact.email)) == valid_email["value"].casefold()))
+            contact = db.scalar(select(Contact).join(Organization, Contact.org_id == Organization.id).where(Organization.is_active.is_(True), Contact.deleted_at.is_(None), Contact.merged_into_contact_id.is_(None), func.lower(func.trim(Contact.email)) == valid_email["value"].casefold()))
             org = db.get(Organization, contact.org_id) if contact else None
         if org and not org.is_supplier:
             raise ValueError('Contact email belongs to an unrelated organization; review this supplier')
-    if org is None and valid_phone:
-        org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True),
+    if org is None and valid_phone and not name_key:
+        org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True), Organization.is_active.is_(True),
             Organization.business_phone == valid_phone["normalized"]).limit(1))
         if org is None:
-            contact = db.scalar(select(Contact).where(Contact.phone_normalized == valid_phone["normalized"]))
+            contact = db.scalar(select(Contact).join(Organization, Contact.org_id == Organization.id).where(Organization.is_active.is_(True), Contact.deleted_at.is_(None), Contact.merged_into_contact_id.is_(None), Contact.phone_normalized == valid_phone["normalized"]))
             org = db.get(Organization, contact.org_id) if contact else None
         if org and not org.is_supplier:
             raise ValueError('Contact phone belongs to an unrelated organization; review this supplier')
@@ -393,7 +401,24 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     raw_type = raw_type or " / ".join(part for part in (main_name,sub_name) if part)
     mapping = {"path":path,"raw_trade":trade_keyword,"source_raw_trade":source_raw_trade,"raw_type":raw_type,"raw_brands":_clean(row.get("Brands")),
         "city":city,"description":desc,"unit":unit,"contact_category":contact_category,"contact_material":desc,"contact_ids":contact_ids,
-        "contacts_updated":contacts_updated} if raw_trade or raw_type or row.get("Brands") or contact_category else None
+        "contacts_updated":contacts_updated} if raw_trade or raw_type or row.get("Brands") or contact_category or desc else None
+    if mapping:
+        # Save the exact employee-to-source responsibility before attempting any
+        # taxonomy mapping. A company-level capability alone loses this detail.
+        source_trade = ensure_trade_record(db, org, batch, raw_trade=source_raw_trade or desc or contact_category,
+            raw_type=path or contact_category or raw_type, raw_brands=_clean(row.get('Brands')), raw_location=city)
+        mapping['source_trade_id'] = source_trade.id
+        mapping['import_batch_id'] = batch.id
+        mapping['actor'] = user
+        responsibilities_created = 0
+        for contact_id in set(contact_ids):
+            if db.get(ContactSupplierTrade, (contact_id, source_trade.id)) is None:
+                db.add(ContactSupplierTrade(contact_id=contact_id, trade_id=source_trade.id))
+                responsibilities_created += 1
+        db.flush()
+        if metrics is not None:
+            metrics['responsibilities_created'] = responsibilities_created
+            metrics['responsibilities_reused'] = len(set(contact_ids)) - responsibilities_created
     missing_profile = [label for label,value in (("City",org.city),("Address",org.address),("CR Number",org.cr_number),
         ("Contact Person",org.contact_name)) if not value]
     org.profile_status="complete" if not missing_profile and (org.business_email or org.business_phone or emails or phones) else "incomplete"
@@ -410,26 +435,38 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
 
 def _process_supplier_capability(db,org,mapping,batch,user,row,number):
     if not mapping:return None
-    trade=ensure_trade_record(db,org,batch,raw_trade=mapping["source_raw_trade"],raw_type=mapping["raw_type"],
+    trade=ensure_trade_record(db,org,batch,raw_trade=mapping["source_raw_trade"] or mapping.get('description') or mapping.get('contact_category', ''),raw_type=mapping["path"] or mapping.get('contact_category') or mapping["raw_type"],
         raw_brands=mapping["raw_brands"],raw_location=mapping["city"])
+    if not mapping["path"] and mapping.get('raw_trade'):
+        # Reuse a unique approved category by its full name regardless of depth.
+        key = _category_key(mapping['raw_trade'])
+        matches = db.scalars(select(Category).where(Category.active.is_(True), or_(
+            func.lower(Category.name_en) == key, Category.normalized_name == key))).all()
+        if len(matches) == 1:
+            category = matches[0]
+            mapping = dict(mapping, path=(f'{db.get(Category, category.parent_id).name_en} / ' if category.parent_id else '') + category.name_en)
     if not mapping["path"]:
-        return {"status":"pending","reason":"Category mapping needs review","categories_created":0,
-            "materials_created":0,"capability_created":False}
+        return _supplier_contact_category_capability(db, org, dict(mapping,
+            contact_category=mapping.get('raw_trade', ''),
+            contact_material=mapping.get('description') or mapping.get('raw_trade', '')))
     return apply_supplier_trade_mapping(db,org=org,trade=trade,raw_path=mapping["path"],
         raw_trade=mapping["raw_trade"],city=mapping["city"],description=mapping["description"],
         unit=mapping["unit"],actor=user,batch_id=batch.id,row_number=row.get("_source_row",number),auto_confirm=True)
 
 
-def _link_contact_capability(db,org_id,contact_ids,capability_id):
+def _link_contact_capability(db,org_id,contact_ids,capability_id,material_ids=None):
     created=0
     for contact_id in dict.fromkeys(contact_ids or []):
         contact=db.scalar(select(Contact).where(Contact.id==contact_id,Contact.org_id==org_id,
             Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None)))
         if not contact:continue
-        existing=db.scalar(select(ContactCapability.id).where(ContactCapability.contact_id==contact.id,
+        existing=db.scalar(select(ContactCapability).where(ContactCapability.contact_id==contact.id,
             ContactCapability.capability_id==capability_id))
         if not existing:
-            db.add(ContactCapability(contact_id=contact.id,capability_id=capability_id,is_primary=contact.is_primary));created+=1
+            db.add(ContactCapability(contact_id=contact.id,capability_id=capability_id,is_primary=contact.is_primary,
+                material_ids=list(dict.fromkeys(material_ids)) if material_ids is not None else None));created+=1
+        elif material_ids is not None and existing.material_ids is not None:
+            existing.material_ids = list(dict.fromkeys([*existing.material_ids, *material_ids]))
     return created
 
 
@@ -437,6 +474,7 @@ def _supplier_contact_category_capability(db,org,mapping):
     raw_category=_clean(mapping.get('contact_category'))
     parts=[part.strip() for part in raw_category.split('/') if part.strip()]
     category=None
+    categories_created = 0
     if len(parts)>=2:
         main,sub=_find_supplier_category_path(db,parts[-2],parts[-1],{})
         category=sub
@@ -444,9 +482,25 @@ def _supplier_contact_category_capability(db,org,mapping):
         key=_category_key(raw_category)
         matches=db.scalars(select(Category).where(Category.active.is_(True),or_(
             func.lower(func.trim(Category.name_en))==key,func.lower(func.trim(Category.normalized_name))==key))).all()
+        if key in DISCIPLINES:
+            matches = [item for item in matches if item.parent_id is None]
         category=matches[0] if len(matches)==1 else None
     if not category:
-        return {'status':'pending','reason':f'Category mapping needs review: {raw_category}','capability_created':False,'capability_id':None}
+        # A source trade can be the name of an approved material rather than a
+        # category. Reuse it only when its category is unambiguous.
+        material_matches = db.scalars(select(Material).where(Material.active.is_(True),
+            Material.normalized_description == normalize_text(raw_category))).all()
+        material_categories = {item.category_id for item in material_matches}
+        if len(material_categories) == 1:
+            candidate = db.get(Category, next(iter(material_categories)))
+            if candidate and candidate.active:
+                category = candidate
+    if not category:
+        resolved = resolve_supplier_path(db, raw_path=raw_category, create=True)
+        category = resolved.category
+        categories_created = resolved.categories_created
+        if not category:
+            return {'status':'pending','reason':f'Category mapping needs review: {raw_category}','capability_created':False,'capability_id':None}
     city=_clean(mapping.get('city'))
     capability=db.scalar(select(Capability).where(Capability.org_id==org.id,Capability.category_id==category.id,
         func.lower(func.trim(Capability.city))==city.casefold()).with_for_update())
@@ -457,17 +511,50 @@ def _supplier_contact_category_capability(db,org,mapping):
         db.add(capability);db.flush()
     material_name=_clean(mapping.get('contact_material'))
     warning=None
+    materials_created = 0
+    assigned_material_ids = []
     if material_name:
         names = list(dict.fromkeys(part.strip() for part in re.split(r'[;\n]+', material_name) if part.strip()))
         keys = {normalize_text(name) for name in names}
         materials = db.scalars(select(Material).where(Material.active.is_(True),Material.normalized_description.in_(keys),
             or_(Material.category_id==category.id,Material.main_category_id==category.id,Material.subcategory_id==category.id))).all()
         capability.material_ids = list(dict.fromkeys([*(capability.material_ids or []), *(material.id for material in materials)]))
+        assigned_material_ids.extend(material.id for material in materials)
         matched = {material.normalized_description for material in materials}
         missing = [name for name in names if normalize_text(name) not in matched]
+        root = db.get(Category, category.parent_id) if category.parent_id else category
+        discipline = DISCIPLINES.get(_category_key(root.name_en))
+        unresolved = []
+        for name in missing:
+            normalized = normalize_text(name)
+            unit = mapping.get('unit') or ('No.' if normalized in COUNTABLE_SUPPLIER_MATERIALS else '')
+            if not discipline or not unit:
+                unresolved.append(name)
+                continue
+            identity = material_identity(main_category=root.normalized_name or root.name_en,
+                subcategory=(category.normalized_name or category.name_en) if category.parent_id else '',
+                description=name, unit=normalize_unit(unit), specifications='', discipline=discipline)
+            material = db.scalar(select(Material).where(Material.source_identity == identity))
+            if material and not material.active:
+                unresolved.append(name)
+                continue
+            if material is None:
+                material, made = create_material_record(db, actor=mapping.get('actor'), main_category=root,
+                    subcategory=category if category.parent_id else None, description=name,
+                    unit=unit, source_unit=mapping.get('unit', ''), discipline=discipline,
+                    import_batch_id=mapping.get('import_batch_id'), create_unknown_unit=True)
+                db.flush()
+                materials_created += int(made)
+            capability.material_ids = list(dict.fromkeys([*(capability.material_ids or []), material.id]))
+            assigned_material_ids.append(material.id)
+        missing = unresolved
         if missing:warning=f'Material was not matched to the selected category: {"; ".join(missing)}'
+    if mapping.get('source_trade_id'):
+        source_trade = db.get(ImportedSupplierTrade, mapping['source_trade_id'])
+        source_trade.mapping_status = 'material_pending_review' if warning else 'mapped'
     return {'status':'saved','reason':None,'capability_id':capability.id,'capability_created':created,
-        'material_warning':warning,'categories_created':0,'materials_created':0}
+        'material_ids': list(dict.fromkeys(assigned_material_ids)),
+        'material_warning':warning,'categories_created':categories_created,'materials_created':materials_created}
 
 
 def _supplier_emails(raw_value):
@@ -639,13 +726,10 @@ def _stream_import(kind, rows, filename, user_id):
                             with db.begin_nested():
                                 if mapping.get('contact_category'):
                                     mapping_result=_supplier_contact_category_capability(db,org,mapping)
-                                    if mapping_result.get('status')=='pending':
-                                        ensure_trade_record(db,org,batch,raw_trade=mapping.get('source_raw_trade') or mapping['contact_category'],
-                                            raw_type=mapping['contact_category'],raw_brands='',raw_location=mapping.get('city',''))
                                 else:
                                     mapping_result=_process_supplier_capability(db,org,mapping,batch,db.get(User,user_id),row,number)
                                 if mapping_result and mapping_result.get('status')=='saved' and mapping_result.get('capability_id'):
-                                    row_assignments_created=_link_contact_capability(db,org.id,mapping.get('contact_ids'),mapping_result['capability_id'])
+                                    row_assignments_created=_link_contact_capability(db,org.id,mapping.get('contact_ids'),mapping_result['capability_id'],mapping_result.get('material_ids'))
                                 db.flush()
                             db.commit()
                         except Exception as exc:
@@ -701,7 +785,7 @@ def _stream_import(kind, rows, filename, user_id):
                 "progress_percent":round(index / batch_count * 100, 2) if batch_count else 100,
                 "issues":issues[-50:], "warnings":warnings[-50:], "incomplete_rows":incomplete_rows[-50:]}) + "\n"
         batch = db.get(ImportBatch, batch.id)
-        batch.status = "completed_with_errors" if failed_supplier_keys or (kind == "materials" and issues) else "completed"
+        batch.status = "completed_with_errors" if failed_supplier_keys or (kind == "materials" and issues) or (kind == "suppliers" and (capability_skipped or pending_category_mappings)) else "completed"
         batch.stage = "complete"; batch.errors = len(failed_supplier_keys) if kind == "suppliers" else len(issues)
         audit(db, db.get(User, user_id), f"{kind[:-1]}_import.completed", entity_id=batch.id, rows=len(rows),
             created=len(new_supplier_ids) if kind == "suppliers" else imported, errors=batch.errors)

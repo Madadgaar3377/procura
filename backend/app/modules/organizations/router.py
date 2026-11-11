@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, or_, func, literal
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
-from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,ContactChannel,ContactImportSource,ContactCapability,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent,utcnow
+from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,ContactChannel,ContactImportSource,ContactCapability,ContactSupplierTrade,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent,utcnow
 from app.modules.auth.router import norm_phone, norm_email
 from app.identity import normalize_phone as normalize_business_phone
 from app.security import current_user,admin_user,org_member,audit
@@ -117,7 +117,10 @@ def _contact_data(contact,db):
     if not faxes and contact.fax: faxes=[{'id':None,'value':contact.fax,'normalized_value':contact.fax,'primary':True,'source':contact.raw_phone}]
     related_ids=[contact.id,*db.scalars(select(Contact.id).where(Contact.merged_into_contact_id==contact.id))]
     sources=db.scalars(select(ContactImportSource).where(ContactImportSource.contact_id.in_(related_ids)).order_by(ContactImportSource.created_at)).all()
-    return {**{key:getattr(contact,key) for key in ('id','name','role','email','raw_email','phone','raw_phone','phone_normalized','fax','needs_review','is_primary','created_at')},'emails':emails,'phones':phones,'faxes':faxes,'import_sources':[{'source_reference':s.source_reference,'raw_name':s.raw_name,'raw_email':s.raw_email,'raw_phone':s.raw_phone} for s in sources],'source':'imported' if sources else 'admin'}
+    responsibilities = db.scalars(select(ImportedSupplierTrade).join(ContactSupplierTrade,
+        ContactSupplierTrade.trade_id == ImportedSupplierTrade.id).where(
+            ContactSupplierTrade.contact_id.in_(related_ids), ImportedSupplierTrade.org_id == contact.org_id)).all()
+    return {**{key:getattr(contact,key) for key in ('id','name','role','email','raw_email','phone','raw_phone','phone_normalized','fax','needs_review','is_primary','created_at')},'emails':emails,'phones':phones,'faxes':faxes,'import_sources':[{'source_reference':s.source_reference,'raw_name':s.raw_name,'raw_email':s.raw_email,'raw_phone':s.raw_phone} for s in sources],'source':'imported' if sources else 'admin', 'source_responsibilities':[{'id':item.id,'material':item.raw_trade,'category':item.raw_type,'mapping_status':item.mapping_status} for item in responsibilities]}
 
 @router.get('/admin/suppliers')
 def admin_supplier_list(q:str='', status_filter:str='all', limit:int=Query(26,ge=1,le=100), offset:int=Query(0,ge=0), admin:User=Depends(admin_user), db:Session=Depends(get_db)):
@@ -152,7 +155,8 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
         contact_links=db.execute(select(ContactCapability,Capability,Category).join(Capability,Capability.id==ContactCapability.capability_id).join(Category,Category.id==Capability.category_id).where(ContactCapability.contact_id.in_([c.id for c in contacts]))).all()
         for link,cap,category in contact_links:
             parent=db.get(Category,category.parent_id) if category.parent_id else None
-            materials=db.scalars(select(Material).where(Material.id.in_(cap.material_ids or []))).all() if cap.material_ids else []
+            assigned_material_ids = link.material_ids if link.material_ids is not None else cap.material_ids
+            materials=db.scalars(select(Material).where(Material.id.in_(assigned_material_ids or []))).all() if assigned_material_ids else []
             contact_capabilities[link.contact_id].append({'capability_id':cap.id,'category_id':category.id,
                 'category':f'{parent.name_en} / {category.name_en}' if parent else category.name_en,
                 'materials':[m.name_en for m in materials],'is_primary':link.is_primary})

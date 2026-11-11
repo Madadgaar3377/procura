@@ -92,7 +92,7 @@ def test_supplier_upload_imports_incomplete_contacts_and_reports_missing_fields(
         result = events[-1]
         assert result["total_rows"] == 6 and result["new_suppliers_saved"] == 5 and result["suppliers_incomplete"] == 4
         assert result["failed"] == 1 and result["supplier_failures"] == 1
-        assert result["capabilities_saved"] == 5 and result["capabilities_skipped"] == 1
+        assert result["capabilities_saved"] == 5 and result["capabilities_skipped"] == 0
         assert "Email missing" in result["incomplete_rows"][0]["reason"]
         assert "Phone missing" in result["incomplete_rows"][1]["reason"]
         assert "Company Name" in result["incomplete_rows"][3]["reason"]
@@ -214,7 +214,7 @@ def test_supplier_contact_rows_group_company_and_keep_fax_invalid_contact_and_pe
         assert result["total_supplier_records_identified"] == 1
         assert result["new_suppliers_saved"] == 1 and result["existing_suppliers_reused"] == 0
         assert result["contacts_created"] == 1
-        assert result["capabilities_saved"] == 2 and result["capabilities_skipped"] == 2
+        assert result["capabilities_saved"] == 2 and result["capabilities_skipped"] == 1
         assert result["supplier_failures"] == 0
         with Session(engine) as db:
             org = db.scalar(select(Organization).where(Organization.name == "Signify"))
