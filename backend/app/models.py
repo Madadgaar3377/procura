@@ -387,6 +387,8 @@ class Capability(TimeID, Base):
         Index('ix_capability_eligible_scope','category_id','city','eligibility_status','confirmed','accepts_rfqs'),
         UniqueConstraint('org_id','category_id','city',name='uq_capability_area'),
         Index('ix_capability_match_area','category_id','city','confirmed','accepts_rfqs'),
+        Index('ix_capability_material_links', text('(material_ids::jsonb)'),
+              postgresql_using='gin').ddl_if(dialect='postgresql'),
     )
     org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
     category_id: Mapped[str] = mapped_column(ForeignKey('categories.id'), index=True)

@@ -51,7 +51,7 @@ export default function LivePortal({role,current,entity}:{role:'buyer'|'supplier
  if(current==='quote'&&entity)return <QuoteEditor id={entity} role={role}/>;
  if(current==='quotations')return <Quotes role={role}/>;
  if(current==='compare')return <RFQSelector>{id=><Comparison id={id}/>}</RFQSelector>;
- if(current==='matches'||current==='matching')return <RFQSelector>{id=><Matching id={id}/>}</RFQSelector>;
+ if(current==='matches'||current==='matching')return <Matching/>;
  if(role==='supplier'){
   if(current==='inbox')return <Invitations/>;
   if(current==='price-book')return <PriceBook/>;

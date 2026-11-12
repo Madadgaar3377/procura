@@ -15364,6 +15364,28 @@
               }
             ],
             "title": "Profile Url"
+          },
+          "match_levels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Match Levels"
+          },
+          "brand_requirement_status": {
+            "type": "string",
+            "title": "Brand Requirement Status",
+            "default": "unverified"
+          },
+          "service_coverage_status": {
+            "type": "string",
+            "title": "Service Coverage Status",
+            "default": "unknown"
+          },
+          "invitation_review_required": {
+            "type": "boolean",
+            "title": "Invitation Review Required",
+            "default": false
           }
         },
         "type": "object",

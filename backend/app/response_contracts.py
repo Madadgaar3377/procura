@@ -128,6 +128,10 @@ class MatchSummary(MatchOut):
     invitation_status: str | None = None
     quotation_status: str | None = None
     profile_url: str | None = None
+    match_levels: list[str] = Field(default_factory=list)
+    brand_requirement_status: str = 'unverified'
+    service_coverage_status: str = 'unknown'
+    invitation_review_required: bool = False
 
 class InvitationSummary(InvitationOut):
     rfq_reference: str

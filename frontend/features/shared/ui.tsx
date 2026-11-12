@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { useLocale } from '@/lib/locale';
 import { PageLoadingState, EmptyState, ErrorState } from './loading';
 import { useToast } from '@/features/shared/toast';
+import {adminConfirm} from './admin-confirm';
 export function Heading({title,description,action}:{title:string;description?:string;action?:React.ReactNode}){const {t}=useLocale();return <div className="page-head"><div><span className="section-label">{t('WORKSPACE')}</span><h1>{t(title)}</h1>{description&&<p>{t(description)}</p>}</div>{action&&<div className="page-head-action">{action}</div>}</div>;}
 export function State({loading,error,empty,retry,reload}:{loading?:boolean;error?:Error;empty?:boolean;retry?:()=>void;reload?:()=>void}){
  if(error)return <ErrorState error={error} retry={retry||reload}/>;
@@ -19,7 +20,7 @@ export function Action({path,method='POST',body,children,onDone,confirm}:{path:s
  const {t}=useLocale();
  const toast=useToast();
  const [busy,setBusy]=useState(false);const [error,setError]=useState('');const [done,setDone]=useState(false);
- return <span className="live-action"><Button disabled={busy} variant="outline" onClick={async()=>{if(busy||confirm&&!window.confirm(t(confirm)))return;setBusy(true);setError('');setDone(false);try{await api(path,{method,body:body===undefined?undefined:json(body)});setDone(true);toast.success(t('Changes saved.'));onDone?.();}catch(e){const detail=e instanceof Error?t(e.message):t('Action failed');setError(detail);toast.error(t('Action failed'),detail);}finally{setBusy(false);}}}>{busy?t('Saving...'):typeof children==='string'?t(children):children}</Button>{error&&<span role="alert">{error}</span>}{done&&<span role="status">{t('Saved')}</span>}</span>;
+ return <span className="live-action"><Button disabled={busy} variant="outline" onClick={async()=>{if(busy||confirm&&!(await (window.location.pathname.startsWith('/app/admin')?adminConfirm(t(confirm)):Promise.resolve(window.confirm(t(confirm))))))return;setBusy(true);setError('');setDone(false);try{await api(path,{method,body:body===undefined?undefined:json(body)});setDone(true);toast.success(t('Changes saved.'));onDone?.();}catch(e){const detail=e instanceof Error?t(e.message):t('Action failed');setError(detail);toast.error(t('Action failed'),detail);}finally{setBusy(false);}}}>{busy?t('Saving...'):typeof children==='string'?t(children):children}</Button>{error&&<span role="alert">{error}</span>}{done&&<span role="status">{t('Saved')}</span>}</span>;
 }
 export function DataTable({rows,columns,action,searchable=false,paginate=true,sortable=paginate,labels={},render={}}:{searchable?:boolean;paginate?:boolean;sortable?:boolean;labels?:Record<string,string>;render?:Record<string,(row:Record<string,unknown>)=>React.ReactNode>;rows:Record<string,unknown>[];columns:string[];action?:(row:Record<string,unknown>)=>React.ReactNode}){
  const {t,arabic}=useLocale();

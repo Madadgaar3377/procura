@@ -39,43 +39,11 @@ def context_for(db, rfq):
 
 
 def eligible_orgs(db, rfq, org_ids=None):
-    pairs = set(
-        db.execute(
-            select(RFQItem.main_category_id, RFQItem.subcategory_id).where(RFQItem.rfq_id == rfq.id)
-        ).all()
-    )
-    scopes = {sub or main for main, sub in pairs if main}
-    parents = dict(
-        db.execute(
-            select(Category.id, Category.parent_id).where(Category.id.in_(scopes), Category.active.is_(True))
-        ).all()
-    )
-    required = {value.strip().casefold() for value in (rfq.required_qualifications or []) if value.strip()}
-    query = (
-        select(Capability.org_id, Capability.category_id, Capability.qualifications)
-        .join(Organization, Organization.id == Capability.org_id)
-        .where(
-            Capability.category_id.in_(scopes),
-            *eligibility_predicates(),
-            func.lower(func.trim(Capability.city)) == rfq.city.strip().casefold(),
-            Organization.is_active.is_(True),
-            Organization.is_supplier.is_(True),
-            Organization.verified_status == "verified",
-            Organization.id != rfq.buyer_org_id,
-        )
-    )
-    if org_ids is not None:
-        if not org_ids:return set()
-        query=query.where(Capability.org_id.in_(org_ids))
-    candidates=db.execute(query).all()
-    return {
-        org
-        for org, category, qualifications in candidates
-        if required.issubset({value.strip().casefold() for value in (qualifications or [])})
-        and any(
-            category == (sub or main) and (not sub or parents.get(category) == main) for main, sub in pairs
-        )
-    }
+    from app.modules.matching.service import eligible_supplier_ids
+
+    if org_ids is None:
+        org_ids = db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq.id)).all()
+    return eligible_supplier_ids(db, rfq, org_ids)
 
 
 def pending_orgs(db, rfq):
@@ -114,6 +82,7 @@ def prepare(db, event):
             raise PermanentOutboxError("Invalid invitation notification target")
         if org.id not in eligible_orgs(db, rfq, [org.id]) or invitation.status == "declined":
             event.status = "skipped"
+            event.delivery_status = "eligibility_review_required"
             return
         enqueue_org_notice(
             db,

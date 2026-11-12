@@ -1,4 +1,5 @@
 "use client";
+import {AdminModal} from "@/features/shared/admin-modal";
 import {InternationalPhone} from "@/components/ui/international-phone";
 import {useLocale} from '@/lib/locale';
 
@@ -43,7 +44,7 @@ export default function AdminUsers() {
       {row.id!==me.id&&<Action path={`admin/users/${row.id}`} method="DELETE" confirm="Permanently delete this user from the database, including sessions, verification codes and memberships? This cannot be undone." onDone={page.reload}>{t("Delete permanently")}</Action>}
     </div>}/>
     <div className="live-actions"><span>{page.data?.total||0} {t("users · Showing")} {page.data?.total?offset+1:0}–{Math.min(offset+25,page.data?.total||0)}</span><Button variant="outline" disabled={!offset} onClick={()=>setOffset(Math.max(0,offset-25))}>{t("Previous")}</Button><Button variant="outline" disabled={offset+25>=(page.data?.total||0)} onClick={()=>setOffset(offset+25)}>{t("Next")}</Button></div>
-    <dialog ref={dialog} className="live-dialog" aria-labelledby="user-editor-title" onCancel={event=>{event.preventDefault();if(!saving)setOpen(false);}} onClose={()=>setOpen(false)}><form className="live-form" onSubmit={save}>
+    <AdminModal ref={dialog} className="live-dialog" aria-labelledby="user-editor-title" onCancel={event=>{event.preventDefault();if(!saving)setOpen(false);}} onClose={()=>setOpen(false)} open={open} busy={saving} onRequestClose={()=>setOpen(false)}><form className="live-form" onSubmit={save}>
       <h2 id="user-editor-title">{editing?t('Edit user'):t('Add user')}</h2>
       <p>{editing?t('Verified phones must be changed by their owner using SMS verification in Account Settings. Leave the password blank to keep it.'):t('Users can verify by OTP, or an administrator can manually approve their contact details below.')}</p>
       <label className="field">{t("Username")}<input required minLength={3} maxLength={80} value={form.username} onChange={event=>setForm({...form,username:event.target.value})}/></label>
@@ -57,7 +58,7 @@ export default function AdminUsers() {
       {editing&&<label><input type="checkbox" checked={form.is_active} disabled={editing.id===me.id} onChange={event=>setForm({...form,is_active:event.target.checked})}/> {t("Active account")}</label>}
       {error&&<p className="notice" role="alert">{error}</p>}
       <div className="live-actions"><Button disabled={saving}>{saving?t('Saving...'):t('Save user')}</Button><Button type="button" variant="outline" disabled={saving} onClick={()=>setOpen(false)}>{t("Cancel")}</Button></div>
-    </form></dialog>
+    </form></AdminModal>
   </>;
 }
 

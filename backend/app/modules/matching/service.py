@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from sqlalchemy import func, select
+import re
+from sqlalchemy import func, select, or_, cast, literal
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
-from app.config import get_settings
 from app.models import (
     RFQ,
     Category,
@@ -23,18 +24,58 @@ from app.models import (
 from app.security import as_utc
 
 NATIONWIDE_KEYWORDS = {
-    '', 'all', 'all cities', 'nationwide', 'kingdom-wide', 'ksa', 'saudi arabia',
+    'all', 'all cities', 'nationwide', 'kingdom-wide', 'ksa', 'saudi arabia',
     'المملكة', 'جميع المدن', 'كل المدن', 'كافة المدن'
 }
 
 
-def match_and_invite(
+def material_link(db, material_id):
+    """JSON membership is evaluated by SQL, never by a supplier-wide Python scan."""
+    if db.bind.dialect.name == 'postgresql':
+        return cast(Capability.material_ids, JSONB).contains(func.jsonb_build_array(material_id))
+    values = func.json_each(Capability.material_ids).table_valued('value')
+    return select(literal(1)).select_from(values).where(values.c.value == material_id).exists()
+
+
+def capability_scope(db, material_ids, sub_ids):
+    linked_material = select(Material.id).where(
+        Material.active.is_(True),
+        or_(Material.id.in_(material_ids), Material.subcategory_id.in_(sub_ids)),
+        material_link(db, Material.id),
+    ).exists()
+    return or_(Capability.category_id.in_(sub_ids), linked_material)
+
+
+def match_and_invite(db: Session, rfq: RFQ, actor: User | None = None, limit: int | None = None,
+                     after_supplier_id: str | None = None, bounded: bool = False) -> dict:
+    """Drain relevant SQL pages; legacy limit is the page size, never a discovery cap."""
+    # Serialize every entry point (worker, publish, dispatch) on the same RFQ row.
+    db.scalar(select(RFQ).where(RFQ.id == rfq.id).with_for_update())
+    summary = {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [],
+               'evaluated_suppliers': 0, 'ineligible_suppliers': 0}
+    cursor = after_supplier_id
+    while True:
+        batch = _match_batch(db, rfq, actor, limit, cursor, True)
+        for key in summary:
+            if key == 'invitations':
+                summary[key].extend(batch.get(key, []))
+            else:
+                summary[key] += batch.get(key, 0)
+        db.flush()
+        cursor = batch.get('next_cursor')
+        if not cursor:
+            return summary
+
+
+def _match_batch(
     db: Session,
     rfq: RFQ,
     actor: User | None = None,
     limit: int | None = None,
     after_supplier_id: str | None = None,
     bounded: bool = False,
+    evaluate_only: bool = False,
+    supplier_ids: list[str] | None = None,
 ) -> dict:
     """Filter candidates in PostgreSQL, evaluate eligibility, and write matches/invitations.
 
@@ -55,7 +96,7 @@ def match_and_invite(
     item_scope = {}
     for item, material in requested:
         main = item.main_category_id or (material.main_category_id if material else None)
-        sub = item.subcategory_id or (material.subcategory_id if material and not item.main_category_id else None)
+        sub = item.subcategory_id or (material.subcategory_id if material else None)
         if not main and material:
             leaf = db.get(Category, material.category_id)
             if leaf:
@@ -69,24 +110,28 @@ def match_and_invite(
 
     category_scopes = {category_id for main, sub in item_scope.values() for category_id in (main, sub) if category_id}
     category_parents = dict(
-        db.execute(select(Category.id, Category.parent_id).where(Category.id.in_(category_scopes))).all()
+        db.execute(select(Category.id, Category.parent_id).where(Category.id.in_(category_scopes), Category.active.is_(True))).all()
     )
     exact_material_ids = {item.material_id for item, _ in requested if item.material_id}
 
-    batch_size = max(1, min(limit if limit is not None else get_settings().matching_batch_size, 100))
+    batch_size = max(1, min(limit if limit is not None else 100, 100))
+    sub_ids = {sub for _, sub in item_scope.values() if sub}
+    relevant = capability_scope(db, exact_material_ids, sub_ids)
 
     # Phase 3 & 8: Scan candidate supplier organizations offering the required category scope.
     candidate_query = (
-        select(Capability.org_id)
-        .join(Organization, Organization.id == Capability.org_id)
+        select(Organization.id)
         .where(
-            Capability.category_id.in_(category_scopes),
+            or_(select(Capability.id).where(Capability.org_id == Organization.id, relevant).exists(),
+                select(RFQMatch.id).where(RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id == Organization.id).exists()),
             Organization.id != rfq.buyer_org_id,
         )
     )
     if after_supplier_id:
-        candidate_query = candidate_query.where(Capability.org_id > after_supplier_id)
-    candidate_query = candidate_query.distinct().order_by(Capability.org_id)
+        candidate_query = candidate_query.where(Organization.id > after_supplier_id)
+    candidate_query = candidate_query.order_by(Organization.id)
+    if supplier_ids is not None:
+        candidate_query = candidate_query.where(Organization.id.in_(supplier_ids))
     if bounded:
         candidate_query = candidate_query.limit(batch_size + 1)
     candidate_ids = list(db.scalars(candidate_query).all())
@@ -103,24 +148,37 @@ def match_and_invite(
         .join(Organization, Organization.id == Capability.org_id)
         .where(
             Capability.org_id.in_(candidate_ids),
-            Capability.category_id.in_(category_scopes),
         )
     ).all()
 
-    if has_more:
-        cursor = candidate_ids[-1]
-        key = f'rfq-matching:{rfq.id}:after:{cursor}'
-        if not db.scalar(select(Outbox.id).where(Outbox.dedupe_key == key)):
-            db.add(Outbox(event='rfq.published', payload={'rfq_id': rfq.id, 'after_supplier_id': cursor}, dedupe_key=key))
-
     suppliers_caps: dict[str, list[Capability]] = {}
-    suppliers_org: dict[str, Organization] = {}
+    suppliers_org = {org.id: org for org in db.scalars(select(Organization).where(Organization.id.in_(candidate_ids)))}
     for cap, org in rows:
         suppliers_caps.setdefault(org.id, []).append(cap)
         suppliers_org[org.id] = org
 
+    linked_ids = {mid for cap, _ in rows for mid in (cap.material_ids or [])}
+    linked_materials = {m.id: m for m in db.scalars(select(Material).where(Material.id.in_(linked_ids), Material.active.is_(True)))}
+    category_names = dict(db.execute(select(Category.id, Category.name_en).where(Category.id.in_(category_scopes))).all())
+    active_categories = set(db.scalars(select(Category.id).where(Category.active.is_(True), Category.id.in_({cap.category_id for cap, _ in rows}))))
+
     rfq_city_norm = (rfq.city or '').strip().casefold()
     required = {value.strip().casefold() for value in (rfq.required_qualifications or []) if value.strip()}
+    requested_by_id = {item.id: item for item, _ in requested}
+
+    def capability_level(cap, item_id, main, sub):
+        if main not in category_parents or (sub and category_parents.get(sub) != main):
+            return None
+        material_id = requested_by_id[item_id].material_id
+        if material_id and material_id in (cap.material_ids or []) and material_id in linked_materials:
+            return 'exact material'
+        if sub and category_parents.get(sub) == main:
+            if cap.category_id == sub or any(
+                linked_materials[mid].subcategory_id == sub and linked_materials[mid].main_category_id == main
+                for mid in (cap.material_ids or []) if mid in linked_materials
+            ):
+                return 'exact subcategory'
+        return None
     # RFQ invitations require an explicitly approved capability, regardless of
     # the softer discovery-directory setting.
     require_approval = True
@@ -157,7 +215,7 @@ def match_and_invite(
         # Check C: Capability approval
         approved_caps = [
             c for c in caps
-            if (c.confirmed or not require_approval) and c.eligibility_status == 'enabled' and c.accepts_rfqs
+            if (c.confirmed or not require_approval) and c.eligibility_status == 'enabled' and c.accepts_rfqs and c.category_id in active_categories
         ]
         if not approved_caps:
             reasons = []
@@ -173,10 +231,17 @@ def match_and_invite(
             }
             continue
 
+        approved_caps = [c for c in approved_caps if any(
+            capability_level(c, item_id, main, sub) for item_id, (main, sub) in item_scope.items())]
+        if not approved_caps:
+            ineligible_diagnostics[org_id] = {
+                'org': org, 'status': 'ineligible', 'covered': set(),
+                'reasons': ['No approved material or subcategory capability supports the requested items. A broad main category does not qualify.'],
+            }
+            continue
+
         # Check D: Delivery location coverage
-        covered_cities = {c.city.strip().casefold() for c in approved_caps if c.city}
-        if org.city:
-            covered_cities.add(org.city.strip().casefold())
+        covered_cities = {c.city.strip().casefold() for c in approved_caps if c.city and c.city.strip()}
 
         has_nationwide = any(
             (c.city or '').strip().casefold() in NATIONWIDE_KEYWORDS
@@ -191,9 +256,10 @@ def match_and_invite(
             cities_disp = ', '.join(sorted({c.city for c in approved_caps if c.city})) or org.city or 'None'
             ineligible_diagnostics[org_id] = {
                 'org': org,
-                'status': 'location_mismatch',
+                'status': 'location_mismatch' if covered_cities else 'coverage_unknown',
                 'reasons': [
                     f"Delivery location not covered: supplier serves '{cities_disp}', RFQ requires '{rfq.city}'."
+                    if covered_cities else f"Service coverage is unknown; explicit coverage for {rfq.city} is required. Office city is not service coverage."
                 ],
                 'covered': set(),
             }
@@ -217,15 +283,20 @@ def match_and_invite(
         covered = set()
         exact_subcategory_items = set()
         main_category_items = set()
+        exact_items = set()
         for item_id, (main, sub) in item_scope.items():
-            exact_subcategory = sub and any(c.category_id == sub and category_parents.get(c.category_id) == main for c in approved_caps)
-            main_category = any(c.category_id == main for c in approved_caps)
-            if exact_subcategory:
+            # Coverage belongs to the capability that supports this item.
+            item_caps = [c for c in approved_caps if not rfq_city_norm or
+                         (c.city or '').strip().casefold() in NATIONWIDE_KEYWORDS | {rfq_city_norm}]
+            levels = {capability_level(c, item_id, main, sub) for c in item_caps}
+            exact_material = 'exact material' in levels
+            exact_subcategory = 'exact subcategory' in levels
+            if exact_material:
+                covered.add(item_id)
+                exact_items.add(item_id)
+            elif exact_subcategory:
                 covered.add(item_id)
                 exact_subcategory_items.add(item_id)
-            elif main_category:
-                covered.add(item_id)
-                main_category_items.add(item_id)
 
         if not covered:
             ineligible_diagnostics[org_id] = {
@@ -236,11 +307,7 @@ def match_and_invite(
             }
             continue
 
-        exact_materials = set()
-        if exact_material_ids:
-            for c in approved_caps:
-                if c.material_ids:
-                    exact_materials.update(set(c.material_ids) & exact_material_ids)
+        exact_materials = {requested_by_id[item_id].material_id for item_id in exact_items}
 
         eligible_candidates[org_id] = {
             'org': org,
@@ -248,6 +315,7 @@ def match_and_invite(
             'exact_subcategory_items': exact_subcategory_items,
             'main_category_items': main_category_items,
             'exact_materials': exact_materials,
+            'exact_items': exact_items,
             'has_exact_city': rfq_city_norm in covered_cities,
             'approved_caps': approved_caps,
         }
@@ -265,10 +333,13 @@ def match_and_invite(
         )
     )
 
+    if evaluate_only:
+        return {'eligible_ids': [candidate['org'].id for candidate in ranked]}
+
     # Persist or update RFQMatch for eligible candidates
     existing_matches = {
         m.supplier_org_id: m
-        for m in db.scalars(select(RFQMatch).where(RFQMatch.rfq_id == rfq.id)).all()
+        for m in db.scalars(select(RFQMatch).where(RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id.in_(candidate_ids))).all()
     }
     for obj in db.new:
         if isinstance(obj, RFQMatch) and obj.rfq_id == rfq.id:
@@ -276,10 +347,12 @@ def match_and_invite(
 
     for candidate in ranked:
         exact_count = len(candidate.get('exact_materials', set()))
-        score = min(100, 50 + 10 * len(candidate['covered']) + 10 * len(candidate.get('exact_subcategory_items', set())) + (10 if exact_count > 0 else 0) + (10 if candidate.get('has_exact_city') else 0))
+        score = (50 + int(30 * len(candidate['exact_items']) / len(item_scope))
+                 + int(15 * len(candidate['exact_subcategory_items']) / len(item_scope))
+                 + (5 if candidate.get('has_exact_city') else 0))
         reasons = [
             'verified company',
-            ('approved exact subcategory capability' if candidate.get('exact_subcategory_items') else 'approved main-category capability'),
+            ('Approved exact material capability' if candidate.get('exact_items') else 'Approved exact subcategory capability'),
             f'delivery city match: {rfq.city}' if candidate.get('has_exact_city') else ('service coverage matches delivery requirement' if rfq_city_norm else 'delivery location not specified; city coverage not used'),
             f"coverage:{len(candidate['covered'])}/{len(item_scope)}",
         ]
@@ -288,6 +361,41 @@ def match_and_invite(
         reasons.extend([f'item:{item_id}' for item_id in sorted(candidate['covered'])])
         reasons.extend([f'exact_subcategory_item:{item_id}' for item_id in sorted(candidate.get('exact_subcategory_items', set()))])
         reasons.extend([f'main_category_item:{item_id}' for item_id in sorted(candidate.get('main_category_items', set()))])
+        for item_id in sorted(candidate['covered']):
+            main, sub = item_scope[item_id]
+            level = 'exact material' if item_id in candidate['exact_items'] else 'exact subcategory'
+            reasons.append(f"Approved {level}: {category_names.get(sub) or requested_by_id[item_id].description}.")
+        brand_requests = []
+        brand_evidence = []
+        for item_id in sorted(candidate['covered']):
+            item = requested_by_id[item_id]
+            match = re.search(r'\bbrands?\s*:\s*([^;\n]+)', f'{item.description}\n{item.specifications}', re.I)
+            if not match:
+                continue
+            requested_brands = {value.strip().casefold() for value in re.split(r'[,/|]', match.group(1)) if value.strip()}
+            saved_brands = set()
+            main, sub = item_scope[item_id]
+            for cap in candidate['approved_caps']:
+                if not capability_level(cap, item_id, main, sub):
+                    continue
+                if rfq_city_norm and (cap.city or '').strip().casefold() not in NATIONWIDE_KEYWORDS | {rfq_city_norm}:
+                    continue
+                for mid in cap.material_ids or []:
+                    product = linked_materials.get(mid)
+                    if not product or not (product.id == item.material_id or
+                                           (sub and product.subcategory_id == sub and product.main_category_id == main)):
+                        continue
+                    for key, value in (product.specs_template or {}).items():
+                        if str(key).strip().casefold() in {'brand', 'manufacturer'} and isinstance(value, str):
+                            saved_brands.add(value.strip().casefold())
+            brand_requests.append(match.group(1).strip())
+            brand_evidence.append(bool(requested_brands) and requested_brands.issubset(saved_brands))
+        if brand_requests and all(brand_evidence):
+            reasons.append('Brand requirement matches approved saved product data: ' + ', '.join(brand_requests)
+                           + '. Availability and brand authorization require quotation confirmation.')
+        else:
+            reasons.append('Brand compliance is unverified' + (': ' + ', '.join(brand_requests) if brand_requests else '')
+                           + '; requested brands must be confirmed in the supplier quotation.')
         reasons.append('Category eligibility does not confirm technical compliance')
 
         status = 'eligible' if len(candidate['covered']) == len(item_scope) else 'partial'
@@ -310,10 +418,14 @@ def match_and_invite(
         m = existing_matches.get(org_id)
         diag_reasons = inelig['reasons'] + ['Category eligibility does not confirm technical compliance']
         if m:
-            if m.status not in {'eligible', 'partial'}:
-                m.score = 0
-                m.reasons = diag_reasons
-                m.status = inelig['status']
+            if m.status in {'eligible', 'partial'}:
+                from app.security import audit
+                audit(db, actor, 'rfq.match_eligibility_corrected', rfq.buyer_org_id, m.id,
+                      previous_status=m.status, status=inelig['status'], supplier_org_id=org_id,
+                      historical_invitation_preserved=True)
+            m.score = 0
+            m.reasons = diag_reasons
+            m.status = inelig['status']
         else:
             db.add(RFQMatch(
                 rfq_id=rfq.id,
@@ -379,16 +491,21 @@ def match_and_invite(
     elif invited:
         rfq.status = 'collecting_quotes'
 
-    # Preserve legacy worker continuation if unbounded
-    if not bounded and len(ranked) - len(invited) > len(invitations):
-        key = f'rfq-matching:{rfq.id}:after:{len(invited) + len(invitations)}'
-        if not db.scalar(select(Outbox.id).where(Outbox.dedupe_key == key)):
-            db.add(Outbox(event='rfq.published', payload={'rfq_id': rfq.id}, dedupe_key=key))
-
     return {
+        'next_cursor': candidate_ids[-1] if has_more else None,
         'eligible_suppliers': len(ranked),
         'new_invitations': len(invitations),
         'invitations': invitations,
         'evaluated_suppliers': len(candidate_ids),
         'ineligible_suppliers': len(ineligible_diagnostics),
     }
+
+
+def eligible_supplier_ids(db, rfq, org_ids):
+    """Use the matching policy for delivery/reminders without writing or inviting."""
+    eligible = set()
+    ids = list(org_ids)
+    for start in range(0, len(ids), 100):
+        result = _match_batch(db, rfq, evaluate_only=True, supplier_ids=ids[start:start + 100])
+        eligible.update(result.get('eligible_ids', []))
+    return eligible

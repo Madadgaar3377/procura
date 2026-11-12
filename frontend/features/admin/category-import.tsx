@@ -1,4 +1,6 @@
 "use client";
+import {AdminModal} from "@/features/shared/admin-modal";
+import {adminConfirm} from "@/features/shared/admin-confirm";
 import {useLocale} from '@/lib/locale';
 
 import { useEffect, useRef, useState } from 'react';
@@ -70,7 +72,7 @@ export function CategoryImport({open,onClose,onDone}:{open:boolean;onClose:()=>v
 
   async function confirm() {
     if(!result?.batch_id||result.status!=='preview'||!result.valid||busy||confirmed)return;
-    if(!window.confirm(`Create ${result.categories_to_create??0} missing category records and add ${result.arabic_labels_to_add??0} supplied Arabic labels?`))return;
+    if(!(await adminConfirm(`Create ${result.categories_to_create??0} missing category records and add ${result.arabic_labels_to_add??0} supplied Arabic labels?`)))return;
     setBusy(true);setError('');
     try {
       const outcome=await api<CategoryPreview>(`taxonomy/categories/import/${result.batch_id}/confirm`,{method:'POST'});
@@ -81,7 +83,7 @@ export function CategoryImport({open,onClose,onDone}:{open:boolean;onClose:()=>v
     } finally {setBusy(false);}
   }
 
-  return <dialog ref={dialog} className="upload-dialog category-upload-dialog" aria-labelledby="category-upload-title" onCancel={event=>{event.preventDefault();onClose();}} onClick={event=>{if(event.target===event.currentTarget)onClose();}}>
+  return <AdminModal ref={dialog} className="upload-dialog category-upload-dialog" aria-labelledby="category-upload-title" onCancel={event=>{event.preventDefault();onClose();}} onClick={event=>{if(event.target===event.currentTarget)onClose();}} open={open} busy={busy} onRequestClose={onClose}>
     <div className="upload-dialog-body live-form import-panel category-import-panel">
     <div className="panel-title"><div><h2 id="category-upload-title">{t("Upload a category hierarchy")}</h2><p>{t("Import discipline, main category, and subcategory rows without creating material records.")}</p></div><Button type="button" variant="outline" onClick={onClose}>{t("Close")}</Button></div>
     <div className="import-note"><strong>{t("Preview before saving")}</strong><span>{t("The importer detects worksheets and columns, skips reference sheets, reuses exact category paths, and writes only after confirmation.")}</span></div>
@@ -108,5 +110,5 @@ export function CategoryImport({open,onClose,onDone}:{open:boolean;onClose:()=>v
       {!!result.issues?.length&&<><h3>{t("Rows needing review")}</h3><DataTable rows={result.issues} columns={['row','reason']}/></>}
     </>}
     </div>
-  </dialog>;
+  </AdminModal>;
 }

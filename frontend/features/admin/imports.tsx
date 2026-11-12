@@ -1,4 +1,6 @@
 "use client";
+import {AdminModal} from "@/features/shared/admin-modal";
+import {adminPrompt,adminConfirm} from "@/features/shared/admin-confirm";
 import {useLocale} from '@/lib/locale';
 
 import { DragEvent, useEffect, useRef, useState } from 'react';
@@ -118,8 +120,8 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
     catch { toast.error('Could not save mapping profile','Browser storage is unavailable or full.'); }
   }
 
-  function saveProfile() {
-    const name=window.prompt('Name this reusable column mapping');
+  async function saveProfile() {
+    const name=(await adminPrompt('Name this reusable column mapping'));
     if(!name?.trim())return;
     const selected=Object.fromEntries(Object.entries({...result?.mapping,...mapping}).filter(([,value])=>typeof value==='string'&&value.trim()));
     if(!Object.keys(selected).length){toast.info('No mapping to save','Validate a workbook and select its column mapping first.');return;}
@@ -201,7 +203,7 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
     if ((busy&&!autoConfirm) || confirmed) return;
     if (!materialImport) {
       if (!result?.batch_id || result.status!=='preview' || !previewed || !result.valid) return;
-      if (!window.confirm('Import the validated rows? Imported supplier contacts will not be messaged.')) return;
+      if (!(await adminConfirm('Import the validated rows? Imported supplier contacts will not be messaged.'))) return;
       setBusy(true); setError('');
       try {
         const batchId=result.batch_id;
@@ -226,7 +228,7 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
       return;
     }
     if (!result?.batch_id) return;
-    if (!autoConfirm&&!window.confirm(`Create ${result.create ?? 0} new materials and leave ${result.unchanged ?? 0} exact matches unchanged? Invalid rows will be retained in the error report.`)) return;
+    if (!autoConfirm&&!(await adminConfirm(`Create ${result.create ?? 0} new materials and leave ${result.unchanged ?? 0} exact matches unchanged? Invalid rows will be retained in the error report.`))) return;
     setBusy(true); setError('');
     try {
       const batchId=result.batch_id;
@@ -285,7 +287,7 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
     toast.info('Error report downloaded',`${rows.length} row issues included.`);
   }
 
-  return <dialog ref={dialog} className="upload-dialog import-upload-dialog" aria-labelledby="spreadsheet-upload-title" onCancel={event=>{event.preventDefault();onClose();}} onClick={event=>{if(event.target===event.currentTarget)onClose();}}>
+  return <AdminModal ref={dialog} className="upload-dialog import-upload-dialog" aria-labelledby="spreadsheet-upload-title" onCancel={event=>{event.preventDefault();onClose();}} onClick={event=>{if(event.target===event.currentTarget)onClose();}} open={open} busy={busy} onRequestClose={onClose}>
     <div className="upload-dialog-body live-form import-panel procurement-workflow">
     <div className="panel-title"><div><h2 id="spreadsheet-upload-title">{materialImport?t('Material Master import'):t('Supplier Database import')}</h2><p>{materialImport?t('Upload materials, preview category creation, and confirm the import.'):t('Upload supplier workbooks, review the detected records, and confirm the import.')}</p></div><Button type="button" variant="outline" onClick={onClose}>{t("Close")}</Button></div>
     {materialImport&&<div className="import-note"><strong>{t("Source safe import")}</strong><span>{t("Reference and suggested worksheets are excluded. The import does not execute workbook formulas or send notifications. Categories and materials are created only after you confirm.")}</span></div>}
@@ -301,7 +303,7 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
     {materialImport&&sheetName!=='__all__'&&result?.selected_sheet!=='__all__'&&!!result?.headers?.length&&<details className="import-mapping"><summary>{t("Adjust detected columns (optional)")}</summary><div className="form-grid">{['main_category','subcategory','material_name','unit'].map(key=><label className="field" key={key}>{key.replaceAll('_',' ')}<select value={Object.hasOwn(mapping,key)?mapping[key]:result?.mapping?.[key]||''} onChange={e=>{setMapping({...mapping,[key]:e.target.value});setPreviewed(false);setConfirmed(false);}}><option value="">{t("Not provided")}</option>{result?.headers?.map(h=><option value={h} key={h}>{h}</option>)}</select></label>)}</div></details>}
     {!materialImport&&result?.status==='needs_sheet_selection'&&<label className="field">{t("Supplier worksheets")}<select value={sheetName} onChange={e=>{setSheetName(e.target.value);setResult(undefined);setPreviewed(false);}}><option value="">{t("Choose a worksheet")}</option><option value="__all__">{t("Import all eligible worksheets")}</option>{result.sheets?.filter(sheet=>sheet.eligible).map(sheet=><option value={sheet.name} key={sheet.name}>{sheet.name} · {sheet.row_count} {t("rows")}</option>)}</select><small>{t("Reference and expenditure worksheets are excluded. Choose all to include every eligible data worksheet.")}</small></label>}
     {!materialImport&&sheetName!=='__all__'&&!!result?.headers?.length&&!path.startsWith('pricebooks')&&<fieldset className="import-mapping"><legend>{t("Column mapping")}</legend><div className="form-grid">{(path.endsWith('materials')?['material_code','material_name','category_code','unit']:['supplier_name','trade','contact_name','phone','email','city','brands','website']).map(key=><label className="field" key={key}>{key.replaceAll('_',' ')}<select value={mapping[key]||result?.mapping?.[key]||''} onChange={e=>{setMapping({...mapping,[key]:e.target.value});setPreviewed(false);setConfirmed(false);}}><option value="">{t("Use detected column")}</option>{result?.headers?.map(h=><option value={h} key={h}>{h}</option>)}</select></label>)}</div></fieldset>}
-    {!!result?.headers?.length&&<div className="live-actions"><label className="field">{t("Saved mapping profiles")}<select value="" onChange={e=>applyProfile(e.target.value)}><option value="">{t("Choose a saved profile")}</option>{profiles.map(profile=><option key={profile.name} value={profile.name}>{profile.name}</option>)}</select></label><Button type="button" variant="outline" onClick={saveProfile}>{t("Save mapping profile")}</Button>{profiles.length>0&&<Button type="button" variant="outline" onClick={()=>{const name=window.prompt('Enter the saved profile name to remove');if(name)storeProfiles(profiles.filter(profile=>profile.name!==name));}}>{t("Remove profile")}</Button>}</div>}
+    {!!result?.headers?.length&&<div className="live-actions"><label className="field">{t("Saved mapping profiles")}<select value="" onChange={e=>applyProfile(e.target.value)}><option value="">{t("Choose a saved profile")}</option>{profiles.map(profile=><option key={profile.name} value={profile.name}>{profile.name}</option>)}</select></label><Button type="button" variant="outline" onClick={saveProfile}>{t("Save mapping profile")}</Button>{profiles.length>0&&<Button type="button" variant="outline" onClick={async ()=>{const name=(await adminPrompt('Enter the saved profile name to remove'));if(name)storeProfiles(profiles.filter(profile=>profile.name!==name));}}>{t("Remove profile")}</Button>}</div>}
     <div className="live-actions"><Button type="button" disabled={busy||(!file&&!result?.batch_id)||(!!result?.batch_id&&!['needs_review','needs_discipline','needs_sheet_selection','failed'].includes(result.status)&&!(result.status==='preview'&&previewSettingsChanged))} onClick={()=>void preview()}>{busy?t('Uploading…'):result?.batch_id?t('Recheck preview'):t('Upload and analyze')}</Button>{materialImport&&<Button type="button" variant="outline" disabled={!result?.batch_id||result.status!=='preview'||!previewed||busy||confirmed||!result.valid} onClick={()=>void confirm()}>{busy?t('Importing…'):t('Confirm material import')}</Button>}</div>
     {busy&&uploadProgress!==null&&<div className={`category-upload-status${validating?' is-validating':''}`} role="status" aria-live="polite"><div className="category-upload-copy"><span className="category-upload-orb"><i/></span><div><strong>{validating?t('Workbook received'):t('Uploading workbook')}</strong><small>{validating?t('Staging a private copy and starting background worksheet analysis…'):t('Keep this window open while your workbook uploads.')}</small></div><b>{validating?t('Starting…'):`${uploadProgress}%`}</b></div><div className={`category-upload-track${validating?' is-indeterminate':''}`}><i style={validating?undefined:{width:`${uploadProgress}%`}}/></div></div>}
     {(busy&&uploadProgress===null||materialImport&&!!result&&['uploaded','processing'].includes(result.status))&&<div className="import-progress" role="status" aria-live="polite"><i/><span>{result?.stage==='apply'?`Saving ${result.completed_rows??0} of ${result.rows??0} material rows (${result.progress_percent??0}%).`:result?.rows?`Analyzing ${result.completed_rows??0} of ${result.rows} worksheet rows…`:t('Workbook staged privately. Detecting worksheet structure and columns…')}</span></div>}
@@ -324,5 +326,5 @@ export function ImportUpload({path,open,onClose,onDone}:{path:string;open:boolea
     {!materialImport&&<div className="live-actions"><Button type="button" variant="outline" disabled={!result?.batch_id||result.status!=='preview'||!previewed||!result.valid||busy||confirmed} onClick={()=>void confirm()}>{busy?t('Importing…'):t('Confirm import')}</Button></div>}
     {!materialImport&&result&&<><div className="import-summary" role="status"><IconFileSpreadsheet size={19}/><div><strong>{t(result.status.replaceAll('_',' '))}</strong><small>{result.rows??0} {t('rows')} · {result.completed_rows??0} {t('processed')} · {result.valid??0} {t('valid')} · {result.invalid??result.errors??0} {t('need review')}</small></div><span>{result.progress_percent??(confirmed?100:0)}%</span></div>{['queued','processing'].includes(result.status)&&<div className="import-progress" role="status" aria-live="polite"><i/><span>{t('Saving supplier records in background batches')} · {result.completed_rows??0} / {result.rows??0}</span></div>}{!!result.issues?.length&&<div className="import-issues-head"><h3>{t('Rows needing review')}</h3><Button type="button" variant="outline" onClick={()=>void downloadErrors()}><IconDownload size={15}/>{t('Download failed rows')}</Button></div>}{Array.isArray(result.preview)&&<DataTable rows={result.preview} columns={['row','name','status','issue','sheet']}/>}</>}
     </div>
-  </dialog>;
+  </AdminModal>;
 }

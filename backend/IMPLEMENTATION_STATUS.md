@@ -90,3 +90,10 @@ Actual retained-source replay in isolated PostgreSQL: 47 rows -> 28 companies, 4
 
 Admin supplier rows now support individual selection, select-all on the current page, clear selection and bulk deletion through the existing archive endpoint. Single and bulk deletion no longer request a reason; the API accepts an omitted reason while retaining admin authorization, explicit confirmation and audit records. Bulk results report successes/failures and disable repeated actions during processing. Organization history, contacts and capabilities remain retained. Verification: frontend typecheck passed; admin supplier tests 8 passed; backend suite excluding the hosted PostgreSQL smoke test 60 passed. OpenAPI/generated frontend types refreshed. No live data was deleted or archived during implementation.
 
+
+# Distribution Panels matching incident (2026-11-11)
+
+See docs/RFQ_DISTRIBUTION_MATCHING_FIX_REPORT.md for confirmed PostgreSQL findings, changed files, scoped correction and rollout steps. Fixed main-category fallback, unknown service coverage, incomplete candidate traversal, stale match eligibility and notification eligibility drift. Added human-readable match levels, brand evidence, coverage and historical invitation review. Optional concurrent material-link GIN migration r18f4a932c70 is prepared, not applied live.
+
+Validation: 97 backend tests passed, 5 skipped; frontend typecheck passed; frontend tests 57 passed, 1 unrelated sitemap test failed because no server listened on port 3000. Real PostgreSQL rollback preview: 7 evaluated, 1 eligible active ABB after an audited taxonomy correction, 6 rejected; 1 hypothetical new invitation, rerun 0 new invitations, 0 unrelated invitations. Actual-RFQ invitation-to-quotation API workflow passed using temporary QA memberships and a synthetic quote, entirely rolled back. Active ABB has zero real memberships. No production code/schema/business changes were committed, messages delivered, historical invitations revoked or landing page modified. API/worker deployment details and an authorized ABB representative account remain required for handover.
+

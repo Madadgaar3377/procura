@@ -5,6 +5,7 @@ import "./workspace.css";
 import "./marketing.css";
 import "./industries.css";
 import "./supplier-profile.css";
+import "./matching.css";
 import {configuredSiteURL} from '@/features/marketing/seo';
 import { LocaleProvider } from "@/lib/locale";
 import { ToastProvider } from "@/features/shared/toast";
