@@ -648,3 +648,13 @@ Index('uq_membership_recommended', MembershipPlan.recommended, unique=True,
       sqlite_where=text('recommended = 1 AND archived = 0'))
 Index('ix_membership_public_order', MembershipPlan.publication_status, MembershipPlan.visible_on_website, MembershipPlan.display_order)
 Index('ix_subscriptions_plan_id', Subscription.plan_id)
+
+# Keep analytics indexes aligned with migration s29a5d04e781.
+Index('ix_dashboard_org_created', Organization.created_at)
+Index('ix_dashboard_rfq_created', RFQ.created_at)
+Index('ix_dashboard_rfq_published', RFQ.published_at)
+Index('ix_dashboard_quote_submitted', Quotation.submitted_at)
+Index('ix_dashboard_verification_reviewed', Verification.reviewed_at)
+Index('ix_dashboard_verification_org_status', Verification.org_id, Verification.status, Verification.reviewed_at)
+Index('ix_dashboard_import_created', ImportBatch.created_at)
+Index('ix_dashboard_outbox_event_status', Outbox.event, Outbox.status)

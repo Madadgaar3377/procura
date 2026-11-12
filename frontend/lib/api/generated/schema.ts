@@ -47,6 +47,12 @@ export interface Schemas {
   "ContactMergeInput": { "canonical_contact_id": string; "duplicate_contact_ids": Array<string>; "confirm": boolean; "reason": string };
   "ContactReceipt": { "reference": string; "message": string };
   "ContactReviewInput": { "needs_review": boolean };
+  "DashboardActivity": { "id": string; "kind": string; "label": string; "status": string; "timestamp": string; "href": string };
+  "DashboardAlert": { "key": string; "count": number; "href": string };
+  "DashboardAnalytics": { "updated_at": string; "days": number; "timezone": string; "kpis": Record<string, number>; "series": Array<Schemas["DashboardSeries"]>; "statuses": Array<Schemas["DashboardStatus"]>; "matching": Record<string, number>; "alerts": Array<Schemas["DashboardAlert"]>; "activity": Array<Schemas["DashboardActivity"]> };
+  "DashboardDays": 7 | 30 | 90;
+  "DashboardSeries": { "date": string; "rfqs_created": number; "rfqs_published": number; "suppliers_created": number; "suppliers_verified": number };
+  "DashboardStatus": { "status": string; "count": number };
   "DatabaseConnectStatus": { "connected": boolean; "status": "connected" | "disconnected"; "message": string; "error"?: string | null; "checked_at": string };
   "Decision": { "approve": boolean; "notes": string };
   "DeliveryStatusOut": { "id": string; "outbox_id": string; "event": string; "channel": string; "status": string; "created_at": string; "provider_status": string | null; "provider_message_id": string | null; "provider_response_code": number | null; "last_error": string | null };
@@ -377,6 +383,7 @@ export interface Operations {
   "GET /api/v1/admin/users/{user_id}": { body: never; response: Schemas["UserOut"] };
   "PATCH /api/v1/admin/users/{user_id}": { body: Schemas["AdminUserUpdate"]; response: Schemas["UserOut"] };
   "DELETE /api/v1/admin/users/{user_id}": { body: never; response: unknown };
+  "GET /api/v1/admin/dashboard/analytics": { body: never; response: Schemas["DashboardAnalytics"] };
   "GET /api/v1/db/connect/status": { body: never; response: Schemas["DatabaseConnectStatus"] };
   "GET /api/v1/db/performance": { body: never; response: unknown };
   "GET /api/v1/reports/summary": { body: never; response: Schemas["ReportSummary"] };

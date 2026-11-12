@@ -13,8 +13,8 @@ import { MaterialRow, type MaterialLine } from './material-row';
 import { useLocale } from '@/lib/locale';
 import { Button } from '@/components/ui/button';
 import { FileUploadStatus } from '@/features/shared/file-upload-status';
-import { Matching, FavoriteSuppliers } from './matched-suppliers';
-export { Matching, FavoriteSuppliers };
+import { Matching } from './matched-suppliers';
+export { Matching };
 type Line=Schemas['RFQLineIn'];
 export function RFQList({role}:{role:string}){
  const {t}=useLocale();

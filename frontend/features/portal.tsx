@@ -12,6 +12,7 @@ import {Invitations,Quotes,QuoteEditor,Comparison} from '@/features/quotations/w
 import {PriceBook,Capabilities,Membership} from '@/features/suppliers/workspace';
 import {AdminCompanies,Verification,Taxonomy,Imports,AdminMembership,ContactInbox} from '@/features/admin/workspace';
 import BusinessDashboard from '@/features/dashboard/workspace';
+import AdminDashboard from '@/features/admin/dashboard';
 import AdminUsers from '@/features/admin/users';
 import Notifications from '@/features/notifications/workspace';
 import Settings from '@/features/auth/settings';
@@ -39,7 +40,7 @@ function Audit(){
  const {t}=useLocale();const q=useServerList<Schemas['AuditOut']>('admin/audit','Search audit log');return <><Heading title={t("Audit log")}/>{q.controls}<State {...q}/><DataTable paginate={false} rows={q.rows} columns={['created_at','action','actor_user_id','org_id','entity_id']}/></>;}
 export default function LivePortal({role,current,entity}:{role:'buyer'|'supplier'|'admin';current:string;entity?:string}){
  const {t}=useLocale();
- if(current==='dashboard')return role==='admin'?<Dashboard role={role}/>:<BusinessDashboard role={role}/>;
+ if(current==='dashboard')return role==='admin'?<AdminDashboard/>:<BusinessDashboard role={role}/>;
  if(current==='reports')return <Reports workspace={role}/>;
  if(current==='company'||current==='company-verification')return <Company role={role}/>;
  if(current==='settings'&&role==='admin')return <><Settings/><PlatformSettings/></>;

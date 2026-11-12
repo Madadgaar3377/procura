@@ -6,6 +6,7 @@ from sqlalchemy import and_, case, func, or_, select, inspect, table, column, de
 from sqlalchemy.orm import Session, aliased
 
 from app import catalog_cache
+from app.response_cache import cached_get
 from app.database import get_db
 from app.models import Category, Material, MaterialRevision, MeasurementUnit, User, uid, Capability
 from app.modules.taxonomy.category_imports import router as category_imports
@@ -81,6 +82,7 @@ def industry_review_candidates(user:User=Depends(admin_user),db:Session=Depends(
         for category,parent,no_supported,mismatched in rows]
 
 @router.get('/industry-catalog',response_model=IndustryCatalogPage)
+@cached_get('public-industry-catalog', 300)
 def industry_catalog(q:str=Query('',max_length=100),discipline:str|None=None,
                      page:int=Query(1,ge=1,le=10000),limit:int=Query(9,ge=1,le=24),
                      db:Session=Depends(get_db)):
@@ -180,14 +182,14 @@ def categories(parent_id:str|None=None,q:str='',limit:int|None=Query(None,ge=1,l
         query=query.order_by(Category.sort_order,Category.name_en,Category.id).offset(offset)
         if limit is not None:query=query.limit(limit)
         value=[record(c) for c in db.scalars(query).all()]
-        catalog_cache.set('category-options-v2',params,value,ttl=60,epoch=epoch)
+        catalog_cache.set('category-options-v2',params,value,ttl=1800,epoch=epoch)
         return value
     cache_epoch = catalog_cache.version()
     cached = catalog_cache.get('categories', {'active': True, 'sort': 'name_en'}, cache_epoch)
     if cached is not None:
         return cached
     value = [record(c) for c in db.scalars(select(Category).where(Category.active.is_(True)).order_by(Category.name_en, Category.id)).all()]
-    catalog_cache.set('categories', {'active': True, 'sort': 'name_en'}, value, ttl=180, epoch=cache_epoch)
+    catalog_cache.set('categories', {'active': True, 'sort': 'name_en'}, value, ttl=1800, epoch=cache_epoch)
     return value
 
 @router.get('/categories/archived',response_model=list[CategoryOut])
@@ -450,7 +452,7 @@ def materials(q:str='',category_id:str|None=None,main_category_id:str|None=None,
     else:
         ordering=(Material.code,Material.id)
     rows=[record(m) for m in db.scalars(query.order_by(*ordering).limit(limit).offset(offset)).all()]
-    catalog_cache.set('taxonomy-materials',params,rows,epoch=cache_epoch)
+    catalog_cache.set('taxonomy-materials',params,rows,ttl=300,epoch=cache_epoch)
     return rows
 
 @router.get('/materials/manage',response_model=MaterialFilterPage)

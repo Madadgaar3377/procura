@@ -27,6 +27,7 @@ from app.modules.quotations.router import router as quotations
 from app.modules.notifications.router import router as notifications
 from app.modules.memberships.router import router as memberships
 from app.modules.admin.router import router as admin
+from app.modules.admin import analytics as admin_analytics  # register read-only analytics
 from app.modules.database.router import router as database_status
 from app.modules.reports.router import router as reports
 from app.modules.contact.router import router as contact
@@ -71,6 +72,10 @@ async def _development_import_worker() -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    from app.redis_client import get_redis, close_redis
+    # Handlers and rate limiting use synchronous SQLAlchemy/Redis in worker
+    # threads; keep pool lifecycle operations off the event loop too.
+    await asyncio.to_thread(get_redis)
     worker = None
     if settings.app_env.casefold() == 'development':
         worker = asyncio.create_task(_development_import_worker(), name='development-import-worker')
@@ -82,6 +87,7 @@ async def lifespan(_: FastAPI):
             worker.cancel()
             with suppress(asyncio.CancelledError):
                 await worker
+        await asyncio.to_thread(close_redis)
 
 
 app=FastAPI(title='Saudi B2B Procurement RFQ API',version='0.1.0',description='Working development MVP: buyer, supplier, RFQ, matching, quotes, admin. No production guarantees.',lifespan=lifespan)
@@ -121,10 +127,10 @@ async def headers(request:Request,call_next):
             allowed_origins=set(settings.cors_origin_list)
             if cookie_mutation and request.headers.get('origin') not in allowed_origins:
                 raise HTTPException(403,'Request origin rejected')
-            enforce_rate_limit(request,scope='api-ip',identity='all',limit=1200,window_seconds=60)
+            await asyncio.to_thread(enforce_rate_limit,request,scope='api-ip',identity='all',limit=1200,window_seconds=60)
             authorization=request.headers.get('Authorization','')
             principal=authorization if authorization.startswith('Bearer ') else request.cookies.get('procura_access','anonymous')
-            enforce_rate_limit(
+            await asyncio.to_thread(enforce_rate_limit,
                 request,
                 scope='api-principal',
                 identity=principal,
@@ -135,7 +141,7 @@ async def headers(request:Request,call_next):
                 request.url.path.startswith('/api/v1/imports/')
                 or request.url.path.endswith('/bulk-import')
             ):
-                enforce_rate_limit(
+                await asyncio.to_thread(enforce_rate_limit,
                     request,
                     scope='api-file-import',
                     identity=principal,

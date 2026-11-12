@@ -1,17 +1,19 @@
-"""Bounded L1/L2 cache for public reference data (Material Master, taxonomy, plans).
+"""Bounded L1/L2 cache for safe public projections and scoped admin aggregates.
 
-Authentication is checked by each endpoint before reading this cache. No tenant,
-pricing, RFQ, contact, or authentication data belongs here.
+Endpoints must check authorization before reading. Private contacts, rates,
+RFQ details, documents, and authentication secrets must never be stored here.
+Explicitly published contact channels follow the supplier's publication consent.
 """
 from __future__ import annotations
 
 import json
 import logging
-import random
+import secrets
 import threading
 from collections import OrderedDict
 from hashlib import sha256
-from time import monotonic
+from functools import wraps
+from time import monotonic, perf_counter
 from typing import Any, cast
 
 from redis.exceptions import RedisError
@@ -33,8 +35,37 @@ _MAX_ITEMS = 256
 _MAX_BYTES = 4 * 1024 * 1024
 _MAX_VALUE_BYTES = 256 * 1024
 _L1_TTL = 45
+_EPOCH_KEY = 'procurement:catalog:v2:epoch'
+_TIMINGS: dict[str, dict[str, float]] = {}
 
 
+def _synchronized(handler):
+    @wraps(handler)
+    def synchronized(*args, **kwargs):
+        with _LOCK:
+            return handler(*args, **kwargs)
+    return synchronized
+
+
+def _timed(operation):
+    def decorate(handler):
+        @wraps(handler)
+        def timed(*args, **kwargs):
+            started = perf_counter()
+            try:
+                return handler(*args, **kwargs)
+            finally:
+                elapsed = (perf_counter() - started) * 1000
+                with _LOCK:
+                    row = _TIMINGS.setdefault(operation, {'calls': 0, 'total_ms': 0.0, 'max_ms': 0.0})
+                    row['calls'] += 1
+                    row['total_ms'] += elapsed
+                    row['max_ms'] = max(row['max_ms'], elapsed)
+        return timed
+    return decorate
+
+
+@_synchronized
 def _epoch() -> int:
     global _PENDING_INVALIDATION
     client = get_redis()
@@ -42,11 +73,16 @@ def _epoch() -> int:
         return -1 if get_settings().redis_url else _LOCAL_VERSION
     try:
         if _PENDING_INVALIDATION:
-            client.incr('procurement:catalog:v1:epoch')
+            client.set(_EPOCH_KEY, secrets.randbits(60), nx=True)
+            client.incr(_EPOCH_KEY)
             _PENDING_INVALIDATION = False
-        val = client.get('procurement:catalog:v1:epoch')
+        val = client.get(_EPOCH_KEY)
+        if val is None:
+            # Eviction/restart must not resurrect entries from an old epoch 0.
+            client.set(_EPOCH_KEY, secrets.randbits(60), nx=True)
+            val = client.get(_EPOCH_KEY)
         return int(str(val or 0))
-    except RedisError as exc:
+    except (RedisError, OSError, ValueError) as exc:
         mark_redis_failure(exc)
         return -1
 
@@ -54,18 +90,22 @@ def _epoch() -> int:
 def _key(namespace: str, params: dict[str, Any], epoch: int) -> str:
     canonical = json.dumps(params, sort_keys=True, ensure_ascii=False, separators=(',', ':'), default=str)
     digest = sha256(canonical.encode('utf-8')).hexdigest()
-    return f'procurement:catalog:v1:{epoch}:{namespace}:{digest}'
+    return f'procurement:catalog:v2:{epoch}:{namespace}:{digest}'
 
 
+@_timed('version')
 def version() -> int:
     """Take a catalog epoch snapshot for a read; use it for any ensuing cache write."""
     return _epoch()
 
 
+@_timed('read')
 def get(namespace: str, params: dict[str, Any], epoch: int | None = None) -> Any | None:
     global _L1_BYTES, _HITS, _MISSES, _REDIS_HITS, _REDIS_MISSES
     epoch = _epoch() if epoch is None else epoch
     if epoch < 0:
+        with _LOCK:
+            _MISSES += 1
         return None
     key = _key(namespace, params, epoch)
     now = monotonic()
@@ -86,24 +126,31 @@ def get(namespace: str, params: dict[str, Any], epoch: int | None = None) -> Any
         return None
     try:
         redis_payload = cast(str | None, client.get(key))
-    except RedisError as exc:
+        remaining = client.ttl(key) if redis_payload else 0
+    except (RedisError, OSError) as exc:
         mark_redis_failure(exc)
+        with _LOCK:
+            _MISSES += 1
         return None
     if not redis_payload or len(redis_payload.encode('utf-8')) > _MAX_VALUE_BYTES:
         with _LOCK:
             _REDIS_MISSES += 1
             _MISSES += 1
         return None
-    _store_l1(key, redis_payload)
     try:
+        decoded = json.loads(redis_payload)
+        # Never extend an L2 value's life with a new, longer L1 TTL.
+        if remaining > 0:
+            _store_l1(key, redis_payload, remaining)
         with _LOCK:
             _REDIS_HITS += 1
             _HITS += 1
-        return json.loads(redis_payload)
+        return decoded
     except (TypeError, json.JSONDecodeError):
         return None
 
 
+@_timed('write')
 def set(namespace: str, params: dict[str, Any], value: Any, ttl: int = 90, epoch: int | None = None) -> None:
     epoch = _epoch() if epoch is None else epoch
     if epoch < 0:
@@ -116,17 +163,17 @@ def set(namespace: str, params: dict[str, Any], value: Any, ttl: int = 90, epoch
     size = len(payload.encode('utf-8'))
     if size > _MAX_VALUE_BYTES:
         return
-    _store_l1(key, payload)
+    _store_l1(key, payload, ttl)
     client = get_redis()
     if client is None:
         return
     try:
-        client.setex(key, max(1, ttl + random.randint(0, max(1, ttl // 5))), payload)
-    except RedisError as exc:
+        client.setex(key, max(1, ttl), payload)
+    except (RedisError, OSError) as exc:
         mark_redis_failure(exc)
 
 
-def _store_l1(key: str, payload: str) -> None:
+def _store_l1(key: str, payload: str, ttl: int = _L1_TTL) -> None:
     global _L1_BYTES
     size = len(payload.encode('utf-8'))
     if size > _MAX_VALUE_BYTES:
@@ -135,14 +182,15 @@ def _store_l1(key: str, payload: str) -> None:
         old = _L1.pop(key, None)
         if old:
             _L1_BYTES -= old[2]
-        _L1[key] = (monotonic() + _L1_TTL, payload, size)
+        _L1[key] = (monotonic() + min(_L1_TTL, ttl), payload, size)
         _L1_BYTES += size
         while len(_L1) > _MAX_ITEMS or _L1_BYTES > _MAX_BYTES:
             _, (_, _, removed_size) = _L1.popitem(last=False)
             _L1_BYTES -= removed_size
 
 
-def invalidate() -> None:
+@_synchronized
+def invalidate() -> bool:
     """Advance the shared cache namespace after a committed catalog mutation."""
     global _LOCAL_VERSION, _L1_BYTES, _PENDING_INVALIDATION
     with _LOCK:
@@ -152,12 +200,16 @@ def invalidate() -> None:
     client = get_redis()
     _PENDING_INVALIDATION = bool(get_settings().redis_url)
     if client is None:
-        return
+        return not bool(get_settings().redis_url)
     try:
-        client.incr('procurement:catalog:v1:epoch')
+        # Seed before increment so loss of the epoch key cannot reuse version 1.
+        client.set(_EPOCH_KEY, secrets.randbits(60), nx=True)
+        client.incr(_EPOCH_KEY)
         _PENDING_INVALIDATION = False
-    except RedisError as exc:
+        return True
+    except (RedisError, OSError) as exc:
         mark_redis_failure(exc)
+        return False
 
 
 def metrics() -> dict[str, Any]:
@@ -175,4 +227,6 @@ def metrics() -> dict[str, Any]:
             'hit_ratio_percent': hit_ratio,
             'redis_hits': _REDIS_HITS,
             'redis_misses': _REDIS_MISSES,
+            'timings': {name: {**row, 'mean_ms': round(row['total_ms'] / row['calls'], 3)}
+                        for name, row in _TIMINGS.items()},
         }

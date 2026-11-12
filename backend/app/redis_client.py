@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import logging
+from threading import RLock
 from time import monotonic, perf_counter
 from typing import Any
 
 from redis import ConnectionPool, Redis
 from redis.exceptions import RedisError
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
 from app.config import get_settings
 
@@ -18,6 +21,7 @@ _REDIS_DISABLED_UNTIL: float = 0.0
 _LAST_FAILURE_LOG: float = 0.0
 _COOLDOWN_SECONDS: float = 10.0
 _COMMAND_TIMEOUT: float = 0.5
+_POOL_LOCK = RLock()
 
 
 def _init_pool() -> ConnectionPool | None:
@@ -33,6 +37,8 @@ def _init_pool() -> ConnectionPool | None:
             socket_timeout=_COMMAND_TIMEOUT,
             health_check_interval=30,
             decode_responses=True,
+            retry=Retry(NoBackoff(), 0),
+            retry_on_timeout=False,
         )
     return _POOL
 
@@ -47,12 +53,13 @@ def get_redis() -> Redis | None:
     if now < _REDIS_DISABLED_UNTIL:
         return None
     try:
-        if _CLIENT is None:
-            pool = _init_pool()
-            if pool is None:
-                return None
-            _CLIENT = Redis(connection_pool=pool)
-        return _CLIENT
+        with _POOL_LOCK:
+            if _CLIENT is None:
+                pool = _init_pool()
+                if pool is None:
+                    return None
+                _CLIENT = Redis(connection_pool=pool)
+            return _CLIENT
     except Exception as exc:
         mark_redis_failure(exc)
         return None
@@ -118,3 +125,16 @@ def redis_metrics() -> dict[str, Any]:
         "cooldown_remaining_seconds": max(0.0, round(_REDIS_DISABLED_UNTIL - now, 1)) if in_cooldown else 0.0,
         "latency_ms": redis_latency_ms() if available else None,
     }
+
+
+def close_redis() -> None:
+    """Release the shared pool on application shutdown (also safe after startup failure)."""
+    global _POOL, _CLIENT, _REDIS_DISABLED_UNTIL
+    with _POOL_LOCK:
+        if _CLIENT is not None:
+            _CLIENT.close()
+        if _POOL is not None:
+            _POOL.disconnect()
+        _CLIENT = None
+        _POOL = None
+        _REDIS_DISABLED_UNTIL = 0.0

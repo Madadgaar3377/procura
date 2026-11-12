@@ -8,10 +8,12 @@ from app.database import get_db
 from app.models import Capability, Category, Material, Organization
 from app.modules.capabilities.public_details import published_details
 from app.response_contracts import PublicSupplier, PublicSupplierPage, PublicSupplierProductPage
+from app.response_cache import cached_get
 
 router=APIRouter(prefix='/directory',tags=['Verified Supplier Directory'])
 
 @router.get('/suppliers/{supplier_id}/products',response_model=PublicSupplierProductPage)
+@cached_get('public-supplier-products', 120)
 def supplier_products(supplier_id:str,db:Annotated[Session,Depends(get_db)],q:str=Query('',max_length=100),
         main_category_id:str|None=None,subcategory_id:str|None=None,page:int=Query(1,ge=1,le=10000),
         limit:int=Query(20,ge=1,le=100)):
@@ -94,6 +96,7 @@ def public_profiles(db: Session, organizations, include_categories=False):
             for org in organizations]
 
 @router.get('/suppliers',response_model=list[PublicSupplier]|PublicSupplierPage,response_model_exclude_unset=True)
+@cached_get('public-supplier-directory', 60)
 def discover(db:Annotated[Session,Depends(get_db)],category_id:str|None=None,city:str|None=None,q:str=Query('',max_length=80),
              main_category_id:str|None=None,subcategory_id:str|None=None,
              service_city:str|None=Query(None,max_length=100),verified:bool|None=None,
@@ -197,6 +200,7 @@ def add_coverage(db,profiles,include_categories=False,include_groups=False,share
         profile['capability_labels_ar']=sorted({row.name_ar or row.name_en for row in selected})
 
 @router.get('/suppliers/{supplier_id}',response_model=PublicSupplier,response_model_exclude_unset=True)
+@cached_get('public-supplier-profile', 120)
 def supplier_detail(db:Annotated[Session,Depends(get_db)],supplier_id:str,include_categories:bool=False,include_coverage:bool=False,include_profile:bool=False):
     from fastapi import HTTPException
     org=db.execute(select(Organization.id,Organization.name,Organization.city).where(
@@ -211,6 +215,7 @@ def supplier_detail(db:Annotated[Session,Depends(get_db)],supplier_id:str,includ
 
 
 @router.get('/suppliers/{supplier_id}/related',response_model=list[PublicSupplier],response_model_exclude_unset=True)
+@cached_get('public-related-suppliers', 60)
 def related_suppliers(supplier_id:str,db:Annotated[Session,Depends(get_db)],limit:int=Query(4,ge=1,le=8)):
     from fastapi import HTTPException
     current=db.scalar(select(Organization.id).where(Organization.id==supplier_id,

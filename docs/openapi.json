@@ -11171,6 +11171,53 @@
         }
       }
     },
+    "/api/v1/admin/dashboard/analytics": {
+      "get": {
+        "tags": [
+          "Administration & Reporting"
+        ],
+        "summary": "Analytics",
+        "operationId": "analytics_api_v1_admin_dashboard_analytics_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DashboardDays",
+              "default": 30
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardAnalytics"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/db/connect/status": {
       "get": {
         "tags": [
@@ -11210,7 +11257,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/api/v1/reports/summary": {
@@ -14381,6 +14433,200 @@
           "needs_review"
         ],
         "title": "ContactReviewInput"
+      },
+      "DashboardActivity": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Timestamp"
+          },
+          "href": {
+            "type": "string",
+            "title": "Href"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "label",
+          "status",
+          "timestamp",
+          "href"
+        ],
+        "title": "DashboardActivity"
+      },
+      "DashboardAlert": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "href": {
+            "type": "string",
+            "title": "Href"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "count",
+          "href"
+        ],
+        "title": "DashboardAlert"
+      },
+      "DashboardAnalytics": {
+        "properties": {
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "days": {
+            "type": "integer",
+            "title": "Days"
+          },
+          "timezone": {
+            "type": "string",
+            "title": "Timezone"
+          },
+          "kpis": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Kpis"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardSeries"
+            },
+            "type": "array",
+            "title": "Series"
+          },
+          "statuses": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardStatus"
+            },
+            "type": "array",
+            "title": "Statuses"
+          },
+          "matching": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Matching"
+          },
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardAlert"
+            },
+            "type": "array",
+            "title": "Alerts"
+          },
+          "activity": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardActivity"
+            },
+            "type": "array",
+            "title": "Activity"
+          }
+        },
+        "type": "object",
+        "required": [
+          "updated_at",
+          "days",
+          "timezone",
+          "kpis",
+          "series",
+          "statuses",
+          "matching",
+          "alerts",
+          "activity"
+        ],
+        "title": "DashboardAnalytics"
+      },
+      "DashboardDays": {
+        "type": "integer",
+        "enum": [
+          7,
+          30,
+          90
+        ],
+        "title": "DashboardDays"
+      },
+      "DashboardSeries": {
+        "properties": {
+          "date": {
+            "type": "string",
+            "title": "Date"
+          },
+          "rfqs_created": {
+            "type": "integer",
+            "title": "Rfqs Created"
+          },
+          "rfqs_published": {
+            "type": "integer",
+            "title": "Rfqs Published"
+          },
+          "suppliers_created": {
+            "type": "integer",
+            "title": "Suppliers Created"
+          },
+          "suppliers_verified": {
+            "type": "integer",
+            "title": "Suppliers Verified"
+          }
+        },
+        "type": "object",
+        "required": [
+          "date",
+          "rfqs_created",
+          "rfqs_published",
+          "suppliers_created",
+          "suppliers_verified"
+        ],
+        "title": "DashboardSeries"
+      },
+      "DashboardStatus": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "count"
+        ],
+        "title": "DashboardStatus"
       },
       "DatabaseConnectStatus": {
         "properties": {

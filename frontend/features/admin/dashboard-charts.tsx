@@ -1,0 +1,17 @@
+"use client";
+import {ResponsiveContainer,AreaChart,Area,BarChart,Bar,XAxis,YAxis,CartesianGrid,Tooltip,Legend} from 'recharts';
+import type {Series} from './dashboard';
+import styles from './dashboard.module.css';
+export default function DashboardCharts({series,arabic}:{series:Series[];arabic:boolean}){
+ const tr=(en:string,ar:string)=>arabic?ar:en;
+ const locale=arabic?'ar-SA-u-ca-gregory':'en-GB';const number=(n:number)=>new Intl.NumberFormat(locale).format(n);
+ const date=(s:string)=>new Intl.DateTimeFormat(locale,{day:'numeric',month:'short',timeZone:'UTC'}).format(new Date(s+'T00:00:00Z'));
+ const axis={tick:{fontSize:11,fill:'#64748b'},axisLine:false,tickLine:false};
+ return <div className={styles.twoColumn}>{(['rfq','supplier'] as const).map(kind=>{
+ const keys=kind==='rfq'?['rfqs_created','rfqs_published'] as const:['suppliers_created','suppliers_verified'] as const;
+ const names=kind==='rfq'?[tr('Created','تم الإنشاء'),tr('Published','تم النشر')]:[tr('New suppliers','موردون جدد'),tr('First recorded approval','أول اعتماد مسجل')];
+ const hasData=series.some(s=>keys.some(k=>s[k]>0));
+ const children=[<CartesianGrid key="grid" stroke="#edf1f6" vertical={false}/>,<XAxis key="x" dataKey="date" tickFormatter={date} minTickGap={35} {...axis}/>,<YAxis key="y" allowDecimals={false} tickFormatter={number} width={38} {...axis}/>,<Tooltip key="tooltip" labelFormatter={s=>date(String(s))} formatter={(n:number)=>number(n)} contentStyle={{borderRadius:12,border:'1px solid #e2e8f0',fontSize:12}}/>,<Legend key="legend" wrapperStyle={{fontSize:12,paddingTop:12}}/>];
+ return <section className={styles.panel} key={kind}><h2>{kind==='rfq'?tr('RFQ activity','نشاط طلبات التسعير'):tr('Supplier growth','نمو الموردين')}</h2><p>{kind==='rfq'?tr('Creation and publication by day · UTC','الإنشاء والنشر يوميًا · UTC'):tr('New companies and recorded first approvals · UTC','شركات جديدة وأول اعتماد مسجل · UTC')}</p>{hasData?<><div className={styles.chart} dir="ltr"><ResponsiveContainer width="100%" height="100%">{kind==='rfq'?<AreaChart data={series} accessibilityLayer margin={{top:12,right:12,bottom:0,left:0}}>{children}{keys.map((key,i)=><Area key={key} type="monotone" dataKey={key} name={names[i]} stroke={i?'#0f766e':'#2563eb'} fill={i?'#0f766e':'#2563eb'} fillOpacity={0.07} strokeWidth={2} isAnimationActive={false}/>)}</AreaChart>:<BarChart data={series} accessibilityLayer margin={{top:12,right:12,bottom:0,left:0}}>{children}{keys.map((key,i)=><Bar key={key} dataKey={key} name={names[i]} fill={i?'#0f766e':'#2563eb'} radius={[3,3,0,0]} maxBarSize={22} isAnimationActive={false}/>)}</BarChart>}</ResponsiveContainer></div><details className={styles.chartDetails}><summary>{tr('View daily values','عرض القيم اليومية')}</summary><table><thead><tr><th>{tr('Date','التاريخ')}</th>{names.map(n=><th key={n}>{n}</th>)}</tr></thead><tbody>{series.map(s=><tr key={s.date}><td>{date(s.date)}</td>{keys.map(k=><td key={k}>{number(s[k])}</td>)}</tr>)}</tbody></table></details></>:<div className={styles.chartEmpty}><b>{tr('No activity in this period','لا يوجد نشاط خلال هذه الفترة')}</b><span>{tr('Try a longer date range. Lifetime totals are unchanged.','جرّب فترة أطول. الإجماليات الدائمة لا تتغير.')}</span></div>}{kind==='supplier'&&<small className={styles.note}>{tr('Verification history includes suppliers with a recorded approval date only.','يشمل سجل الاعتماد الموردين الذين لديهم تاريخ اعتماد مسجل فقط.')}</small>}</section>;
+ })}</div>;
+}

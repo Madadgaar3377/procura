@@ -1,10 +1,21 @@
 from typing import Any
+import logging
+from threading import Lock
+from time import perf_counter
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from sqlalchemy.pool import StaticPool
 from sqlalchemy.engine import make_url
 from app.config import get_settings, normalize_database_url
+
+_QUERY_LOCK = Lock()
+_QUERY_METRICS = {'calls': 0, 'total_ms': 0.0, 'max_ms': 0.0}
+
+
+def query_metrics():
+    with _QUERY_LOCK:
+        return dict(_QUERY_METRICS)
 
 class Base(DeclarativeBase):
     pass
@@ -45,6 +56,19 @@ def build_engine(url: str):
             },
         )
     engine = create_engine(url, **kwargs)
+    @event.listens_for(engine, 'before_cursor_execute')
+    def query_started(conn, cursor, statement, parameters, context, executemany):
+        context._procura_started = perf_counter()
+
+    @event.listens_for(engine, 'after_cursor_execute')
+    def query_finished(conn, cursor, statement, parameters, context, executemany):
+        elapsed = (perf_counter() - context._procura_started) * 1000
+        with _QUERY_LOCK:
+            _QUERY_METRICS['calls'] += 1
+            _QUERY_METRICS['total_ms'] += elapsed
+            _QUERY_METRICS['max_ms'] = max(_QUERY_METRICS['max_ms'], elapsed)
+        # Omit SQL, parameters, connection URLs, and request data.
+        logging.getLogger(__name__).debug('database_query duration_ms=%.2f', elapsed)
     if url.startswith('sqlite'):
         @event.listens_for(engine, 'connect')
         def enable_foreign_keys(dbapi_connection, connection_record):
@@ -58,6 +82,9 @@ SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, expi
 
 from app.profile_schema import compatible_organization_reads
 event.listen(SessionLocal.class_, 'do_orm_execute', compatible_organization_reads)
+
+# Register once for every Session, including standalone import worker sessions.
+from app import cache_invalidation  # noqa: E402,F401
 
 def get_pool_status() -> dict[str, Any]:
     """Return live connection pool metrics for diagnostics and observability."""

@@ -224,7 +224,13 @@ def _deliver(db: Session, event: Outbox, now: datetime) -> None:
 
 
 def _process_event(db: Session, event: Outbox, now: datetime) -> None:
-    if event.event == 'rfq.published':
+    if event.event == 'cache.public.invalidate':
+        from app import catalog_cache
+        if not catalog_cache.invalidate():
+            # Retry without exhausting notification delivery attempts.
+            event.status = 'retry'
+            event.next_attempt_at = now + timedelta(seconds=15)
+    elif event.event == 'rfq.published':
         rfq = db.scalar(select(RFQ).where(RFQ.id==event.payload.get('rfq_id')).with_for_update())
         if not rfq or rfq.status not in {'published', 'collecting_quotes'}:
             raise PermanentOutboxError('RFQ is not dispatchable')

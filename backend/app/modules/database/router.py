@@ -8,10 +8,11 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app import catalog_cache
-from app.database import engine, get_db, get_pool_status
+from app.database import engine, get_db, get_pool_status, query_metrics
 from app.models import Outbox
 from app.redis_client import redis_metrics
 from app.schemas import DatabaseConnectStatus
+from app.security import admin_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix='/db', tags=['Database Status & Performance'])
@@ -50,7 +51,7 @@ def connect_status():
 
 
 @router.get('/performance')
-def performance_metrics(db: Session = Depends(get_db)):
+def performance_metrics(db: Session = Depends(get_db), admin=Depends(admin_user)):
     """Comprehensive observability for database pooling, Redis latency, L1/L2 cache, and outbox queue."""
     t0 = perf_counter()
     try:
@@ -80,6 +81,7 @@ def performance_metrics(db: Session = Depends(get_db)):
             'dialect': engine.dialect.name,
             'latency_ms': db_latency,
             'pool': get_pool_status(),
+            'queries': query_metrics(),
         },
         'redis': redis_metrics(),
         'cache': catalog_cache.metrics(),

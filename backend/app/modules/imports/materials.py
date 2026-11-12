@@ -853,5 +853,5 @@ def search_materials(
     total = db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0
     page = db.scalars(query.order_by(*ordering).limit(limit).offset(offset)).all()
     response = {'items': [record(m) for m in page], 'total': total, 'limit': limit, 'offset': offset}
-    catalog_cache.set('material-search', params, response, epoch=cache_epoch)
+    catalog_cache.set('material-search', params, response, ttl=300, epoch=cache_epoch)
     return response

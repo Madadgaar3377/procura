@@ -556,6 +556,9 @@
     "PATCH",
     "DELETE"
   ],
+  "admin/dashboard/analytics": [
+    "GET"
+  ],
   "db/connect/status": [
     "GET"
   ],

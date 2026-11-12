@@ -24,7 +24,9 @@ export function useApi<T>(path:string|null,options:{keepPreviousData?:boolean}={
   if(!entry){entry={updated:0,users:0};cache.set(key,entry);}
   const current=entry;current.users++;
   if(cache.size>150){for(const [oldKey,old] of cache){if(cache.size<=150)break;if(!old.users&&!old.task)cache.delete(oldKey);}}
-  const staleTime=path.startsWith('memberships/')?0:path.startsWith('directory/')?0:path.startsWith('taxonomy/categories')?15000:path.startsWith('taxonomy/')?300000:30000;
+  // Existing scoped cache and mutation/focus invalidation keep public lookups
+  // fresh while avoiding repeated requests on component remounts.
+  const staleTime=path.startsWith('memberships/')?0:path.startsWith('directory/')?15000:path.startsWith('taxonomy/categories')?60000:path.startsWith('taxonomy/')?300000:30000;
   if(current.updated&&Date.now()-current.updated<staleTime){setState({key,data:current.data as T,fetching:false});}
   else{
    setState(previous=>({key,data:(current.data??(options.keepPreviousData&&previous.key.startsWith(scope+'|')?previous.data:undefined)) as T,fetching:true}));
