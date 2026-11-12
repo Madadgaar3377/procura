@@ -42,8 +42,10 @@ def apply_sms(db,event,result,now):
 
 
 def deliver(db,event,now):
-    payload=event.payload;channel=payload.get('channel');user=db.get(User,payload.get('user_id'))
+    payload=event.payload;channel=payload.get('channel');user=db.get(User,payload['user_id']) if payload.get('user_id') else None
     if channel not in {'sms','email'}:raise core.PermanentOutboxError('Unsupported notification channel')
+    if payload.get('procurement_recipient'):
+        return deliver_procurement(db,event,now)
     # Reconcile accepted SMS even after a code expires or its destination changes.
     # Polling never submits another message and must not be gated by OTP validity.
     if channel=='sms' and event.provider_message_id and event.delivery_status not in {'submitting','unknown',None}:
@@ -145,6 +147,56 @@ def deliver(db,event,now):
     event.secret_ciphertext=None
 
 
+def deliver_procurement(db, event, now):
+    """Deliver an authorized RFQ destination without requiring a user or OTP."""
+    from app.models import Invitation, RFQ
+    from app.modules.notifications.procurement import eligible_orgs
+    from app.modules.notifications.recipients import current_recipient, restriction
+    payload=event.payload;context=payload['context'];channel=payload['channel']
+    # Once submitted, reconcile only. Never resubmit because authorization changed.
+    if channel=='sms' and event.provider_message_id:
+        try:
+            result=get_sms_status(event.provider_message_id)
+        except DeliveryError as exc:
+            if getattr(exc,'status_code',None)==404 and event.delivery_status in {'submitting','unknown'}:
+                event.status='uncertain';event.next_attempt_at=None
+                event.last_error='SMS outcome unknown; reconcile with provider before resending'
+                return
+            raise
+        event.status_checks+=1;apply_sms(db,event,result,now);return
+    if event.delivery_status=='submitting':
+        event.status='uncertain';event.next_attempt_at=None
+        event.last_error='SMTP outcome unknown; reconcile with SMTP logs before retry'
+        return
+    rfq=db.get(RFQ,context['rfq_id'])
+    invitation=db.scalar(select(Invitation).where(Invitation.rfq_id==context['rfq_id'],
+        Invitation.supplier_org_id==context['org_id']))
+    reason=restriction(db,channel,payload['destination'])
+    if not reason and (not rfq or rfq.status not in {'published','collecting_quotes'} or
+        core._utc(rfq.response_deadline)<=now or not invitation or invitation.status=='declined' or
+        context['org_id'] not in eligible_orgs(db,rfq,[context['org_id']])):
+        reason='invitation_no_longer_eligible'
+    if not reason and not current_recipient(db,payload):reason='authorization_changed'
+    if reason:
+        event.status='skipped';event.delivery_status=reason;return
+    if channel=='email' and get_settings().is_production and not get_settings().smtp_reply_to:
+        raise core.PermanentOutboxError('Configure a monitored SMTP_REPLY_TO before sending RFQ email')
+    subject,plain,html=render_message(payload['template'],{**context,'channel':channel})
+    event.payload={**payload,'last_attempt_at':now.isoformat()}
+    event.delivery_status='submitting'
+    event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_message_id(event.id)
+    db.commit()
+    if channel=='sms':
+        result=send_sms(payload['destination'],plain,event.id)
+        event.attempts+=1;apply_sms(db,event,result,now)
+    else:
+        event.provider_message_id=send_email(payload['destination'],subject,plain,html,event.id)
+        event.attempts+=1;event.delivery_status='accepted';event.status='processed';event.next_attempt_at=None
+        event.payload={**event.payload,'smtp_accepted':not get_settings().mock_notifications}
+    if get_settings().mock_notifications:
+        event.delivery_status='simulated';event.status='processed';event.next_attempt_at=None
+
+
 def process_batch(db,limit=25,now=None,event_ids=None):
     now=core._utc(now or datetime.now(UTC))
     if event_ids is None:
@@ -196,7 +248,7 @@ def process_batch(db,limit=25,now=None,event_ids=None):
             db.rollback();event=db.get(Outbox,event_id)
             if event:
                 event.attempts+=1;event.lock_until=None
-                event.last_error=str(exc)[:500] if isinstance(exc,DeliveryError) else type(exc).__name__
+                event.last_error=str(exc)[:500] if isinstance(exc,(DeliveryError,core.PermanentOutboxError)) else type(exc).__name__
                 retryable=not isinstance(exc,core.PermanentOutboxError) and getattr(exc,'retryable',True)
                 if event.payload.get('channel')=='email' and (getattr(exc,'uncertain',False) or (event.delivery_status=='submitting' and not isinstance(exc,DeliveryError))):
                     event.status='uncertain';event.next_attempt_at=None
@@ -204,6 +256,18 @@ def process_batch(db,limit=25,now=None,event_ids=None):
                     event.status='retry';event.next_attempt_at=now+timedelta(seconds=min(900,15*2**(event.attempts-1)))
                     if event.payload.get('channel')=='email':event.delivery_status=None
                 else:event.status='failed';event.next_attempt_at=None
+                if (event.payload.get('procurement_recipient') and getattr(exc,'permanent_recipient',False)):
+                    from app.models import DeliveryRestriction
+                    from app.modules.notifications.recipients import restriction
+                    destination=event.payload['destination'];channel=event.payload['channel']
+                    if not restriction(db,channel,destination):
+                        db.add(DeliveryRestriction(channel=channel,destination=destination,
+                            reason='suppressed',detail='SMTP permanently refused recipient'))
+                # A definitive rejection before acceptance is safe to retry. An
+                # uncertain SMS keeps its deterministic provider ID for lookup.
+                if (event.payload.get('channel')=='sms' and event.delivery_status=='submitting'
+                    and isinstance(exc,DeliveryError) and not getattr(exc,'uncertain',False)):
+                    event.provider_message_id=None;event.delivery_status=None
                 update_delivery_notification(db,event.id,'queued' if event.status=='retry' else event.status);db.commit()
             log.warning('Notification job=%s channel=%s status=%s error=%s', event_id, event.payload.get('channel') if event else 'unknown', event.status if event else 'unknown', str(exc) if isinstance(exc,DeliveryError) else type(exc).__name__)
     return done

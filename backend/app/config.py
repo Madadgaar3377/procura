@@ -116,6 +116,7 @@ class Settings(BaseSettings):
         default=True,
         validation_alias=AliasChoices('smtp_use_tls', 'SMTP_USE_TLS'),
     )
+    smtp_reply_to: str = ''
     field_encryption_key: str = ''
     delivery_timeout_seconds: int = Field(default=10,ge=1,le=30)
     delivery_max_attempts: int = Field(default=5,ge=1,le=10)

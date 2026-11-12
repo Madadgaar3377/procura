@@ -466,8 +466,10 @@ def admin_assign_contact_capability(org_id:str,contact_id:str,payload:SupplierCo
     capability.material_ids=sorted(set([*(capability.material_ids or []),*material_ids]))
     relation=db.scalar(select(ContactCapability).where(ContactCapability.contact_id==contact.id,ContactCapability.capability_id==capability.id))
     if relation is None:
-        relation=ContactCapability(contact_id=contact.id,capability_id=capability.id,is_primary=payload.is_primary);db.add(relation)
+        relation=ContactCapability(contact_id=contact.id,capability_id=capability.id,is_primary=payload.is_primary,
+            material_ids=material_ids or None);db.add(relation)
     elif payload.is_primary:relation.is_primary=True
+    relation.material_ids=material_ids or None
     if payload.is_primary:
         db.query(ContactCapability).filter(ContactCapability.capability_id==capability.id,ContactCapability.contact_id!=contact.id).update({ContactCapability.is_primary:False},synchronize_session=False)
     audit(db,admin,'supplier.contact_capability_assigned',org_id,contact.id,capability_id=capability.id,category_id=category.id,created=created)

@@ -9356,6 +9356,108 @@
         ]
       }
     },
+    "/api/v1/notifications/admin/outbox/{event_id}/feedback": {
+      "post": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Delivery Feedback",
+        "description": "Record reviewed SMTP bounce/complaint or mailbox evidence, never inferred delivery.",
+        "operationId": "delivery_feedback_api_v1_notifications_admin_outbox__event_id__feedback_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryFeedback"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OutboxOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/admin/restrictions": {
+      "post": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Restrict Destination",
+        "operationId": "restrict_destination_api_v1_notifications_admin_restrictions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DestinationRestriction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/notifications/admin/outbox/{event_id}/retry": {
       "post": {
         "tags": [
@@ -14692,6 +14794,24 @@
         ],
         "title": "Decision"
       },
+      "DeliveryFeedback": {
+        "properties": {
+          "outcome": {
+            "type": "string",
+            "title": "Outcome"
+          },
+          "evidence": {
+            "type": "string",
+            "title": "Evidence"
+          }
+        },
+        "type": "object",
+        "required": [
+          "outcome",
+          "evidence"
+        ],
+        "title": "DeliveryFeedback"
+      },
       "DeliveryStatusOut": {
         "properties": {
           "id": {
@@ -14777,6 +14897,34 @@
           "last_error"
         ],
         "title": "DeliveryStatusOut"
+      },
+      "DestinationRestriction": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "title": "Channel"
+          },
+          "destination": {
+            "type": "string",
+            "title": "Destination"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel",
+          "destination",
+          "reason",
+          "detail"
+        ],
+        "title": "DestinationRestriction"
       },
       "EmailOTPVerify": {
         "properties": {

@@ -9,12 +9,15 @@ from app.config import get_settings
 from app.models import RFQ, Capability, Category, Invitation, Organization, Outbox, Quotation, RFQItem
 from app.modules.capabilities.policy import eligibility_predicates
 from app.modules.notifications.service import enqueue_org_notice
+from app.modules.notifications.recipients import enqueue as enqueue_rfq_notice
 
 
 def context_for(db, rfq):
     base = get_settings().frontend_url.rstrip("/")
     parsed = urlsplit(base)
-    if parsed.scheme not in {"https", "http"} or not parsed.netloc or parsed.username or parsed.password:
+    if (parsed.scheme not in {"https", "http"} or not parsed.netloc or parsed.username or parsed.password
+        or parsed.query or parsed.fragment or (get_settings().is_production and
+        (parsed.scheme != 'https' or parsed.hostname not in {'procumaterial.com', 'www.procumaterial.com'}))):
         raise ValueError("FRONTEND_URL must be an absolute application URL")
     pairs = db.execute(
         select(RFQItem.main_category_id, RFQItem.subcategory_id).where(RFQItem.rfq_id == rfq.id)
@@ -84,7 +87,7 @@ def prepare(db, event):
             event.status = "skipped"
             event.delivery_status = "eligibility_review_required"
             return
-        enqueue_org_notice(
+        enqueue_rfq_notice(
             db,
             org_id=org.id,
             template="rfq_invitation",
@@ -99,7 +102,7 @@ def prepare(db, event):
         for org_id in pending_orgs(db, rfq):
             if targets is not None and org_id not in targets:continue
             queue_in_app(db,event,org_id,'deadline_reminder',f'Procumaterial: {rfq.reference} response deadline is approaching.')
-            enqueue_org_notice(
+            enqueue_rfq_notice(
                 db,
                 org_id=org_id,
                 template="deadline_reminder",

@@ -78,7 +78,7 @@ def dispatch(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_d
     results=match_and_invite(db,rfq,actor=user,bounded=True)
     audit(db,user,'rfq.match_dispatched',rfq.buyer_org_id,rfq.id,count=results['new_invitations'])
     db.commit()
-    return {**results,'invitations':[record(i) for i in results['invitations']], 'reason':'No eligible verified supplier with the required category capability and service city' if not results['eligible_suppliers'] else None}
+    return {**results,'invitations':[record(i) for i in results['invitations']], 'reason':'No eligible supplier with the required category capability and service city' if not results['eligible_suppliers'] else None}
 
 @router.get('/rfqs/{rfq_id}/results',response_model=MatchResults)
 def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -166,7 +166,7 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     elif status_counts.get('inactive'):
         explanation=f"{status_counts['inactive']} supplier(s) have matching capabilities but are inactive or not marked as suppliers."
     elif status_counts.get('unverified'):
-        explanation=f"{status_counts['unverified']} supplier(s) have matching capabilities but require company verification."
+        explanation=f"{status_counts['unverified']} historical supplier result(s) require matching refresh; company verification is not required for RFQ invitations."
     elif status_counts.get('ineligible'):
         explanation=f"{status_counts['ineligible']} supplier(s) have matching capabilities but do not meet other RFQ eligibility requirements."
     elif progress in {'matching_queued','matching_in_progress'}:

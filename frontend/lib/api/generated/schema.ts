@@ -55,7 +55,9 @@ export interface Schemas {
   "DashboardStatus": { "status": string; "count": number };
   "DatabaseConnectStatus": { "connected": boolean; "status": "connected" | "disconnected"; "message": string; "error"?: string | null; "checked_at": string };
   "Decision": { "approve": boolean; "notes": string };
+  "DeliveryFeedback": { "outcome": string; "evidence": string };
   "DeliveryStatusOut": { "id": string; "outbox_id": string; "event": string; "channel": string; "status": string; "created_at": string; "provider_status": string | null; "provider_message_id": string | null; "provider_response_code": number | null; "last_error": string | null };
+  "DestinationRestriction": { "channel": string; "destination": string; "reason": string; "detail": string };
   "EmailOTPVerify": { "code": string };
   "FavoriteStateOut": { "supplier_org_id": string; "favorite": boolean };
   "FavoriteSupplierOut": { "supplier_org_id": string; "name": string };
@@ -347,6 +349,8 @@ export interface Operations {
   "GET /api/v1/quotations/{quotation_id}/history": { body: never; response: unknown };
   "GET /api/v1/notifications": { body: never; response: Array<Schemas["NotificationOut"]> };
   "GET /api/v1/notifications/deliveries": { body: never; response: Array<Schemas["DeliveryStatusOut"]> };
+  "POST /api/v1/notifications/admin/outbox/{event_id}/feedback": { body: Schemas["DeliveryFeedback"]; response: Schemas["OutboxOut"] };
+  "POST /api/v1/notifications/admin/restrictions": { body: Schemas["DestinationRestriction"]; response: unknown };
   "POST /api/v1/notifications/admin/outbox/{event_id}/retry": { body: Schemas["RetryDelivery"]; response: Schemas["OutboxOut"] };
   "POST /api/v1/notifications/{notification_id}/read": { body: never; response: Schemas["NotificationOut"] };
   "GET /api/v1/notifications/admin/outbox": { body: never; response: Array<Schemas["OutboxOut"]> };

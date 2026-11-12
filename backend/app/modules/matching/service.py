@@ -1,4 +1,4 @@
-"""Set-based matching for verified suppliers under the configured capability policy."""
+"""Set-based matching for active suppliers under the configured capability policy."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -79,7 +79,7 @@ def _match_batch(
 ) -> dict:
     """Filter candidates in PostgreSQL, evaluate eligibility, and write matches/invitations.
 
-    Verification, active status, supplier role, configured capability eligibility, and
+    Active status, supplier role, configured capability eligibility, and
     service-city coverage are evaluated systematically. Ineligible suppliers who matched
     the category are recorded with diagnostic reasons so administrators have complete visibility.
     """
@@ -198,16 +198,6 @@ def _match_batch(
                 'org': org,
                 'status': 'inactive',
                 'reasons': ['Supplier organization is inactive or not marked as supplier.'],
-                'covered': set(),
-            }
-            continue
-
-        # Check B: Verification status
-        if org.verified_status != 'verified':
-            ineligible_diagnostics[org_id] = {
-                'org': org,
-                'status': 'unverified',
-                'reasons': [f'Company verification required (current status: {org.verified_status or "unverified"}).'],
                 'covered': set(),
             }
             continue
@@ -334,7 +324,8 @@ def _match_batch(
     )
 
     if evaluate_only:
-        return {'eligible_ids': [candidate['org'].id for candidate in ranked]}
+        return {'eligible_ids': [candidate['org'].id for candidate in ranked],
+                'covered_items': {candidate['org'].id: sorted(candidate['covered']) for candidate in ranked}}
 
     # Persist or update RFQMatch for eligible candidates
     existing_matches = {
@@ -351,7 +342,7 @@ def _match_batch(
                  + int(15 * len(candidate['exact_subcategory_items']) / len(item_scope))
                  + (5 if candidate.get('has_exact_city') else 0))
         reasons = [
-            'verified company',
+            'active supplier company',
             ('Approved exact material capability' if candidate.get('exact_items') else 'Approved exact subcategory capability'),
             f'delivery city match: {rfq.city}' if candidate.get('has_exact_city') else ('service coverage matches delivery requirement' if rfq_city_norm else 'delivery location not specified; city coverage not used'),
             f"coverage:{len(candidate['covered'])}/{len(item_scope)}",

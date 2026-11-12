@@ -22,6 +22,8 @@ def display_delivery_status(event):
     if event.status=='uncertain':return 'uncertain'
     if event.status=='failed':return 'failed'
     if event.status=='skipped':return 'skipped'
+    if event.status=='retry':return 'retry_scheduled'
+    if provider=='simulated':return 'simulated'
     if provider=='delivered':return 'delivered'
     if provider=='sent':return 'sent'
     if provider in {'accepted','pending','processed'} and event.status in {'awaiting_status','processed'}:return 'accepted'
@@ -55,6 +57,63 @@ class RetryDelivery(BaseModel):
     confirmed_not_accepted:bool=False
 
 
+class DeliveryFeedback(BaseModel):
+    outcome: str
+    evidence: str
+
+
+@router.post('/admin/outbox/{event_id}/feedback', response_model=OutboxOut)
+def delivery_feedback(event_id: str, payload: DeliveryFeedback, admin: User=Depends(admin_user), db: Session=Depends(get_db)):
+    """Record reviewed SMTP bounce/complaint or mailbox evidence, never inferred delivery."""
+    from app.models import DeliveryRestriction
+    event=db.scalar(select(Outbox).where(Outbox.id==event_id).with_for_update())
+    if not event or not event.payload.get('procurement_recipient'):
+        raise HTTPException(404,'Procurement delivery not found')
+    if payload.outcome not in {'delivered','bounced','complaint','opted_out'} or not 5<=len(payload.evidence.strip())<=500:
+        raise HTTPException(422,'Provide a supported outcome and 5-500 characters of provider/mailbox evidence')
+    if not event.provider_message_id or event.delivery_status in {'simulated',None}:
+        raise HTTPException(409,'No actual provider submission to reconcile')
+    if payload.outcome=='delivered' and event.payload['channel']!='email':
+        raise HTTPException(409,'SMS delivery is confirmed through provider status lookup')
+    if payload.outcome in {'bounced','complaint','opted_out'}:
+        channel=event.payload['channel'];destination=event.payload['destination']
+        existing=db.scalar(select(DeliveryRestriction).where(DeliveryRestriction.channel==channel,
+            DeliveryRestriction.destination==destination).with_for_update())
+        reason='opted_out' if payload.outcome=='opted_out' else 'suppressed'
+        if existing:existing.reason=reason;existing.detail=payload.evidence.strip()
+        else:db.add(DeliveryRestriction(channel=channel,destination=destination,reason=reason,detail=payload.evidence.strip()))
+    event.delivery_status=payload.outcome
+    event.status='processed' if payload.outcome=='delivered' else 'failed' if payload.outcome=='bounced' else 'skipped'
+    event.next_attempt_at=None
+    event.payload={**event.payload,'feedback_evidence':payload.evidence.strip(),'feedback_at':datetime.now(timezone.utc).isoformat()}
+    audit(db,admin,'notification.feedback_recorded',entity_id=event.id,outcome=payload.outcome)
+    db.commit();result=record(event);result.pop('secret_ciphertext',None);return result
+
+
+class DestinationRestriction(BaseModel):
+    channel: str
+    destination: str
+    reason: str
+    detail: str
+
+
+@router.post('/admin/restrictions')
+def restrict_destination(payload: DestinationRestriction, admin: User=Depends(admin_user), db: Session=Depends(get_db)):
+    from app.models import DeliveryRestriction
+    from app.modules.notifications.recipients import normalize_destination
+    if payload.channel not in {'email','sms'} or payload.reason not in {'opted_out','suppressed'} or not 5<=len(payload.detail.strip())<=500:
+        raise HTTPException(422,'Provide email/sms, opted_out/suppressed and a 5-500 character reason')
+    try:destination=normalize_destination(payload.channel,payload.destination)
+    except ValueError as exc:raise HTTPException(422,str(exc)) from exc
+    row=db.scalar(select(DeliveryRestriction).where(DeliveryRestriction.channel==payload.channel,
+        DeliveryRestriction.destination==destination).with_for_update())
+    if row:row.reason=payload.reason;row.detail=payload.detail.strip()
+    else:
+        row=DeliveryRestriction(channel=payload.channel,destination=destination,reason=payload.reason,detail=payload.detail.strip());db.add(row)
+    db.flush();audit(db,admin,'notification.destination_restricted',entity_id=row.id,reason=payload.reason)
+    db.commit();return {'id':row.id,'reason':row.reason}
+
+
 @router.post('/admin/outbox/{event_id}/retry',response_model=OutboxOut)
 def retry_delivery(event_id:str,payload:RetryDelivery,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
     event=db.scalar(select(Outbox).where(Outbox.id==event_id).with_for_update())
@@ -64,6 +123,8 @@ def retry_delivery(event_id:str,payload:RetryDelivery,admin:User=Depends(admin_u
     if event.status=='uncertain' and not payload.confirmed_not_accepted:
         raise HTTPException(409,'Confirm through provider or mailbox logs that the message was not accepted before retrying')
     if event.payload.get('channel')=='email':event.delivery_status=None
+    if event.payload.get('procurement_recipient') and event.payload.get('channel')=='sms' and event.status=='uncertain' and payload.confirmed_not_accepted:
+        event.delivery_status=None;event.provider_message_id=None
     event.status='retry';event.attempts=0;event.next_attempt_at=datetime.now(timezone.utc);event.lock_until=None;event.last_error=None
     audit(db,admin,'notification.retry_requested',entity_id=event.id,confirmed_not_accepted=payload.confirmed_not_accepted)
     db.commit();result=record(event);result.pop('secret_ciphertext',None);return result

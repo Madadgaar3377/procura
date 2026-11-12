@@ -82,7 +82,10 @@ def send_sms(phone,text,idempotency_key, *, ttl_seconds=3600,transport=None):
     return {'id':str(result.get('id') or message_id),'state':'Pending' if code==202 else str(result.get('state') or 'Pending'),'http_status':code}
 
 
-def email_message_id(key):return '<delivery-'+sha256(key.encode()).hexdigest()[:32]+'@procurement.local>'
+def email_message_id(key):
+    settings=get_settings()
+    domain=parseaddr(settings.smtp_from_email or settings.smtp_username)[1].partition('@')[2] or 'procurement.local'
+    return '<delivery-'+sha256(key.encode()).hexdigest()[:32]+'@'+domain+'>'
 
 
 def send_email(address, subject, plain_text, html_body, idempotency_key):
@@ -108,6 +111,15 @@ def send_email(address, subject, plain_text, html_body, idempotency_key):
     message["To"] = address
     message["Subject"] = subject
     message["Message-ID"] = message_id
+    from email.utils import formatdate
+    message['Date'] = formatdate(localtime=False)
+    if settings.smtp_reply_to:
+        from app.identity import normalize_email
+        try:
+            reply_to=normalize_email(settings.smtp_reply_to)
+        except ValueError as exc:
+            raise delivery_error('Invalid SMTP_REPLY_TO',retryable=False) from exc
+        message['Reply-To']=reply_to
     message.set_content(plain_text)
     message.add_alternative(html_body, subtype="html")
     log.info("Email SMTP configured; connecting port=%s security=%s", settings.smtp_port, "SSL/TLS" if is_implicit_ssl else "STARTTLS")
@@ -135,7 +147,9 @@ def send_email(address, subject, plain_text, html_body, idempotency_key):
         raise delivery_error(f"SMTP authentication failed (code {exc.smtp_code})", retryable=False, status_code=exc.smtp_code) from exc
     except SMTPRecipientsRefused as exc:
         codes = [value[0] for value in exc.recipients.values()]
-        raise delivery_error("SMTP recipient refused", retryable=bool(codes) and all(400 <= code < 500 for code in codes)) from exc
+        error=delivery_error("SMTP recipient refused", retryable=bool(codes) and all(400 <= code < 500 for code in codes))
+        error.permanent_recipient=bool(codes) and all(500 <= code < 600 for code in codes)
+        raise error from exc
     except SMTPResponseException as exc:
         if stage == "accepted":
             return message_id

@@ -519,6 +519,16 @@ class Notification(TimeID, Base):
     read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     delivery_outbox_id: Mapped[str | None] = mapped_column(ForeignKey('outbox_events.id'), nullable=True, index=True)
 
+class DeliveryRestriction(TimeID, Base):
+    """Normalized destination restrictions shared across all supplier identities."""
+    __tablename__ = 'notification_delivery_restrictions'
+    __table_args__ = (UniqueConstraint('channel', 'destination', name='uq_delivery_restriction'),)
+    channel: Mapped[str] = mapped_column(String(10))
+    destination: Mapped[str] = mapped_column(String(220))
+    reason: Mapped[str] = mapped_column(String(30))
+    detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
 class Outbox(TimeID, Base):
     __tablename__='outbox_events'
     __table_args__=(

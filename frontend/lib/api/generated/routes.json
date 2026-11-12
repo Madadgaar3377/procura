@@ -464,6 +464,12 @@
   "notifications/deliveries": [
     "GET"
   ],
+  "notifications/admin/outbox/{event_id}/feedback": [
+    "POST"
+  ],
+  "notifications/admin/restrictions": [
+    "POST"
+  ],
   "notifications/admin/outbox/{event_id}/retry": [
     "POST"
   ],
