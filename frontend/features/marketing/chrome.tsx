@@ -3,10 +3,10 @@
 import Link from 'next/link';
 import {usePathname, useRouter} from 'next/navigation';
 import {useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent} from 'react';
-import {useAnimate} from 'motion/react-mini';
 import {IconArrowRight, IconArrowUp, IconMenu2, IconWorld, IconX} from '@tabler/icons-react';
-import {useLocale} from '@/lib/locale';
-import {marketingCopy, type MarketingLocale} from './copy';
+import {useLocaleCore as useLocale} from '@/lib/locale-core';
+import {chromeCopy as marketingCopy, type MarketingLocale} from './chrome-copy';
+import '../../app/marketing.css';
 import './navigation.css';
 
 const navigation=['/#buyers','/#suppliers','/#how-it-works','/industries','/suppliers','/pricing','/contact'];
@@ -58,25 +58,35 @@ export function MarketingBrand({inverse=false}:{inverse?:boolean}){
 export function MarketingHeader({locale}:{locale?:MarketingLocale}){
   const {arabic}=useLocale();const current=locale||(arabic?'ar':'en');const c=marketingCopy[current];
   const pathname=usePathname();const marker=useRef<HTMLSpanElement>(null);
-  const [dialog,animate]=useAnimate<HTMLDialogElement>();
-  const menuMotion=useRef<ReturnType<typeof animate>|null>(null);const closing=useRef(false);
+  const dialog=useRef<HTMLDialogElement>(null);
+  const menuMotion=useRef<Animation|null>(null);const closing=useRef(false);
   const [open,setOpen]=useState(false),[scrolled,setScrolled]=useState(false),[active,setActive]=useState(''),[interactive,setInteractive]=useState(false);
   useEffect(()=>{
-    const scroll=()=>setScrolled(window.scrollY>16);
-    const frame=requestAnimationFrame(()=>{setInteractive(true);scroll();});
+    const frame=requestAnimationFrame(()=>setInteractive(true));
     if(typeof IntersectionObserver==='function'&&marker.current){
       const observer=new IntersectionObserver(([entry])=>setScrolled(!entry.isIntersecting));
       observer.observe(marker.current);
       return()=>{cancelAnimationFrame(frame);observer.disconnect();};
     }
+    const scroll=()=>setScrolled(window.scrollY>16);
+    scroll();
     window.addEventListener('scroll',scroll,{passive:true});
     return()=>{cancelAnimationFrame(frame);window.removeEventListener('scroll',scroll);};
   },[]);
   useEffect(()=>{if(!open)return;const previous=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=previous;};},[open]);
   useEffect(()=>{
     if(pathname!=='/'||typeof window.IntersectionObserver!=='function')return;
-    const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting)setActive('/#'+entry.target.id);},{rootMargin:'-15% 0px -65% 0px'});
-    document.querySelectorAll('section[id]').forEach(node=>observer.observe(node));return()=>observer.disconnect();
+    let observer:IntersectionObserver|undefined;
+    const attach=()=>{
+      observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting)setActive('/#'+entry.target.id);},{rootMargin:'-15% 0px -65% 0px'});
+      document.querySelectorAll('section[id]').forEach(node=>observer!.observe(node));
+    };
+    const idle=typeof requestIdleCallback==='function'?requestIdleCallback(attach,{timeout:300}):setTimeout(attach,120);
+    return()=>{
+      if(typeof cancelIdleCallback==='function'&&typeof idle==='number')cancelIdleCallback(idle);
+      else clearTimeout(idle);
+      observer?.disconnect();
+    };
   },[pathname]);
   const resetMenuMotion=useCallback(()=>{
     // Cancel before hiding a panel: stop() would try to commit styles on hidden DOM.
@@ -96,9 +106,9 @@ export function MarketingHeader({locale}:{locale?:MarketingLocale}){
     const node=dialog.current;if(!node||node.open)return;
     resetMenuMotion();closing.current=false;node.showModal();setOpen(true);
     if(window.matchMedia('(prefers-reduced-motion: reduce)').matches||!node.animate)return;
-    const animation=animate(node,{opacity:[.6,1],transform:['translateY(-8px) scale(.985)','translateY(0px) scale(1)']},{duration:.2,ease:'easeOut'});
+    const animation=node.animate([{opacity:.6,transform:'translateY(-8px) scale(.985)'},{opacity:1,transform:'translateY(0px) scale(1)'}],{duration:200,easing:'ease-out'});
     menuMotion.current=animation;
-    void animation.then(()=>{if(menuMotion.current===animation)resetMenuMotion();});
+    void animation.finished.then(()=>{if(menuMotion.current===animation)resetMenuMotion();}).catch(()=>{});
   }
   function close(){
     const node=dialog.current;
@@ -106,9 +116,9 @@ export function MarketingHeader({locale}:{locale?:MarketingLocale}){
     resetMenuMotion();closing.current=true;
     const finish=()=>{resetMenuMotion();node.close();};
     if(window.matchMedia('(prefers-reduced-motion: reduce)').matches||!node.animate){finish();return;}
-    const animation=animate(node,{opacity:[1,0],transform:['translateY(0px)','translateY(-6px)']},{duration:.16,ease:'easeOut'});
+    const animation=node.animate([{opacity:1,transform:'translateY(0px)'},{opacity:0,transform:'translateY(-6px)'}],{duration:160,easing:'ease-out'});
     menuMotion.current=animation;
-    void animation.then(()=>{if(menuMotion.current===animation&&closing.current)finish();});
+    void animation.finished.then(()=>{if(menuMotion.current===animation&&closing.current)finish();}).catch(()=>{});
   }
   function containTab(event:KeyboardEvent<HTMLDialogElement>){
     if(event.key!=='Tab')return;
@@ -146,7 +156,7 @@ const footerHrefs=[['/how-it-works','/suppliers','/industries','/pricing'],['/ap
 export function MarketingFooter({locale}:{locale?:MarketingLocale}){
   const {arabic}=useLocale();const current=locale||(arabic?'ar':'en');const c=marketingCopy[current];let labelIndex=0;
   return <footer className="pm-footer"><div className="pm-container"><div className="pm-footer-top"><div><MarketingBrand/><p dir="ltr" className="pm-official-tagline">{c.tagline}</p><p>{c.footerNote}</p></div><a href="#top" className="pm-back-top">{c.backToTop}<IconArrowUp size={18} aria-hidden="true"/></a></div>
-    <div className="pm-footer-links">{footerHrefs.map((links,index)=><nav key={c.footerGroups[index]} aria-label={c.footerGroups[index]}><h3>{c.footerGroups[index]}</h3>{links.map(href=><Link key={href} href={href} prefetch={href.startsWith('/app')||href.startsWith('/register')?false:undefined}>{c.footerLinks[labelIndex++]}</Link>)}</nav>)}</div>
+    <div className="pm-footer-links">{footerHrefs.map((links,index)=><nav key={c.footerGroups[index]} aria-label={c.footerGroups[index]}><h3>{c.footerGroups[index]}</h3>{links.map(href=><Link key={href} href={href} prefetch={false}>{c.footerLinks[labelIndex++]}</Link>)}</nav>)}</div>
     <div className="pm-footer-support"><strong>{current==='ar'?'الدعم':'Support'}</strong><a href="mailto:support@procumaterial.com">support@procumaterial.com</a><a href="tel:0501496516">0501496516</a></div>
     <div className="pm-footer-bottom"><span>© {new Date().getFullYear()} Procumaterial</span><MarketingLanguage locale={current}/></div>
   </div></footer>;
@@ -156,11 +166,19 @@ export function MarketingEnhancements({locale}:{locale?:MarketingLocale}){
   useEffect(()=>{
     const root=document.querySelector<HTMLElement>('.pm-home');if(!root)return;
     let disposed=false;let cleanup:(()=>void)|undefined;
-    // Nonessential enhancements load separately from navigation and CTA hydration.
-    void import('./home-motion').then(({mountHomeMotion})=>{
-      if(!disposed)cleanup=mountHomeMotion(root);
-    }).catch(()=>{/* Server-rendered content and native controls remain available. */});
-    return()=>{disposed=true;cleanup?.();};
+    const load=()=>{
+      // Nonessential enhancements load separately from navigation and CTA hydration.
+      void import('./home-motion').then(({mountHomeMotion})=>{
+        if(!disposed)cleanup=mountHomeMotion(root);
+      }).catch(()=>{/* Server-rendered content and native controls remain available. */});
+    };
+    const idle=typeof requestIdleCallback==='function'?requestIdleCallback(load,{timeout:300}):setTimeout(load,120);
+    return()=>{
+      disposed=true;
+      if(typeof cancelIdleCallback==='function'&&typeof idle==='number')cancelIdleCallback(idle);
+      else clearTimeout(idle);
+      cleanup?.();
+    };
   },[locale]);
   return null;
 }

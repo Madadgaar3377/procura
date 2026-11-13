@@ -5,7 +5,7 @@ import {useEffect, useMemo, useState} from 'react';
 import Link from 'next/link';
 import {IconArrowRight, IconBolt, IconBuilding, IconCheck, IconSettings} from '@tabler/icons-react';
 import {useApi} from '@/lib/api/use-api';
-import {useLocale} from '@/lib/locale';
+import {useLocaleCore as useLocale} from '@/lib/locale-core';
 import {MarketingCTA} from './chrome';
 import type {Schemas} from '@/lib/api/generated/schema';
 

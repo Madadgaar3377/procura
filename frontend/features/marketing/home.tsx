@@ -1,10 +1,12 @@
+import {Suspense} from 'react';
 import Link from 'next/link';
 import './home-motion.css';
 import Promotions from './promotions';
 import {marketingFont as geist} from './fonts';
 import {IconArrowRight,IconCheck,IconChevronDown,IconClock,IconFileText,IconLayoutDashboard,IconLock,IconMail,IconSearch,IconShieldCheck,IconUsers,IconWorld} from '@tabler/icons-react';
 import {marketingCopy,type MarketingLocale} from './copy';
-import {MarketingCTA,MarketingEnhancements,MarketingFooter,MarketingHeader} from './chrome';
+import {MarketingCTA,MarketingEnhancements,MarketingHeader} from './chrome';
+import {MarketingFooterServer as MarketingFooter} from './footer';
 import {WorkflowPreview} from './previews';
 import {BuyerFormPreview,ComparisonPreview,SupplierDashboardPreview} from './previews-static';
 
@@ -37,7 +39,7 @@ export default function MarketingHome({locale='en'}:{locale?:MarketingLocale}){
 
       <section id="directory" className="pm-section pm-directory-section"><div className="pm-container"><div className="pm-section-heading-row"><Intro eyebrow={c.directoryEyebrow} title={c.directoryTitle} body={locale==='ar'?c.sectorBody:'Explore supply categories, then open the supplier directory to find businesses.'}/><Link href="/suppliers" className="pm-text-link">{c.nav[4]}<IconArrowRight className="pm-arrow" size={18}/></Link></div><div className="pm-directory-grid">{c.sectors.map(sector=><article className="pm-directory-card" key={sector.name}><h3>{sector.name}</h3><p>{sector.description}</p><div className="pm-category-tags">{sector.examples.map(example=><span key={example}>{example}</span>)}</div><Link href="/suppliers" className="pm-text-link">{c.exploreSuppliers}<IconArrowRight size={17}/></Link></article>)}</div></div></section>
 
-      <Promotions locale={locale}/><section id="memberships" className="pm-section pm-membership-section"><div className="pm-container"><Intro eyebrow={c.membershipsEyebrow} title={c.membershipsTitle} body={locale==='ar'?c.heroNote:'Workspaces for buyers and suppliers. Visit memberships to review available plans.'} center/><div className="pm-plan-grid">{[{title:c.nav[0],items:c.buyerFeatures.slice(0,3),role:"buyer" as const},{title:c.nav[1],items:c.supplierSteps.slice(0,3),role:"supplier" as const}].map(group=><article className="pm-plan-card" key={group.role}><h3>{group.title}</h3><ul>{group.items.map(item=><li key={item}>{item}</li>)}</ul><Link href="/pricing">{c.exploreMemberships}<IconArrowRight size={16}/></Link></article>)}</div></div></section>
+      <Suspense fallback={null}><Promotions locale={locale}/></Suspense><section id="memberships" className="pm-section pm-membership-section"><div className="pm-container"><Intro eyebrow={c.membershipsEyebrow} title={c.membershipsTitle} body={locale==='ar'?c.heroNote:'Workspaces for buyers and suppliers. Visit memberships to review available plans.'} center/><div className="pm-plan-grid">{[{title:c.nav[0],items:c.buyerFeatures.slice(0,3),role:"buyer" as const},{title:c.nav[1],items:c.supplierSteps.slice(0,3),role:"supplier" as const}].map(group=><article className="pm-plan-card" key={group.role}><h3>{group.title}</h3><ul>{group.items.map(item=><li key={item}>{item}</li>)}</ul><Link href="/pricing">{c.exploreMemberships}<IconArrowRight size={16}/></Link></article>)}</div></div></section>
 
       <section id="faq" className="pm-section pm-faq-section"><div className="pm-container pm-faq-grid"><div className="pm-reveal"><Intro eyebrow={c.faqEyebrow} title={c.faqTitle}/><Link href="/contact" className="pm-text-link">{c.faqContact}<IconArrowRight className="pm-arrow" size={18}/></Link></div><div className="pm-faq-list">{c.faqs.map(([question,answer])=><details key={question}><summary>{question}<IconChevronDown size={20} aria-hidden="true"/></summary><div><p>{answer}</p></div></details>)}</div></div></section>
 

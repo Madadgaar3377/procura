@@ -30,7 +30,9 @@ function render(arabic=false){
  const localRequire=createRequire(filename);const exported={};
  const source=ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
  const Icon=({children})=>React.createElement('span',null,children);
- const dependencies=name=>name==='@/lib/locale'?{useLocale:()=>({arabic})}
+ const dependencies=name=>name.endsWith('.css')?{}
+  :name==='@/lib/locale-core'?{useLocaleCore:()=>({arabic})}
+  :name==='@/lib/locale'?{useLocale:()=>({arabic})}
   :name==='@/lib/api/use-api'?{useApi:path=>path.includes('industry-catalog')?{data:fixture,loading:false,reload(){}}:{data:[],loading:false,reload(){}}}
   :name==='next/link'?{default:({href,children,...props})=>React.createElement('a',{href,...props},children),__esModule:true}
   :name==='@tabler/icons-react'?{IconArrowRight:Icon,IconBolt:Icon,IconBuilding:Icon,IconCheck:Icon,IconSettings:Icon}

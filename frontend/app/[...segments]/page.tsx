@@ -1,5 +1,9 @@
+import '../globals.css';
+import '../workspace.css';
 import RouteView from "@/components/route-view";
 import {marketingLocale,marketingMetadata} from '@/features/marketing/seo';
+import {LocaleProvider} from '@/lib/locale';
+import {ToastProvider} from '@/features/shared/toast';
 
 export async function generateMetadata({params,searchParams}:{params:Promise<{segments?:string[]}>;searchParams:Promise<{lang?:string|string[]}>}){
   const path='/'+((await params).segments||[]).join('/');
@@ -10,5 +14,5 @@ export async function generateMetadata({params,searchParams}:{params:Promise<{se
 
 export default async function RoutedPage({ params }: { params: Promise<{ segments?: string[] }> }) {
   const { segments = [] } = await params;
-  return <RouteView segments={segments} />;
+  return <LocaleProvider><ToastProvider><RouteView segments={segments} /></ToastProvider></LocaleProvider>;
 }

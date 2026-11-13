@@ -22,10 +22,13 @@ export function mountHomeMotion(root: HTMLElement) {
     if (typeof window.IntersectionObserver === 'function' && 'animate' in Element.prototype) {
       const order = new Map<Element, number>();
       const delays = new WeakMap<Element, number>();
+      const mountedAt = performance.now();
       observer = new IntersectionObserver(entries => {
         for (const entry of entries) {
           if (!entry.isIntersecting) continue;
           observer?.unobserve(entry.target);
+          // Skip above-the-fold elements on initial mount without forcing synchronous layout.
+          if (entry.time - mountedAt < 180 && entry.boundingClientRect.top < window.innerHeight) continue;
           const cell = entry.target.matches('td, th');
           track(entry.target, [
             {opacity: 0, ...(cell ? {} : {translate: '0 16px'})},
@@ -47,8 +50,7 @@ export function mountHomeMotion(root: HTMLElement) {
         const index = order.get(parent) || 0;
         order.set(parent, index + 1);
         delays.set(node, Math.min(index, 5) * 80);
-        // Above-the-fold content is already visible: avoid hiding it after paint.
-        if (node.getBoundingClientRect().top >= window.innerHeight) observer.observe(node);
+        observer.observe(node);
       }
     }
 

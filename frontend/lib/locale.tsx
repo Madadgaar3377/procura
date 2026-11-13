@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useCallback, useContext, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useContext, useLayoutEffect, useMemo, useState } from "react";
+import { applyLocale, LocaleContext, type LocaleValue } from './locale-core';
 import { workflowArabic } from './workflow-translations';
 import { profileArabic } from './profile-translations';
 
@@ -352,36 +353,30 @@ const arabic: Record<string, string> = Object.fromEntries([
   ["Terms", "الشروط"],
 ]);
 
-type LocaleValue = { arabic: boolean; setArabic: (value: boolean) => void; t: (value: string) => string };
-const LocaleContext = createContext<LocaleValue | null>(null);
-
-function applyLocale(arabic:boolean){
-  const locale=arabic?'ar':'en';
-  document.documentElement.lang=locale;
-  document.documentElement.dir=arabic?'rtl':'ltr';
-  document.cookie=`${LOCALE_KEY}=${locale}; Path=/; Max-Age=31536000; SameSite=Lax${location.protocol==='https:'?'; Secure':''}`;
-}
-
 export function LocaleProvider({ children, initialArabic=false }: { children: React.ReactNode; initialArabic?:boolean }) {
+  const parent = useContext(LocaleContext);
   // The server and the first hydration render use the same cookie preference.
-  const [isArabic, setIsArabic] = useState(initialArabic);
+  const [isArabic, setIsArabic] = useState(parent?.arabic ?? initialArabic);
   const setArabic=useCallback((value:boolean)=>{
+    if(parent){parent.setArabic(value);return;}
     applyLocale(value);
     setIsArabic(value);
     try{window.localStorage.setItem(LOCALE_KEY,value?'ar':'en');}catch{/* Cookies keep the preference when storage is unavailable. */}
-  },[]);
+  },[parent]);
   useLayoutEffect(()=>{
+    if(parent)return;
     let selected=initialArabic;
     try{const stored=window.localStorage.getItem(LOCALE_KEY);if(stored==='ar'||stored==='en')selected=stored==='ar';}catch{}
     applyLocale(selected);setIsArabic(selected);
     const sync=(event:StorageEvent)=>{if(event.key===LOCALE_KEY&&(event.newValue==='ar'||event.newValue==='en')){const value=event.newValue==='ar';applyLocale(value);setIsArabic(value);}};
     window.addEventListener('storage',sync);return()=>window.removeEventListener('storage',sync);
-  },[initialArabic]);
+  },[initialArabic,parent]);
+  const activeArabic = parent ? parent.arabic : isArabic;
   const value = useMemo<LocaleValue>(() => ({
-    arabic: isArabic,
+    arabic: activeArabic,
     setArabic,
-    t: (text) => {if(!isArabic)return text;const lowered=text.toLocaleLowerCase();const titled=text.charAt(0).toUpperCase()+text.slice(1);return profileArabic[text]??workflowArabic[text]??arabic[text]??profileArabic[lowered]??workflowArabic[lowered]??arabic[lowered]??profileArabic[titled]??workflowArabic[titled]??arabic[titled]??text;},
-  }), [isArabic,setArabic]);
+    t: (text) => {if(!activeArabic)return text;const lowered=text.toLocaleLowerCase();const titled=text.charAt(0).toUpperCase()+text.slice(1);return profileArabic[text]??workflowArabic[text]??arabic[text]??profileArabic[lowered]??workflowArabic[lowered]??arabic[lowered]??profileArabic[titled]??workflowArabic[titled]??arabic[titled]??text;},
+  }), [activeArabic,setArabic]);
   return <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>;
 }
 

@@ -1,5 +1,8 @@
+import '../globals.css';
 import {PublicMarketingPage} from '@/features/marketing/public-page';
 import {marketingLocale, marketingMetadata, breadcrumbSchema, webPageSchema} from '@/features/marketing/seo';
+import {LocaleProvider} from '@/lib/locale';
+import {ToastProvider} from '@/features/shared/toast';
 
 type Props = { searchParams: Promise<{ lang?: string | string[] }> };
 
@@ -26,7 +29,11 @@ export default async function Page({searchParams}: Props) {
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(webpage).replace(/</g, '\\u003c') }}
       />
-      <PublicMarketingPage locale={locale} kind="contact" />
+      <LocaleProvider initialArabic={isAr}>
+        <ToastProvider>
+          <PublicMarketingPage locale={locale} kind="contact" />
+        </ToastProvider>
+      </LocaleProvider>
     </>
   );
 }
