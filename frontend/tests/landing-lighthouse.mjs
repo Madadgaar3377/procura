@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 
-const directory=path.resolve('.test-runtime/landing-motion');
+const directory=path.resolve(process.env.LANDING_LIGHTHOUSE_DIRECTORY||'.test-runtime/landing-motion');
 await fs.mkdir(directory,{recursive:true});
 const summary=[];
 for(const device of ['mobile','desktop'])for(const stage of ['before','after']){
@@ -12,7 +12,7 @@ for(const device of ['mobile','desktop'])for(const stage of ['before','after']){
   assert.ok(['localhost','127.0.0.1'].includes(new URL(origin).hostname),'Only measure local previews');
   const output=path.join(directory,`lighthouse-${stage}-${device}.json`);
   const args=['node_modules/lighthouse/cli/index.js',`${origin}/?lang=en`,
-    '--chrome-flags=--headless=new --no-sandbox','--only-categories=performance',
+    '--chrome-flags=--headless=new --no-sandbox',`--only-categories=${process.env.LANDING_LIGHTHOUSE_CATEGORIES||'performance'}`,
     '--output=json',`--output-path=${output}`,'--quiet'];
   if(device==='desktop')args.push('--preset=desktop');
   const result=spawnSync(process.execPath,args,{stdio:'inherit',windowsHide:true});
@@ -21,6 +21,7 @@ for(const device of ['mobile','desktop'])for(const stage of ['before','after']){
   assert.ok(!report.runtimeError,JSON.stringify(report.runtimeError));
   const metric=id=>report.audits[id].numericValue;
   const row={stage,device,fetchTime:report.fetchTime,performance:report.categories.performance.score*100,
+    ...(report.categories.accessibility?{accessibility:report.categories.accessibility.score*100}:{}),
     lcpMs:metric('largest-contentful-paint'),cls:metric('cumulative-layout-shift'),
     tbtMs:metric('total-blocking-time'),transferBytes:metric('total-byte-weight'),warnings:report.runWarnings};
   summary.push(row);console.log(JSON.stringify(row));

@@ -2,10 +2,12 @@
 
 import Link from 'next/link';
 import {usePathname, useRouter} from 'next/navigation';
-import {useEffect, useRef, useState, type MouseEvent} from 'react';
+import {useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent} from 'react';
+import {useAnimate} from 'motion/react-mini';
 import {IconArrowRight, IconArrowUp, IconMenu2, IconWorld, IconX} from '@tabler/icons-react';
 import {useLocale} from '@/lib/locale';
 import {marketingCopy, type MarketingLocale} from './copy';
+import './navigation.css';
 
 const navigation=['/#buyers','/#suppliers','/#how-it-works','/industries','/suppliers','/pricing','/contact'];
 
@@ -45,7 +47,7 @@ export function MarketingLanguage({locale}:{locale?:MarketingLocale}){
     const next=current==='ar'?'en':'ar';setArabic(next==='ar');
     const url=new URL(window.location.href);url.searchParams.set('lang',next);
     router.replace(url.pathname+url.search+url.hash,{scroll:false});
-  }} aria-label={marketingCopy[current].language} data-marketing-language><IconWorld size={17} aria-hidden="true"/><span lang={current==='ar'?'en':'ar'}>{current==='ar'?'English':'العربية'}</span></button>;
+  }} title={marketingCopy[current].language} data-marketing-language><IconWorld size={17} aria-hidden="true"/><span lang={current==='ar'?'en':'ar'}>{current==='ar'?'English':'العربية'}</span></button>;
 }
 
 export function MarketingBrand({inverse=false}:{inverse?:boolean}){
@@ -55,45 +57,86 @@ export function MarketingBrand({inverse=false}:{inverse?:boolean}){
 
 export function MarketingHeader({locale}:{locale?:MarketingLocale}){
   const {arabic}=useLocale();const current=locale||(arabic?'ar':'en');const c=marketingCopy[current];
-  const pathname=usePathname();const dialog=useRef<HTMLDialogElement>(null);const closingMotion=useRef<Animation|null>(null);
+  const pathname=usePathname();const marker=useRef<HTMLSpanElement>(null);
+  const [dialog,animate]=useAnimate<HTMLDialogElement>();
+  const menuMotion=useRef<ReturnType<typeof animate>|null>(null);const closing=useRef(false);
   const [open,setOpen]=useState(false),[scrolled,setScrolled]=useState(false),[active,setActive]=useState(''),[interactive,setInteractive]=useState(false);
-  useEffect(()=>{const scroll=()=>setScrolled(window.scrollY>12);const frame=requestAnimationFrame(()=>{setInteractive(true);scroll();});window.addEventListener('scroll',scroll,{passive:true});return()=>{cancelAnimationFrame(frame);window.removeEventListener('scroll',scroll);};},[]);
+  useEffect(()=>{
+    const scroll=()=>setScrolled(window.scrollY>16);
+    const frame=requestAnimationFrame(()=>{setInteractive(true);scroll();});
+    if(typeof IntersectionObserver==='function'&&marker.current){
+      const observer=new IntersectionObserver(([entry])=>setScrolled(!entry.isIntersecting));
+      observer.observe(marker.current);
+      return()=>{cancelAnimationFrame(frame);observer.disconnect();};
+    }
+    window.addEventListener('scroll',scroll,{passive:true});
+    return()=>{cancelAnimationFrame(frame);window.removeEventListener('scroll',scroll);};
+  },[]);
   useEffect(()=>{if(!open)return;const previous=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=previous;};},[open]);
   useEffect(()=>{
     if(pathname!=='/'||typeof window.IntersectionObserver!=='function')return;
     const observer=new IntersectionObserver(entries=>{for(const entry of entries)if(entry.isIntersecting)setActive('/#'+entry.target.id);},{rootMargin:'-15% 0px -65% 0px'});
     document.querySelectorAll('section[id]').forEach(node=>observer.observe(node));return()=>observer.disconnect();
   },[pathname]);
+  const resetMenuMotion=useCallback(()=>{
+    // Cancel before hiding a panel: stop() would try to commit styles on hidden DOM.
+    menuMotion.current?.cancel();menuMotion.current=null;
+    dialog.current?.style.removeProperty('opacity');
+    dialog.current?.style.removeProperty('transform');
+  },[dialog]);
   useEffect(()=>{
     const preference=window.matchMedia('(prefers-reduced-motion: reduce)');
-    const reduce=()=>{if(preference.matches&&closingMotion.current){closingMotion.current.cancel();closingMotion.current=null;dialog.current?.close();setOpen(false);}};
-    preference.addEventListener('change',reduce);
-    return()=>{preference.removeEventListener('change',reduce);closingMotion.current?.cancel();};
-  },[]);
+    const desktop=window.matchMedia('(min-width: 1280px)');
+    const reduce=()=>{if(preference.matches){resetMenuMotion();if(closing.current)dialog.current?.close();}};
+    const resize=()=>{if(desktop.matches){resetMenuMotion();dialog.current?.close();}};
+    preference.addEventListener('change',reduce);desktop.addEventListener('change',resize);
+    return()=>{preference.removeEventListener('change',reduce);desktop.removeEventListener('change',resize);resetMenuMotion();};
+  },[dialog,resetMenuMotion]);
+  function show(){
+    const node=dialog.current;if(!node||node.open)return;
+    resetMenuMotion();closing.current=false;node.showModal();setOpen(true);
+    if(window.matchMedia('(prefers-reduced-motion: reduce)').matches||!node.animate)return;
+    const animation=animate(node,{opacity:[.6,1],transform:['translateY(-8px) scale(.985)','translateY(0px) scale(1)']},{duration:.2,ease:'easeOut'});
+    menuMotion.current=animation;
+    void animation.then(()=>{if(menuMotion.current===animation)resetMenuMotion();});
+  }
   function close(){
     const node=dialog.current;
-    if(!node?.open||closingMotion.current)return;
-    const finish=()=>{node.close();setOpen(false);};
-    if(pathname!=='/'||window.matchMedia('(prefers-reduced-motion: reduce)').matches||!node.animate){finish();return;}
-    const animation=node.animate([{opacity:1,translate:'0 0'},{opacity:0,translate:`${current==='ar'?-12:12}px 0`}],{duration:180,easing:'ease-out'});
-    closingMotion.current=animation;
-    animation.onfinish=()=>{closingMotion.current=null;finish();};
+    if(!node?.open||closing.current)return;
+    resetMenuMotion();closing.current=true;
+    const finish=()=>{resetMenuMotion();node.close();};
+    if(window.matchMedia('(prefers-reduced-motion: reduce)').matches||!node.animate){finish();return;}
+    const animation=animate(node,{opacity:[1,0],transform:['translateY(0px)','translateY(-6px)']},{duration:.16,ease:'easeOut'});
+    menuMotion.current=animation;
+    void animation.then(()=>{if(menuMotion.current===animation&&closing.current)finish();});
+  }
+  function containTab(event:KeyboardEvent<HTMLDialogElement>){
+    if(event.key!=='Tab')return;
+    const controls=Array.from(event.currentTarget.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),[tabindex="0"]')).filter(node=>node.getClientRects().length&&node.tabIndex>=0);
+    const first=controls[0],last=controls[controls.length-1];
+    if(event.shiftKey&&document.activeElement===first){event.preventDefault();last?.focus();}
+    else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first?.focus();}
+  }
+  function closeForNavigation(){
+    // A route transition may hide the old tree immediately. Release its animation first.
+    resetMenuMotion();closing.current=false;dialog.current?.close();
   }
   const links=(mobile=false)=>c.nav.map((label,index)=>{
     const href=navigation[index];const selected=href.includes('#')?pathname==='/'&&active===href:pathname.startsWith(href);
-    return <Link href={href} key={href} aria-current={selected?(href.includes('#')?'location':'page'):undefined} onClick={mobile?close:undefined}>{label}</Link>;
+    return <Link href={href} key={href} aria-current={selected?(href.includes('#')?'location':'page'):undefined} onClick={mobile?()=>{if(href.startsWith(pathname+'#'))close();else closeForNavigation();}:undefined}>{label}</Link>;
   });
   return <>
     <a className="pm-skip" href="#main-content">{c.skipContent}</a>
-    <header className={`pm-header${scrolled?' is-scrolled':''}`} data-interactive={interactive?'ready':undefined}>
+    <span className="pm-navigation-marker" ref={marker} aria-hidden="true"/>
+    <div className="pm-navigation-shell"><header className={`pm-header pm-glass-header${scrolled?' is-scrolled':''}`} data-interactive={interactive?'ready':undefined}>
       <div className="pm-container pm-nav-row"><MarketingBrand/>
         <nav className="pm-desktop-nav" aria-label={current==='ar'?'التنقل الرئيسي':'Main navigation'}>{links()}</nav>
-        <div className="pm-nav-actions"><MarketingLanguage locale={current}/><Link href="/login" prefetch={false} className="pm-signin">{c.signIn}</Link><MarketingCTA role="auto" className="pm-header-cta">{c.getStarted}</MarketingCTA><button type="button" className="pm-menu-button" aria-label={c.openMenu} aria-expanded={open} aria-controls="pm-navigation-drawer" onClick={()=>{dialog.current?.showModal();setOpen(true);}}><IconMenu2 size={22}/></button></div>
+        <div className="pm-nav-actions"><MarketingLanguage locale={current}/><Link href="/login" prefetch={false} className="pm-signin">{c.signIn}</Link><MarketingCTA role="auto" className="pm-header-cta">{c.getStarted}</MarketingCTA><button type="button" className="pm-menu-button" aria-label={c.openMenu} aria-expanded={open} aria-haspopup="dialog" aria-controls="pm-navigation-drawer" onClick={show}><IconMenu2 size={22} aria-hidden="true"/></button></div>
       </div>
-    </header>
-    <dialog ref={dialog} id="pm-navigation-drawer" className="pm-drawer" onCancel={event=>{if(pathname==='/'){event.preventDefault();close();}}} onClose={()=>{closingMotion.current?.cancel();closingMotion.current=null;setOpen(false);}} aria-label={current==='ar'?'قائمة التنقل':'Navigation menu'} onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();if(event.target===event.currentTarget&&(event.clientX<rect.left||event.clientX>rect.right))close();}}>
-      <div className="pm-drawer-head"><MarketingBrand/><button type="button" className="pm-menu-button" onClick={close} aria-label={c.closeMenu}><IconX size={23}/></button></div>
-      <nav>{links(true)}</nav><div className="pm-drawer-actions"><Link href="/login" className="pm-button pm-button-secondary" onClick={close}>{c.signIn}</Link><MarketingCTA role="auto">{c.getStarted}</MarketingCTA></div><p dir="ltr">{c.tagline}</p>
+    </header></div>
+    <dialog ref={dialog} id="pm-navigation-drawer" className="pm-drawer pm-glass-menu" dir={current==='ar'?'rtl':'ltr'} onKeyDown={containTab} onCancel={event=>{event.preventDefault();close();}} onClose={()=>{resetMenuMotion();closing.current=false;setOpen(false);}} aria-label={current==='ar'?'قائمة التنقل':'Navigation menu'} onClick={event=>{const rect=event.currentTarget.getBoundingClientRect();if(event.target===event.currentTarget&&(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom))close();}}>
+      <div className="pm-drawer-head"><span className="pm-navigation-label">{current==='ar'?'استكشف المنصة':'Explore the platform'}</span><button type="button" className="pm-menu-button" onClick={close} aria-label={c.closeMenu} autoFocus><IconX size={21} aria-hidden="true"/></button></div>
+      <nav aria-label={current==='ar'?'التنقل الرئيسي':'Main navigation'}>{links(true)}</nav><div className="pm-drawer-actions"><Link href="/login" prefetch={false} className="pm-button pm-button-secondary" onClick={closeForNavigation}>{c.signIn}</Link><MarketingCTA role="auto">{c.getStarted}</MarketingCTA></div><div className="pm-drawer-meta"><MarketingLanguage locale={current}/><p dir="ltr">{c.tagline}</p></div>
     </dialog>
   </>;
 }

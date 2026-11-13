@@ -18,7 +18,8 @@
     "test:industries-layout": "node tests/industries-viewport.mjs",
     "lint:marketing": "eslint features/marketing",
     "test:landing": "node tests/landing-motion-browser.mjs",
-    "test:landing:pixels": "node tests/landing-motion-pixels.mjs"
+    "test:landing:pixels": "node tests/landing-motion-pixels.mjs",
+    "test:navbar": "node tests/navbar-browser.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.15",

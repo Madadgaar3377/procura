@@ -1,0 +1,206 @@
+/* Public marketing navigation only. The reserved shell never shrinks on scroll. */
+.pm-navigation-marker {
+  position: absolute;
+  inset-block-start: 16px;
+  inset-inline-start: 0;
+  inline-size: 1px;
+  block-size: 1px;
+  pointer-events: none;
+}
+.procura-marketing .pm-navigation-shell { block-size: 104px; flex-shrink: 0; }
+
+.procura-marketing .pm-header.pm-glass-header {
+  /* Fixed inside a reserved shell also survives legacy mobile body overflow rules. */
+  position: fixed;
+  inset-block-start: 0;
+  inset-inline: 0;
+  inline-size: 100%;
+  block-size: 104px;
+  height: 104px;
+  padding: 16px 24px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  isolation: isolate;
+  pointer-events: none;
+}
+
+.procura-marketing .pm-glass-header .pm-nav-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  inline-size: min(1280px, 100%);
+  block-size: 72px;
+  padding-inline: 22px;
+  border-radius: 9999px;
+  pointer-events: auto;
+  isolation: isolate;
+}
+
+/* Compress just the glass surface with a transform. Text and page geometry stay still. */
+.procura-marketing .pm-glass-header .pm-nav-row::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border: 1px solid rgba(148, 163, 184, .22);
+  border-radius: inherit;
+  background: rgba(255, 255, 255, .78);
+  box-shadow: 0 8px 32px rgba(15, 23, 42, .08), inset 0 1px 0 rgba(255, 255, 255, .9);
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  pointer-events: none;
+}
+
+.procura-marketing .pm-glass-header.is-scrolled .pm-nav-row::before {
+  transform: scaleY(.9);
+  background: rgba(255, 255, 255, .94);
+  border-color: rgba(148, 163, 184, .3);
+}
+
+.procura-marketing .pm-glass-header .pm-brand { justify-self: start; }
+.procura-marketing .pm-glass-header .pm-brand > span { font-size: 29px; }
+.procura-marketing .pm-glass-header .pm-desktop-nav { justify-content: center; gap: 2px; }
+.procura-marketing .pm-glass-header .pm-desktop-nav a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: 44px;
+  padding: 10px 9px;
+  border-radius: 9999px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 500;
+}
+.procura-marketing .pm-glass-header .pm-desktop-nav a::after {
+  inset-inline: calc(50% - 2px) auto;
+  inset-block-end: 4px;
+  inline-size: 4px;
+  block-size: 4px;
+  border-radius: 50%;
+  background: #2563eb;
+}
+.procura-marketing .pm-glass-header .pm-desktop-nav a:hover::after { transform: scale(0); }
+.procura-marketing .pm-glass-header .pm-desktop-nav a[aria-current]::after { transform: scale(1); }
+.procura-marketing .pm-glass-header .pm-desktop-nav a:hover,
+.procura-marketing .pm-glass-header .pm-desktop-nav a[aria-current] {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+.procura-marketing .pm-glass-header .pm-nav-actions { gap: 8px; justify-self: end; }
+.procura-marketing .pm-glass-header :is(.pm-language, .pm-signin) {
+  min-block-size: 44px;
+  border-radius: 9999px;
+  padding: 8px;
+  font-size: 12px;
+  color: #0f172a;
+}
+.procura-marketing .pm-glass-header :is(.pm-language, .pm-signin):hover { background: #eff6ff; color: #1d4ed8; }
+.procura-marketing .pm-glass-header .pm-header-cta {
+  min-block-size: 44px;
+  padding: 10px 15px;
+  border-radius: 9999px;
+  font-size: 12px;
+  gap: 7px;
+  background: #2563eb;
+  border-color: #2563eb;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, .12);
+}
+.procura-marketing .pm-glass-header .pm-header-cta:hover {
+  background: #1d4ed8;
+  box-shadow: 0 6px 18px rgba(37, 99, 235, .2);
+}
+.procura-marketing :is(.pm-glass-header, .pm-glass-menu) .pm-menu-button {
+  inline-size: 44px;
+  block-size: 44px;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border: 1px solid rgba(148, 163, 184, .24);
+  border-radius: 50%;
+  background: rgba(248, 250, 252, .8);
+}
+.procura-marketing :is(.pm-glass-header, .pm-glass-menu) .pm-menu-button:hover { background: #eff6ff; color: #1d4ed8; }
+.procura-marketing :is(.pm-glass-header, .pm-glass-menu) :is(a, button):focus-visible { outline-offset: 3px; }
+
+/* A native modal supplies focus containment, inert background and focus restoration. */
+.procura-marketing .pm-drawer.pm-glass-menu {
+  position: fixed;
+  inset-block: 104px auto;
+  inset-inline: 16px;
+  margin: 0 auto;
+  inline-size: min(640px, calc(100% - 32px));
+  block-size: auto;
+  max-block-size: calc(100dvh - 120px);
+  padding: 18px;
+  border: 1px solid rgba(148, 163, 184, .24);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, .94);
+  color: #0f172a;
+  box-shadow: 0 16px 48px rgba(15, 23, 42, .12);
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  animation: none;
+}
+.procura-marketing .pm-glass-menu.pm-drawer::backdrop { background: rgba(15, 23, 42, .18); backdrop-filter: none; animation: none; }
+.procura-marketing .pm-glass-menu .pm-drawer-head { gap: 12px; margin-block-end: 8px; }
+.procura-marketing .pm-glass-menu .pm-navigation-label { padding-inline-start: 12px; font-size: 12px; font-weight: 600; color: #64748b; }
+.procura-marketing .pm-glass-menu .pm-menu-button { display: flex; }
+.procura-marketing .pm-glass-menu nav { gap: 2px; }
+.procura-marketing .pm-glass-menu nav a {
+  display: flex;
+  align-items: center;
+  min-block-size: 46px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 12px;
+  font-size: 15px;
+  color: #334155;
+}
+.procura-marketing .pm-glass-menu nav a:hover,
+.procura-marketing .pm-glass-menu nav a[aria-current] { color: #1d4ed8; background: #eff6ff; }
+.procura-marketing .pm-glass-menu .pm-drawer-actions { grid-template-columns: 1fr 1fr; gap: 10px; margin-block: 16px; }
+.procura-marketing .pm-glass-menu .pm-button { min-block-size: 46px; padding-inline: 12px; border-radius: 9999px; font-size: 13px; gap: 8px; }
+.procura-marketing .pm-glass-menu .pm-drawer-meta { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding-block-start: 12px; border-block-start: 1px solid #e2e8f0; }
+.procura-marketing .pm-glass-menu .pm-language { padding-inline: 10px; border-radius: 9999px; }
+.procura-marketing .pm-glass-menu .pm-drawer-meta p { max-inline-size: 190px; font-size: 10px; line-height: 1.6; color: #64748b; }
+
+@media (max-width: 1279px) {
+  .procura-marketing .pm-glass-header .pm-nav-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .procura-marketing .pm-glass-header .pm-desktop-nav { display: none; }
+}
+@media (max-width: 767px) {
+  .procura-marketing .pm-navigation-shell { block-size: 84px; }
+  .procura-marketing .pm-header.pm-glass-header { height: 84px; block-size: 84px; padding: 12px; }
+  .procura-marketing .pm-glass-header .pm-nav-row { block-size: 60px; padding-inline: 16px 8px; gap: 12px; }
+  .procura-marketing .pm-glass-header .pm-brand > span { font-size: clamp(26px, 6vw, 29px); }
+  .procura-marketing .pm-glass-header .pm-nav-actions > :is(.pm-language, .pm-signin, .pm-header-cta) { display: none; }
+  .procura-marketing .pm-glass-menu.pm-drawer { inset-block-start: 84px; inset-inline: 12px; inline-size: calc(100% - 24px); max-block-size: calc(100dvh - 96px); padding: 14px; border-radius: 24px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* Move only the small content layers; keep the blurred surface static at first paint. */
+  .procura-marketing .pm-glass-header .pm-nav-row > * { animation: pm-glass-arrive 280ms cubic-bezier(.2, .65, .3, 1); }
+  .procura-marketing .pm-glass-header .pm-nav-row::before { transition: transform 180ms ease, background-color 180ms ease; }
+  .procura-marketing .pm-glass-header .pm-desktop-nav a,
+  .procura-marketing .pm-glass-header :is(.pm-language, .pm-signin),
+  .procura-marketing .pm-glass-menu nav a,
+  .procura-marketing :is(.pm-glass-header, .pm-glass-menu) .pm-menu-button { transition: color 180ms ease, background-color 180ms ease; }
+  .procura-marketing .pm-glass-menu.pm-drawer[open]::backdrop { animation: pm-glass-backdrop 160ms ease-out; }
+}
+@keyframes pm-glass-arrive { from { translate: 0 -3px; } to { translate: 0 0; } }
+@keyframes pm-glass-backdrop { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .procura-marketing :is(.pm-glass-header, .pm-glass-menu) *,
+  .procura-marketing :is(.pm-glass-header, .pm-glass-menu)::backdrop,
+  .procura-marketing .pm-glass-header .pm-nav-row::before { animation: none !important; transition: none !important; }
+}
+@supports not ((backdrop-filter: blur(16px)) or (-webkit-backdrop-filter: blur(16px))) {
+  .procura-marketing .pm-glass-header .pm-nav-row::before,
+  .procura-marketing .pm-glass-menu.pm-drawer { background: rgba(255, 255, 255, .98); }
+}
