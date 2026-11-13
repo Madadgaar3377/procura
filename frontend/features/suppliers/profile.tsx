@@ -1,4 +1,5 @@
 "use client";
+import '@/app/supplier-profile.css';
 
 import SupplierProducts from './supplier-products';
 import PromotionBadges from './promotion-badges';

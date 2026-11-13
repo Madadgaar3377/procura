@@ -5,7 +5,8 @@ import {marketingFont as geist} from './fonts';
 import {IconArrowRight,IconCheck,IconChevronDown,IconClock,IconFileText,IconLayoutDashboard,IconLock,IconMail,IconSearch,IconShieldCheck,IconUsers,IconWorld} from '@tabler/icons-react';
 import {marketingCopy,type MarketingLocale} from './copy';
 import {MarketingCTA,MarketingEnhancements,MarketingFooter,MarketingHeader} from './chrome';
-import {BuyerFormPreview,ComparisonPreview,SupplierDashboardPreview,WorkflowPreview} from './previews';
+import {WorkflowPreview} from './previews';
+import {BuyerFormPreview,ComparisonPreview,SupplierDashboardPreview} from './previews-static';
 
 function Intro({eyebrow,title,body,center=false}:{eyebrow:string;title:string;body?:string;center?:boolean}){return <div className={`pm-section-intro${center?' pm-intro-centered':''}`}><span className="pm-eyebrow"><i/>{eyebrow}</span><h2>{title}</h2>{body&&<p>{body}</p>}</div>;}
 

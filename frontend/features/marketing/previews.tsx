@@ -1,7 +1,8 @@
 "use client";
 
-import {useState} from 'react';
-import {IconArrowRight, IconBuilding, IconCheck, IconChevronDown, IconClock, IconFileText, IconLayoutDashboard, IconLock, IconMapPin, IconPlus, IconSearch, IconShieldCheck} from '@tabler/icons-react';
+import {useEffect, useState} from 'react';
+import {useAnimate} from 'motion/react-mini';
+import {IconArrowRight, IconBuilding, IconCheck, IconClock, IconFileText, IconLayoutDashboard, IconMapPin, IconSearch, IconShieldCheck} from '@tabler/icons-react';
 import {marketingCopy,type MarketingLocale} from './copy';
 
 function PreviewLabel({locale}:{locale:MarketingLocale}){return <span className="pm-sample-label"><i aria-hidden="true"/>{marketingCopy[locale].illustrative}</span>;}
@@ -10,6 +11,21 @@ function ItemTable({locale}:{locale:MarketingLocale}){const p=marketingCopy[loca
 
 export function WorkflowPreview({locale}:{locale:MarketingLocale}){
   const [tab,setTab]=useState(0);const c=marketingCopy[locale],p=c.preview;
+  const [scope,animate]=useAnimate<HTMLDivElement>();
+  useEffect(()=>{
+    // The initial panel already enters with its parent; reserve Motion for tab interactions.
+    if(tab===0)return;
+    if(window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+    const panel=scope.current?.querySelector<HTMLElement>(`#pm-workflow-panel-${tab}`);
+    if(!panel)return;
+    const animation=animate(panel,{translate:['0 6px','0 0']},{duration:.28,ease:'easeOut'});
+    const preference=window.matchMedia('(prefers-reduced-motion: reduce)');
+    // A tab can already be hidden during effect cleanup. Cancel without
+    // committing computed styles to a non-rendered panel.
+    const cancel=()=>animation.cancel();
+    preference.addEventListener('change',cancel);
+    return()=>{cancel();preference.removeEventListener('change',cancel);};
+  },[tab,scope,animate]);
   const suppliers=[p.supplierA,p.supplierB,p.supplierC];
   function move(index:number){setTab(index);requestAnimationFrame(()=>document.querySelector<HTMLButtonElement>(`[data-workflow-tab="${index}"]`)?.focus());}
   return <div className="pm-workflow-composition">
@@ -17,7 +33,7 @@ export function WorkflowPreview({locale}:{locale:MarketingLocale}){
     <div className="pm-workflow-window"><PreviewTop locale={locale}/>
       <div className="pm-preview-body"><div className="pm-preview-request"><span className="pm-mono">RFQ / 001</span><span className="pm-pill"><i/>{p.structured}</span></div><h2>{p.request}</h2><div className="pm-preview-location"><IconMapPin size={14}/>{p.riyadh}<span>·</span>{p.electrical}<IconArrowRight className="pm-arrow" size={12}/>{p.tools}</div>
       <div className="pm-preview-tabs" role="tablist" aria-label={p.workflowHint}>{p.tabs.map((label,index)=><button type="button" role="tab" id={`pm-workflow-tab-${index}`} aria-controls={`pm-workflow-panel-${index}`} aria-selected={tab===index} tabIndex={tab===index?0:-1} data-workflow-tab={index} key={label} onClick={()=>setTab(index)} onKeyDown={event=>{if(event.key==='ArrowRight'||event.key==='ArrowLeft'){event.preventDefault();const delta=(event.key==='ArrowRight'?1:-1)*(locale==='ar'?-1:1);move((tab+delta+4)%4);}if(event.key==='Home'){event.preventDefault();move(0);}if(event.key==='End'){event.preventDefault();move(3);}}}><span>{String(index+1).padStart(2,'0')}</span>{label}</button>)}</div>
-      <div className="pm-preview-stage">
+      <div className="pm-preview-stage" ref={scope}>
         <div role="tabpanel" id="pm-workflow-panel-0" aria-labelledby="pm-workflow-tab-0" hidden={tab!==0}><div className="pm-preview-section-title"><IconFileText size={16}/>{p.requestDetails}<span>02</span></div><ItemTable locale={locale}/><div className="pm-preview-pair"><span><IconMapPin size={15}/>{p.riyadh}</span><span><IconClock size={15}/>{p.localDate}</span></div><div className="pm-preview-check"><IconCheck size={15}/>{p.structured}</div></div>
         <div role="tabpanel" id="pm-workflow-panel-1" aria-labelledby="pm-workflow-tab-1" hidden={tab!==1}><div className="pm-preview-section-title"><IconSearch size={16}/>{p.matching}<span>03</span></div>{suppliers.map((name,index)=><div className="pm-supplier-match" key={name}><span className="pm-company-initial" aria-hidden="true">{String.fromCharCode(65+index)}</span><div><b>{name}</b><small>{p.electrical} / {p.tools} · {p.riyadh}</small></div><IconCheck className="pm-match-check" size={18}/></div>)}<div className="pm-preview-check"><IconShieldCheck size={15}/>{p.eligible} · {p.coverage}</div></div>
         <div role="tabpanel" id="pm-workflow-panel-2" aria-labelledby="pm-workflow-tab-2" hidden={tab!==2}><div className="pm-preview-section-title"><IconLayoutDashboard size={16}/>{p.responses}<span>02 / 03</span></div>{suppliers.map((name,index)=><div className="pm-supplier-match" key={name}><IconBuilding size={20}/><div><b>{name}</b><small>{index<2?p.submitted:p.pending}</small></div><span className={`pm-status-dot${index===2?' pm-status-pending':''}`}/></div>)}<div className="pm-preview-check"><IconClock size={15}/>{p.pending}: 01</div></div>
@@ -26,13 +42,4 @@ export function WorkflowPreview({locale}:{locale:MarketingLocale}){
     </div>
     <div className="pm-workflow-footnote"><span className="pm-footnote-line"/><span>{c.heroLabels[0]}<IconArrowRight className="pm-arrow" size={13}/>{c.heroLabels[3]}</span></div>
   </div>;
-}
-
-export function BuyerFormPreview({locale}:{locale:MarketingLocale}){const p=marketingCopy[locale].preview;return <div className="pm-form-composition"><PreviewLabel locale={locale}/><div className="pm-form-window"><PreviewTop locale={locale}/><div className="pm-form-toolbar"><h3>{marketingCopy[locale].createRFQ}</h3><span>02 / 03</span></div><div className="pm-form-steps">{[p.requestDetails,p.description,p.tabs[3]].map((text,index)=><span className={index===1?'is-current':''} key={text}>{index+1}<small>{text}</small></span>)}</div><div className="pm-form-body"><div className="pm-form-fields"><div><label>{p.category}</label><span>{p.electrical}<IconChevronDown size={14}/></span></div><div><label>{p.subcategory}</label><span>{p.tools}<IconChevronDown size={14}/></span></div></div><label className="pm-preview-field-label">{p.description}</label><div className="pm-search-preview"><IconSearch size={17}/><span>{p.material}</span><span className="pm-edit-cursor" aria-hidden="true"/></div><div className="pm-form-fields pm-form-fields-bottom"><div><label>{p.unit}</label><span>{p.pcs}<IconChevronDown size={14}/></span></div><div><label>{p.quantity}</label><span>12</span></div></div><div className="pm-form-add"><IconPlus size={15}/>{locale==='ar'?'إضافة بند آخر':'Add another item'}</div></div></div><div className="pm-private-note"><IconLock size={18}/><span>{locale==='ar'?'تعديلات الوصف لهذا الطلب فقط. يبقى دليل المواد محفوظاً.':'Your description, for this RFQ. The Material Master stays intact.'}</span></div></div>;}
-
-export function SupplierDashboardPreview({locale}:{locale:MarketingLocale}){const p=marketingCopy[locale].preview;return <div className="pm-supplier-composition"><PreviewLabel locale={locale}/><div className="pm-supplier-window"><PreviewTop locale={locale} supplier/><div className="pm-supplier-body"><div className="pm-dashboard-heading"><div><span className="pm-mono">{p.sample}</span><h3>{locale==='ar'?'نظرة عامة للمورد':'Supplier overview'}</h3></div><span className="pm-dashboard-live"><i/>{locale==='ar'?'شركة توضيحية':'Illustrative company'}</span></div><div className="pm-six-stats">{p.supplierStats.map((label,index)=><div key={label}><span>{label}</span><strong>{[24,6,12,3,2,1][index]}</strong></div>)}</div><div className="pm-recent-label">{p.recent}<IconArrowRight className="pm-arrow" size={15}/></div>{[p.request,locale==='ar'?'مستلزمات موقع المشروع':'Project site supplies'].map((name,index)=><div className="pm-dashboard-invitation" key={name}><span className="pm-dashboard-doc"><IconFileText size={18}/></span><div><b>{name}</b><small>{index===0?p.electrical+' / '+p.tools:locale==='ar'?'المدني / العزل':'Civil / Insulation'}</small></div><span className="pm-pill">{index===0?p.pending:p.submitted}</span></div>)}</div></div><div className="pm-private-rate"><span className="pm-private-rate-icon"><IconLock size={19}/></span><div><b>{p.private}</b><small>{p.privateDescription}</small></div><IconCheck size={17}/></div></div>;}
-
-export function ComparisonPreview({locale}:{locale:MarketingLocale}){
-  const p=marketingCopy[locale].preview;
-  return <div className="pm-comparison-window"><div className="pm-comparison-toolbar"><div><span className="pm-mono">{p.sample} / RFQ 001</span><h3>{p.tabs[3]}</h3></div><span className="pm-pill">02 {p.submitted}</span></div><div className="pm-comparison-scroll" role="region" tabIndex={0} aria-label={p.tabs[3]}><table><thead><tr><th>{p.description}</th><th>{p.supplierA}<span>{p.submitted}</span></th><th>{p.supplierB}<span>{p.submitted}</span></th><th className="pm-pending-offer">{p.supplierC}<span>{p.pending}</span></th></tr></thead><tbody><tr><th>{p.material}<small>12 {p.pcs}</small></th><td><b>85.00</b><small>{p.SAR} / {p.pcs}</small></td><td><b>92.00</b><small>{p.SAR} / {p.pcs}</small></td><td rowSpan={6} className="pm-awaiting"><IconClock size={22}/><span>{p.pending}</span></td></tr><tr><th>{p.materialTwo}<small>24 {p.pcs}</small></th><td><b>45.00</b><small>{p.SAR} / {p.pcs}</small></td><td><b>48.00</b><small>{p.SAR} / {p.pcs}</small></td></tr><tr><th>{p.brand}</th><td>{p.brandValue}</td><td>{p.brandValue}</td></tr><tr><th>{p.lead}</th><td>5 {p.days}</td><td>7 {p.days}</td></tr><tr><th>{p.vat}</th><td>315.00 {p.SAR}</td><td>338.40 {p.SAR}</td></tr><tr className="pm-total-row"><th>{p.total}</th><td><b>2,415.00 {p.SAR}</b></td><td><b>2,594.40 {p.SAR}</b></td></tr></tbody></table></div><div className="pm-comparison-footer"><IconShieldCheck size={17}/><span>{p.complianceValue}. {p.summary}</span><PreviewLabel locale={locale}/></div></div>;
 }

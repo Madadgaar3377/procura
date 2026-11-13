@@ -84,6 +84,16 @@ class PhoneOTP(TimeID, Base):
 
 class EmailOTP(TimeID, Base):
     __tablename__='email_otps'
+    __table_args__=(Index('ix_email_otps_reset_link_hash','code_hash',
+        postgresql_where=text("purpose = 'password_reset_link'"),
+        sqlite_where=text("purpose = 'password_reset_link'")),)
+    # Also stores durable password-reset requests; ordinary verification rows
+    # leave these fields NULL. Never authorize a reset from an unbound row.
+    user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'), nullable=True, index=True)
+    credential_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     email: Mapped[str] = mapped_column(String(200), index=True)
     purpose: Mapped[str] = mapped_column(String(24))
     code_hash: Mapped[str] = mapped_column(String(64))

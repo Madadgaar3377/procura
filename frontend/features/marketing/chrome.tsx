@@ -6,7 +6,6 @@ import {useEffect, useRef, useState, type MouseEvent} from 'react';
 import {IconArrowRight, IconArrowUp, IconMenu2, IconWorld, IconX} from '@tabler/icons-react';
 import {useLocale} from '@/lib/locale';
 import {marketingCopy, type MarketingLocale} from './copy';
-import {mountHomeMotion} from './home-motion';
 
 const navigation=['/#buyers','/#suppliers','/#how-it-works','/industries','/suppliers','/pricing','/contact'];
 
@@ -58,7 +57,7 @@ export function MarketingHeader({locale}:{locale?:MarketingLocale}){
   const {arabic}=useLocale();const current=locale||(arabic?'ar':'en');const c=marketingCopy[current];
   const pathname=usePathname();const dialog=useRef<HTMLDialogElement>(null);const closingMotion=useRef<Animation|null>(null);
   const [open,setOpen]=useState(false),[scrolled,setScrolled]=useState(false),[active,setActive]=useState(''),[interactive,setInteractive]=useState(false);
-  useEffect(()=>{setInteractive(true);const scroll=()=>setScrolled(window.scrollY>12);scroll();window.addEventListener('scroll',scroll,{passive:true});return()=>window.removeEventListener('scroll',scroll);},[]);
+  useEffect(()=>{const scroll=()=>setScrolled(window.scrollY>12);const frame=requestAnimationFrame(()=>{setInteractive(true);scroll();});window.addEventListener('scroll',scroll,{passive:true});return()=>{cancelAnimationFrame(frame);window.removeEventListener('scroll',scroll);};},[]);
   useEffect(()=>{if(!open)return;const previous=document.body.style.overflow;document.body.style.overflow='hidden';return()=>{document.body.style.overflow=previous;};},[open]);
   useEffect(()=>{
     if(pathname!=='/'||typeof window.IntersectionObserver!=='function')return;
@@ -113,7 +112,12 @@ export function MarketingFooter({locale}:{locale?:MarketingLocale}){
 export function MarketingEnhancements({locale}:{locale?:MarketingLocale}){
   useEffect(()=>{
     const root=document.querySelector<HTMLElement>('.pm-home');if(!root)return;
-    return mountHomeMotion(root);
+    let disposed=false;let cleanup:(()=>void)|undefined;
+    // Nonessential enhancements load separately from navigation and CTA hydration.
+    void import('./home-motion').then(({mountHomeMotion})=>{
+      if(!disposed)cleanup=mountHomeMotion(root);
+    }).catch(()=>{/* Server-rendered content and native controls remain available. */});
+    return()=>{disposed=true;cleanup?.();};
   },[locale]);
   return null;
 }

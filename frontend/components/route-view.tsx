@@ -1,4 +1,5 @@
 "use client";
+import '@/app/matching.css';
 import Link from "next/link";
 import {MarketingHeader,MarketingFooter} from "@/features/marketing/chrome";
 import { usePathname, useRouter } from "next/navigation";

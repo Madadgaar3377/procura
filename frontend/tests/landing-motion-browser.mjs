@@ -42,7 +42,7 @@ try{
   pending.set(id,{resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);}});
   ws.send(JSON.stringify({id,method,params}));
  });}
- async function evaluate(expression){const r=await command('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails)throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);return r.result.value;}
+ async function evaluate(expression){const r=await command('Runtime.evaluate',{expression,returnByValue:true,awaitPromise:true});if(r.exceptionDetails){console.error('Browser errors:',errors);throw new Error(r.exceptionDetails.exception?.description||r.exceptionDetails.text);}return r.result.value;}
  async function until(expression){for(let i=0;i<200;i++){if(await evaluate(expression))return;await delay(100);}throw new Error('Condition timed out: '+expression);}
  async function navigate(locale){
   await command('Network.setCookie',{name:'procura.locale',value:locale,url:origin,path:'/'});
@@ -104,6 +104,7 @@ try{
     for(let top=0;top<height;top+=750){await evaluate(`window.scrollTo({top:${top},behavior:'instant'})`);await delay(80);}
     await delay(1000);
     assert.equal(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),true,`${width}/${locale}: scrolling animations cause no overflow`);
+    await until(`document.getAnimations().filter(a=>a.playState==='running').length===0`);
     assert.equal(await evaluate(`document.getAnimations().filter(a=>a.playState==='running').length`),0,'No continuous animations after reveal');
     await evaluate(`document.querySelector('#faq summary').scrollIntoView({block:'center',behavior:'instant'});document.querySelector('#faq summary').focus({preventScroll:true});window.__faqEvents=[];for(const type of ['keydown','keyup','click','toggle'])document.querySelector('#faq details').addEventListener(type,e=>window.__faqEvents.push({type:e.type,key:e.key,open:e.currentTarget.open}));`);
     await delay(100);
@@ -128,6 +129,31 @@ try{
   assert.equal(await evaluate(`document.querySelector('#faq details').open`),true,'Arabic FAQ retains its close animation after language switching');
   await delay(250);
   assert.equal(await evaluate(`document.querySelector('#faq details').open`),false);
+  // Exercise the actual delegated mouse path, including reset and preference changes.
+  await command('Emulation.setDeviceMetricsOverride',{width:1440,height:1000,deviceScaleFactor:1,mobile:false});
+  await navigate('en');
+  await evaluate(`document.querySelector('.pm-footer a[href="/about"]').click()`);
+  await until(`location.pathname==='/about'`);
+  await evaluate(`history.back()`);
+  await until(`location.pathname==='/'&&!!document.querySelector('[data-workflow-tab="0"]')`);
+  await evaluate(`window.__oldLanding=true`);
+  await command('Page.reload',{ignoreCache:true});
+  await until(`!window.__oldLanding&&document.querySelector('.pm-header')?.dataset.interactive==='ready'`);
+  await until(`document.querySelector('.pm-home').dataset.motion==='enhanced'`);
+  const preview=await evaluate(`(()=>{const r=document.querySelector('.pm-workflow-window').getBoundingClientRect();return {x:r.left+r.width*.75,y:r.top+r.height*.35};})()`);
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',...preview});
+  await delay(300);
+  assert.equal(await evaluate(`document.querySelector('.pm-workflow-window').dataset.tilting`),'true','Desktop mouse enables restrained perspective');
+  assert.equal(await evaluate(`Math.abs(parseFloat(document.querySelector('.pm-workflow-window').style.getPropertyValue('--pm-tilt-y')))<=3`),true,'Tilt is bounded to three degrees');
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:10,y:10});
+  await delay(300);
+  assert.equal(await evaluate(`document.querySelectorAll('[data-tilting]').length`),0,'Leaving a preview resets tilt');
+  await command('Emulation.setTouchEmulationEnabled',{enabled:true});
+  await command('Emulation.setDeviceMetricsOverride',{width:375,height:1000,deviceScaleFactor:1,mobile:true});
+  await command('Input.dispatchMouseEvent',{type:'mouseMoved',x:200,y:800});
+  await delay(100);
+  assert.equal(await evaluate(`document.querySelectorAll('[data-tilting]').length`),0,'Mobile touch emulation disables tilt');
+  await command('Emulation.setTouchEmulationEnabled',{enabled:false});
   // Reduced motion also cancels animations already in progress.
   await command('Emulation.setEmulatedMedia',{features:[{name:'prefers-reduced-motion',value:'reduce'}]});
   await delay(100);

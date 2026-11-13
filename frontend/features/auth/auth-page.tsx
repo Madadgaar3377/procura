@@ -52,7 +52,19 @@ export default function LiveAuth({ type }: { type: string }) {
     setResetComplete(false);
     if (type === "reset-password") {
       const token = new URLSearchParams(window.location.hash.slice(1)).get("token");
-      if (token && /^[a-f0-9]{64}$/.test(token)) setResetToken(token);
+      if (token && /^[a-f0-9]{64}$/.test(token)) {
+        setResetToken(token);
+        setVerificationReady(false);
+        void api("auth/password/verify", {method:"POST",body:json({reset_token:token})})
+          .catch((cause: unknown) => {
+            if (resetStep.current !== "reset-password") return;
+            setResetToken("");
+            setError(cause instanceof ApiError && cause.status === 400
+              ? "This password reset link has expired or has already been used. Request a new link."
+              : "We could not validate this reset link. Try again or request a new link.");
+          })
+          .finally(() => setVerificationReady(true));
+      }
       if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
       const remaining = Math.ceil((Number(window.sessionStorage.getItem("procura.recovery-resend-at")) - Date.now()) / 1000);
       if (remaining > 0) setResendIn(Math.min(900, remaining));
@@ -187,6 +199,7 @@ export default function LiveAuth({ type }: { type: string }) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy || submitting.current) return;
+    const formElement = event.currentTarget;
     const form = new FormData(event.currentTarget);
     const value = (key: string) => String(form.get(key) || "");
     if ((register || (reset && resetToken)) && value("password") !== value("confirm_password")) {
@@ -250,9 +263,15 @@ export default function LiveAuth({ type }: { type: string }) {
         }
         await api("auth/password/reset", { method: "POST", body: json({ reset_token: resetToken, new_password: value("password"), confirm_password: value("confirm_password") }) });
         window.sessionStorage.removeItem(PENDING_EMAIL);
+        window.sessionStorage.removeItem("procura.recovery-resend-at");
         toast.success("Password updated", "Sign in with your new password.");
         setResetToken("");
+        setPassword("");
+        setEmailAddress("");
+        formElement.reset();
+        clearApiCache();
         setResetComplete(true);
+        router.replace("/login");
       } else if (email) {
         await api("auth/email/verification/confirm", { method: "POST", body: json({ code: value("code") }) });
         toast.success("Email verified", "Your business email is confirmed.");
@@ -292,7 +311,7 @@ export default function LiveAuth({ type }: { type: string }) {
       if(cause instanceof ApiError){
         setFieldErrors(cause.fieldErrors);
         if(cause.status===429)setResendIn(Math.min(900,Math.max(1,Number(cause.retryAfter)||60)));
-        if(reset && resetToken && cause.status===400){setResetToken("");setPassword("");}
+        if(reset && resetToken && cause.status===400){setResetToken("");setPassword("");setError("This password reset link has expired or has already been used. Request a new link.");}
       }
       toast.error("We could not complete that step", detail);
     } finally {
@@ -368,7 +387,7 @@ export default function LiveAuth({ type }: { type: string }) {
           {verify && phone && <p className="auth-form-description">{t("Verification requested for")}: <strong dir="ltr">{phone}</strong>{emailAddress && <> {t("and")} <strong dir="ltr">{emailAddress}</strong></>}</p>}
           {email && emailAddress && <p className="auth-form-description">{t("Verification requested for")}: <strong dir="ltr">{emailAddress}</strong></p>}
           {verify&&<p className="auth-form-description">{arabic?"إذا لم تصلك الرسالة، تحقق من إتاحة الرسائل الدولية وتواصل مع الدعم. لا يؤكد البريد الإلكتروني ملكية رقم الهاتف.":"If SMS does not arrive, check international SMS availability and contact support. Email verification does not replace phone ownership verification."} <Link href="/contact">{t("Need help?")}</Link></p>}
-          {(forgot || reset) && <p className="auth-form-description">{t("If you cannot access a verified recovery contact, contact support for identity review.")} <Link href="/contact">{t("Need help?")}</Link></p>}
+          {(forgot || reset) && <p className="auth-form-description">{t("If you cannot access a verified recovery contact, contact support for identity review.")} <Link href="/contact">{t("Need help?")}</Link>{reset && <> <Link href="/forgot-password">{t("Request new reset link")}</Link></>}</p>}
           {error && <div className="notice" role="alert">{t(error)}</div>}{register && error.includes("already registered") && <div className="auth-form-links"><Link href="/login">{t("Sign in to your existing account")}</Link><Link href="/verify-mobile">{t("Finish mobile verification using your original signup number")}</Link></div>}
           {(verify||email)&&!verificationReady&&error&&<Button type="button" variant="outline" onClick={()=>window.location.reload()}>{t('Try again')}</Button>}
           {message && <div className="notice success" role="status">{t(message)}</div>}

@@ -97,9 +97,9 @@ def deliver(db,event,now):
             event.status='skipped';event.delivery_status='recovery_destination_changed';event.secret_ciphertext=None;return
     if template=='password_reset':
         from app.models import EmailOTP
-        from app.modules.auth.router import recovery_key
+        from app.modules.auth.router import valid_recovery
         otp=db.get(EmailOTP,context.get('otp_id'))
-        if not otp or otp.email!=recovery_key(user) or otp.purpose!='password_reset' or otp.attempts>=5:
+        if not valid_recovery(otp,user,now) or otp.purpose!='password_reset':
             event.status='skipped';event.delivery_status='recovery_destination_changed';event.secret_ciphertext=None;return
     consent=user.phone_verified and user.sms_notifications_enabled if channel=='sms' else user.email_verified and user.email_notifications_enabled
     if not recipient or (not authentication and not consent):
@@ -126,14 +126,17 @@ def deliver(db,event,now):
         event.status='uncertain';event.last_error='SMTP outcome unknown; reconcile with mailbox or SMTP logs before retry';return
     secret=decrypt_delivery_secret(event.secret_ciphertext) if event.secret_ciphertext else None
     render_context={**context,'language':user.notification_language,'channel':channel,'minutes':max(1,(ttl+59)//60)}
+    if template=='password_reset':
+        import json
+        recovery=json.loads(secret)
+        secret=recovery['code']
     if template=='password_reset' and channel=='email':
         from urllib.parse import urlsplit
 
-        from app.modules.auth.router import recovery_link_token
         base=get_settings().frontend_url.rstrip('/');parsed=urlsplit(base)
         if parsed.scheme not in {'https','http'} or not parsed.netloc or parsed.username or parsed.password or parsed.query or parsed.fragment or (get_settings().is_production and parsed.scheme!='https'):
             raise core.PermanentOutboxError('FRONTEND_URL must be a secure application URL')
-        render_context['url']=base+'/reset-password#token='+recovery_link_token(context['otp_id'],secret)
+        render_context['url']=base+'/reset-password#token='+recovery['link_token']
     subject,plain,html=render_message(template,render_context,secret)
     event.delivery_status='submitting';event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_message_id(event.id)
     update_delivery_notification(db,event.id,'sending');db.commit()

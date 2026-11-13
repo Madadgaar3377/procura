@@ -1,4 +1,5 @@
 import hmac
+import json
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,7 @@ from app.security import (
     as_utc,
     audit,
     check_password,
+    credential_stamp,
     current_user,
     digest,
     password_hash,
@@ -317,6 +319,11 @@ class RecoveryVerified(BaseModel):
     verified: bool
     reset_token: str
 
+
+class RecoveryLinkCheck(BaseModel):
+    model_config=ConfigDict(extra='forbid')
+    reset_token: str = Field(pattern=r'^[a-f0-9]{64}$')
+
 class PasswordReset(PasswordRecoveryRequest):
     code: str | None = Field(default=None,pattern=r'^[0-9]{6}$')
     reset_token: str | None = Field(default=None,max_length=2000)
@@ -328,7 +335,7 @@ class PasswordReset(PasswordRecoveryRequest):
 def recovery_user(db, recipient):
     condition=email_identity(User.email)==recipient if '@' in recipient else User.phone_e164==recipient
     condition=condition & ((User.email_verified==True) | (User.phone_verified==True))
-    matches=db.scalars(select(User).where(condition,User.is_active==True).limit(2).with_for_update()).all()
+    matches=db.scalars(select(User).where(condition,User.is_active==True).limit(2).with_for_update().execution_options(populate_existing=True)).all()
     return matches[0] if len(matches)==1 else None
 
 
@@ -345,20 +352,55 @@ def trusted_recovery_key(user):
     return None
 
 
-def recovery_link_token(otp_id, code):
-    return hmac.new(get_settings().jwt_secret.encode(), f'recovery-link:{otp_id}:{code}'.encode(), sha256).hexdigest()
-
-
 def checked_recovery(db, user, code):
     key=recovery_key(user) if user else ''
-    otp=db.scalar(select(EmailOTP).where(EmailOTP.email==key,EmailOTP.purpose=='password_reset',EmailOTP.used==False).order_by(EmailOTP.created_at.desc()).with_for_update())
+    otp=db.scalar(select(EmailOTP).where(EmailOTP.user_id== (user.id if user else ''),EmailOTP.email==key,EmailOTP.purpose=='password_reset',EmailOTP.used==False).order_by(EmailOTP.created_at.desc()).with_for_update().execution_options(populate_existing=True))
     now=datetime.now(UTC)
-    if not user or not otp or otp.attempts>=5 or as_utc(otp.expires_at)<=now:
+    if not valid_recovery(otp,user,now) or otp.verified_at is not None:
         raise HTTPException(400,'Invalid or expired recovery code')
-    if not hmac.compare_digest(otp.code_hash,otp_digest('password_reset',key,code)):
+    if not hmac.compare_digest(otp.code_hash,otp_digest('password_reset',user.id,code)):
         otp.attempts+=1
         db.commit();raise HTTPException(400,'Invalid or expired recovery code')
     return otp
+
+
+RESET_PURPOSES=('password_reset','password_verified','password_reset_link')
+RESET_ERROR='This password reset link has expired or has already been used. Request a new link.'
+
+
+def valid_recovery(otp,user,now):
+    return bool(user and otp and otp.user_id==user.id and otp.purpose in RESET_PURPOSES
+                and not otp.used and not otp.consumed_at and not otp.revoked_at
+                and otp.attempts<5 and as_utc(otp.expires_at)>now
+                and otp.email==trusted_recovery_key(user)
+                and hmac.compare_digest(otp.credential_hash or '',credential_stamp(user)))
+
+
+def revoke_recovery(db,user):
+    db.execute(update(EmailOTP).where(EmailOTP.user_id==user.id,
+        EmailOTP.purpose.in_(RESET_PURPOSES),EmailOTP.used==False).values(used=True,revoked_at=datetime.now(UTC)))
+
+
+def consume_recovery(db,user,otp):
+    # Defense in depth: the database, rather than an ORM snapshot, decides
+    # whether this request can be consumed. Password and claim commit together.
+    now=datetime.now(UTC)
+    claimed=db.execute(update(EmailOTP).where(EmailOTP.id==otp.id,
+        EmailOTP.user_id==user.id,EmailOTP.purpose==otp.purpose,
+        EmailOTP.used==False,EmailOTP.consumed_at.is_(None),EmailOTP.revoked_at.is_(None),
+        EmailOTP.expires_at>now,EmailOTP.attempts<5,
+        EmailOTP.credential_hash==credential_stamp(user)).values(used=True,consumed_at=now).execution_options(synchronize_session='fetch'))
+    if claimed.rowcount!=1:
+        raise HTTPException(400,RESET_ERROR)
+
+
+def checked_recovery_link(db,token):
+    candidate=db.scalar(select(EmailOTP).where(EmailOTP.code_hash==digest(token),EmailOTP.purpose=='password_reset_link'))
+    user=db.scalar(select(User).where(User.id==candidate.user_id,User.is_active==True).with_for_update().execution_options(populate_existing=True)) if candidate else None
+    otp=db.scalar(select(EmailOTP).where(EmailOTP.id==candidate.id).with_for_update().execution_options(populate_existing=True)) if candidate else None
+    if not valid_recovery(otp,user,datetime.now(UTC)):
+        raise HTTPException(400,RESET_ERROR)
+    return user,otp
 
 
 @router.post('/password/forgot',status_code=202)
@@ -385,18 +427,29 @@ def password_forgot(payload:PasswordRecoveryRequest,request:Request,background_t
     except HTTPException as exc:
         if exc.status_code==429:return response
         raise
-    db.execute(update(EmailOTP).where(EmailOTP.email==key,EmailOTP.purpose.in_(['password_reset','password_verified','password_reset_link']),EmailOTP.used==False).values(used=True))
-    code=f'{secrets.randbelow(1000000):06d}'
-    otp=EmailOTP(email=key,purpose='password_reset',code_hash=otp_digest('password_reset',key,code),expires_at=datetime.now(UTC)+timedelta(minutes=get_settings().recovery_minutes))
+    revoke_recovery(db,user)
+    # Identifier+code is the legacy API contract (no challenge ID). Avoid
+    # reissuing a historical code that could otherwise make an old OTP valid
+    # against a newer request. The account lock serializes issuance.
+    for _ in range(10):
+        code=f'{secrets.randbelow(1000000):06d}'
+        code_hash=otp_digest('password_reset',user.id,code)
+        if not db.scalar(select(EmailOTP.id).where(EmailOTP.user_id==user.id,EmailOTP.code_hash==code_hash).limit(1)):
+            break
+    else:
+        raise HTTPException(503,'Password recovery is temporarily unavailable')
+    otp=EmailOTP(user_id=user.id,credential_hash=credential_stamp(user),email=key,purpose='password_reset',code_hash=code_hash,expires_at=datetime.now(UTC)+timedelta(minutes=min(15,get_settings().recovery_minutes)))
     db.add(otp);db.flush()
-    link_token=recovery_link_token(otp.id,code)
-    db.add(EmailOTP(email=key,purpose='password_reset_link',code_hash=digest(link_token),expires_at=otp.expires_at))
+    link_token=secrets.token_hex(32)
+    db.add(EmailOTP(user_id=user.id,credential_hash=credential_stamp(user),email=key,purpose='password_reset_link',code_hash=digest(link_token),expires_at=otp.expires_at))
     channels=[]
     if saudi_sms_eligible(user):channels.append('sms')
     if user.email and user.email_verified:channels.append('email')
     jobs=[]
     for channel in channels:
-        jobs.append(queue_delivery(db,user_id=user.id,channel=channel,template='password_reset',secret=code,context={'otp_id':otp.id,'recipient':user.phone if channel=='sms' else user.email},dedupe_key=f'password-reset:{otp.id}:{channel}',correlation_id=request.state.correlation_id).id)
+        # Both delivery secrets are encrypted by the existing outbox service.
+        secret=json.dumps({'code':code,'link_token':link_token})
+        jobs.append(queue_delivery(db,user_id=user.id,channel=channel,template='password_reset',secret=secret,context={'otp_id':otp.id,'recipient':user.phone if channel=='sms' else user.email},dedupe_key=f'password-reset:{otp.id}:{channel}',correlation_id=request.state.correlation_id).id)
     audit(db,user,'auth.password_recovery_requested',entity_id=user.id)
     db.commit()
     schedule_auth_deliveries(background_tasks,jobs)
@@ -404,15 +457,21 @@ def password_forgot(payload:PasswordRecoveryRequest,request:Request,background_t
 
 
 @router.post('/password/verify',response_model=RecoveryVerified)
-def password_verify(payload:RecoveryCode,request:Request,db:Session=Depends(get_db)):
-    recipient=payload.recipient()
+def password_verify(payload:RecoveryCode | RecoveryLinkCheck,request:Request,db:Session=Depends(get_db)):
     enforce_rate_limit(request,scope='password-reset-verify-ip',identity='all',limit=20,window_seconds=900)
+    if isinstance(payload,RecoveryLinkCheck):
+        user,otp=checked_recovery_link(db,payload.reset_token)
+        recipient_limit(request,scope='password-reset-verify-recipient',identity=user.id,limit=10,window_seconds=900)
+        # Checking a link never mints another authorization or consumes it.
+        return {'verified':True,'reset_token':payload.reset_token}
+    recipient=payload.recipient()
     user=recovery_user(db,recipient)
     recipient_limit(request,scope='password-reset-verify-recipient',identity=user.id if user else recipient,limit=10,window_seconds=900)
     otp=checked_recovery(db,user,payload.code)
     now=datetime.now(UTC)
-    token=jwt.encode({'sub':user.id,'otp':otp.id,'stamp':digest(user.password_hash),'typ':'password_reset','iat':now,'exp':min(as_utc(otp.expires_at),now+timedelta(minutes=5))},get_settings().jwt_secret,algorithm='HS256')
+    token=jwt.encode({'sub':user.id,'otp':otp.id,'stamp':credential_stamp(user),'typ':'password_reset','iat':now,'exp':min(as_utc(otp.expires_at),now+timedelta(minutes=5))},get_settings().jwt_secret,algorithm='HS256')
     otp.purpose='password_verified'
+    otp.verified_at=now
     db.commit()
     return {'verified':True,'reset_token':token}
 
@@ -423,29 +482,28 @@ def password_reset(payload:PasswordReset,request:Request,background_tasks:Backgr
     if payload.confirm_password is not None and payload.confirm_password!=payload.new_password:
         raise HTTPException(422,'Your passwords do not match')
     if payload.reset_token and len(payload.reset_token)==64 and all(c in '0123456789abcdef' for c in payload.reset_token):
-        candidate=db.scalar(select(EmailOTP).where(EmailOTP.code_hash==digest(payload.reset_token),EmailOTP.purpose=='password_reset_link'))
-        user=recovery_user(db,candidate.email) if candidate else None
-        otp=db.scalar(select(EmailOTP).where(EmailOTP.id==candidate.id).with_for_update().execution_options(populate_existing=True)) if candidate else None
-        if not user or not otp or otp.used or as_utc(otp.expires_at)<=datetime.now(UTC):
-            raise HTTPException(400,'Invalid or expired password reset session')
+        user,otp=checked_recovery_link(db,payload.reset_token)
     elif payload.reset_token:
         try:
             claims=jwt.decode(payload.reset_token,get_settings().jwt_secret,algorithms=['HS256'],options={'require':['sub','otp','stamp','typ','exp','iat']})
             if claims['typ']!='password_reset':raise jwt.InvalidTokenError()
         except jwt.PyJWTError as exc:
-            raise HTTPException(400,'Invalid or expired password reset session') from exc
-        user=db.scalar(select(User).where(User.id==claims['sub'],User.is_active==True).with_for_update())
-        otp=db.scalar(select(EmailOTP).where(EmailOTP.id==claims['otp']).with_for_update())
-        if not user or not otp or otp.purpose!='password_verified' or otp.used or otp.attempts>=5 or otp.email!=trusted_recovery_key(user) or as_utc(otp.expires_at)<=datetime.now(UTC) or not hmac.compare_digest(claims['stamp'],digest(user.password_hash)):
-            raise HTTPException(400,'Invalid or expired password reset session')
+            raise HTTPException(400,RESET_ERROR) from exc
+        user=db.scalar(select(User).where(User.id==claims['sub'],User.is_active==True).with_for_update().execution_options(populate_existing=True))
+        otp=db.scalar(select(EmailOTP).where(EmailOTP.id==claims['otp']).with_for_update().execution_options(populate_existing=True))
+        if not valid_recovery(otp,user,datetime.now(UTC)) or otp.purpose!='password_verified' or otp.verified_at is None or not isinstance(claims['stamp'],str) or not hmac.compare_digest(claims['stamp'],credential_stamp(user)):
+            raise HTTPException(400,RESET_ERROR)
     else:
         recipient=payload.recipient()
         user=recovery_user(db,recipient)
         recipient_limit(request,scope='password-reset-verify-recipient',identity=user.id if user else recipient,limit=10,window_seconds=900)
         if not payload.code:raise HTTPException(422,'A verified reset session or recovery code is required')
         otp=checked_recovery(db,user,payload.code)
-    otp.used=True;user.password_hash=password_hash(payload.new_password)
-    db.execute(update(EmailOTP).where(EmailOTP.email==recovery_key(user),EmailOTP.purpose.in_(['password_reset','password_verified','password_reset_link'])).values(used=True))
+    if payload.reset_token:
+        recipient_limit(request,scope='password-reset-verify-recipient',identity=user.id,limit=10,window_seconds=900)
+    consume_recovery(db,user,otp)
+    user.password_hash=password_hash(payload.new_password)
+    revoke_recovery(db,user)
     db.execute(update(RefreshSession).where(RefreshSession.user_id==user.id).values(revoked=True))
     audit(db,user,'auth.password_reset',entity_id=user.id)
     jobs=[]
@@ -480,6 +538,7 @@ def change_password(payload:PasswordChange, request:Request, background_tasks:Ba
     if check_password(user.password_hash,payload.new_password):
         raise HTTPException(422,'New password must differ from current password')
     user.password_hash=password_hash(payload.new_password)
+    revoke_recovery(db,user)
     db.execute(update(RefreshSession).where(RefreshSession.user_id==user.id).values(revoked=True))
     for model, identity in [(EmailOTP, EmailOTP.email==recovery_key(user)), (PhoneOTP, PhoneOTP.phone==user.phone_e164)]:
         db.execute(update(model).where(identity).values(used=True))

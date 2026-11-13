@@ -143,6 +143,7 @@ export interface Schemas {
   "RateImportRow": { "row": number; "description": string; "unit": string; "unit_price": string; "material_id"?: string | null; "action"?: string; "status": string; "issue"?: string | null };
   "RateStatus": { "active": boolean; "expected_version"?: number | null };
   "RecoveryCode": { "identifier"?: string | null; "email"?: string | null; "phone"?: string | null; "phone_country"?: string | null; "code": string };
+  "RecoveryLinkCheck": { "reset_token": string };
   "RecoveryVerified": { "verified": boolean; "reset_token": string };
   "RefreshRequest": { "refresh_token": string };
   "Reorder": { "items": Array<Schemas["OrderEntry"]> };
@@ -190,7 +191,7 @@ export interface Operations {
   "POST /api/v1/auth/email/verification/request": { body: never; response: unknown };
   "POST /api/v1/auth/email/verification/confirm": { body: Schemas["EmailOTPVerify"]; response: unknown };
   "POST /api/v1/auth/password/forgot": { body: Schemas["PasswordRecoveryRequest"]; response: unknown };
-  "POST /api/v1/auth/password/verify": { body: Schemas["RecoveryCode"]; response: Schemas["RecoveryVerified"] };
+  "POST /api/v1/auth/password/verify": { body: Schemas["RecoveryCode"] | Schemas["RecoveryLinkCheck"]; response: Schemas["RecoveryVerified"] };
   "POST /api/v1/auth/password/reset": { body: Schemas["PasswordReset"]; response: unknown };
   "POST /api/v1/auth/password/change": { body: Schemas["PasswordChange"]; response: unknown };
   "POST /api/v1/auth/sessions/revoke-others": { body: never; response: unknown };

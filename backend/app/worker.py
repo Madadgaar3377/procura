@@ -127,6 +127,11 @@ def _remaining_code_ttl(db: Session, template: str, context: dict, now: datetime
 
 def _deliver(db: Session, event: Outbox, now: datetime) -> None:
     payload = event.payload
+    if payload.get('template') in {'password_reset','password_changed'}:
+        # Both worker entry points must enforce the same recovery state and
+        # decode the encrypted delivery envelope before rendering a message.
+        from app.notification_worker import deliver
+        return deliver(db,event,now)
     channel = payload.get('channel')
     if channel not in {'sms', 'email'}:
         raise PermanentOutboxError('Unsupported notification channel')

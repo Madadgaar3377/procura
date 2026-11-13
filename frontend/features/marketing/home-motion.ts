@@ -28,10 +28,11 @@ export function mountHomeMotion(root: HTMLElement) {
           observer?.unobserve(entry.target);
           const cell = entry.target.matches('td, th');
           track(entry.target, [
-            {opacity: 0, ...(cell ? {} : {translate: '0 10px'})},
+            {opacity: 0, ...(cell ? {} : {translate: '0 16px'})},
             {opacity: 1, ...(cell ? {} : {translate: '0 0'})},
           ], {duration: 460, delay: delays.get(entry.target) || 0,
             easing: 'cubic-bezier(.2,.65,.3,1)', fill: 'backwards'});
+          entry.target.classList.add('pm-motion-seen');
         }
       }, {rootMargin: '0px 0px 48px 0px', threshold: 0});
       const targets = root.querySelectorAll([
@@ -50,6 +51,51 @@ export function mountHomeMotion(root: HTMLElement) {
         if (node.getBoundingClientRect().top >= window.innerHeight) observer.observe(node);
       }
     }
+
+    // One delegated pointer listener, one frame at a time, no React renders.
+    const finePointer = window.matchMedia('(hover: hover) and (pointer: fine) and (min-width: 1024px)');
+    let tilted: HTMLElement | null = null;
+    let frame = 0;
+    let point = {x: 0, y: 0};
+    const resetTilt = () => {
+      cancelAnimationFrame(frame); frame = 0;
+      if (tilted) {
+        tilted.style.removeProperty('--pm-tilt-x');
+        tilted.style.removeProperty('--pm-tilt-y');
+        tilted.removeAttribute('data-tilting');
+        tilted = null;
+      }
+    };
+    const pointer = (event: PointerEvent) => {
+      if (!finePointer.matches || event.pointerType !== 'mouse') { resetTilt(); return; }
+      const target = (event.target as Element).closest<HTMLElement>(
+        '.pm-workflow-window, .pm-form-window, .pm-supplier-window, .pm-automation-grid > article, .pm-matching-node, .pm-comparison-window');
+      if (target !== tilted) { resetTilt(); tilted = target; }
+      if (!tilted) return;
+      point = {x: event.clientX, y: event.clientY};
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!tilted) return;
+        const rect = tilted.getBoundingClientRect();
+        const clamp = (value: number) => Math.max(-1, Math.min(1, value));
+        // Large comparison tables stay almost flat so prices remain easy to read.
+        const strength = tilted.matches('.pm-comparison-window') ? 1 : 3;
+        tilted.style.setProperty('--pm-tilt-x', `${-clamp((point.y-rect.top)/rect.height*2-1)*strength}deg`);
+        tilted.style.setProperty('--pm-tilt-y', `${clamp((point.x-rect.left)/rect.width*2-1)*strength}deg`);
+        tilted.dataset.tilting = 'true';
+      });
+    };
+    root.addEventListener('pointermove', pointer, {passive: true});
+    root.addEventListener('pointerleave', resetTilt);
+    window.addEventListener('blur', resetTilt);
+    finePointer.addEventListener('change', resetTilt);
+    listeners.push(() => {
+      resetTilt(); root.removeEventListener('pointermove', pointer);
+      root.removeEventListener('pointerleave', resetTilt);
+      window.removeEventListener('blur', resetTilt);
+      finePointer.removeEventListener('change', resetTilt);
+    });
 
     if ('animate' in Element.prototype) {
       root.querySelectorAll<HTMLDetailsElement>('.pm-faq-list details').forEach(details => {
