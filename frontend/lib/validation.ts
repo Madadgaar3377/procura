@@ -6,4 +6,4 @@ export function vatError(value:string){const normalized=normalizeVat(value);retu
 export function passwordError(value:string){return value.length<6||value.length>128||value!==value.trim()?passwordMessage:'';}
 export function identifierError(value:string){value=value.trim();if(value.includes('@'))return /^[^\s@.][^\s@]*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/i.test(value)&&!value.split('@')[0].includes('..')?'':'Invalid email address.';return saudiPhone(value)?'':'Use a valid Saudi mobile number (+966). Legacy accounts can use email or contact support.';}
 
-export function saudiPhone(value:string){const p=parsePhoneNumberFromString(value.trim().replace(/^00/,'+'),'SA');return p?.country==='SA'&&p.isValid()&&['MOBILE','FIXED_LINE_OR_MOBILE'].includes(p.getType()||'')?p.number:undefined;}
+export function saudiPhone(value:string){const normalized=value.trim().replace(/[٠-٩]/g,c=>String(c.charCodeAt(0)-0x0660)).replace(/[۰-۹]/g,c=>String(c.charCodeAt(0)-0x06f0)).replace(/^00/,'+');const p=parsePhoneNumberFromString(normalized,'SA');return p?.country==='SA'&&p.isValid()&&['MOBILE','FIXED_LINE_OR_MOBILE'].includes(p.getType()||'')?p.number:undefined;}

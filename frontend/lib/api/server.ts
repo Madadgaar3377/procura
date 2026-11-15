@@ -77,6 +77,7 @@ export async function proxy(request:NextRequest,path:string[]) {
   if(data && typeof data==='object') {delete data.development_otp;delete data.development_code;}
   const response=NextResponse.json(data,{status:result.status,headers:{'Cache-Control':'no-store'}});
   const retry=result.headers.get('Retry-After');if(retry)response.headers.set('Retry-After',retry);
+  const requestId=result.headers.get('X-Request-ID');if(requestId)response.headers.set('X-Request-ID',requestId);
   if(pair)cookies(response,pair);
   if(route==='auth/logout'||result.status===401&&!isPublic)clear(response);
   return response;

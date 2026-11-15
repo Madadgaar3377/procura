@@ -4,7 +4,7 @@ import re
 
 
 def normalize_email(value: str) -> str:
-    value = value.strip().casefold()
+    value = value.strip().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")).casefold()
     if len(value) > 200 or value.count("@") != 1:
         raise ValueError("Invalid email address")
     local, domain = value.split("@")
@@ -39,7 +39,7 @@ def normalize_phone(value: str, country: str | None = None, *, sms: bool = False
         country = country.upper().strip()
         if country not in pn.SUPPORTED_REGIONS:
             raise ValueError("Select a supported country or territory.")
-    value = value.strip()
+    value = value.strip().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789"))
     if not value.startswith("+") and country is None:
         raise ValueError("Select a country for a national phone number, or include + and the calling code.")
     if not value or len(value) > 80 or re.search(r"[A-Za-z#;]", value):
@@ -58,7 +58,7 @@ def normalize_phone(value: str, country: str | None = None, *, sms: bool = False
 
 
 def normalize_username(value: str) -> str:
-    value = value.strip().casefold()
+    value = value.strip().translate(str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")).casefold()
     if not re.fullmatch(r"[a-z0-9_][a-z0-9_.-]{2,79}", value):
         raise ValueError(
             "Username must contain 3–80 letters, digits, dots, hyphens or underscores; @ is not allowed."

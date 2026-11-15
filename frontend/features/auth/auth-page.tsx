@@ -38,6 +38,8 @@ export default function LiveAuth({ type }: { type: string }) {
   const [verificationReady, setVerificationReady] = useState(!['verify-mobile','verify-email'].includes(type));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [errorRequestId, setErrorRequestId] = useState("");
+  const [rateLimited, setRateLimited] = useState(false);
   const [fieldErrors,setFieldErrors]=useState<Record<string,string>>({});
   const [message, setMessage] = useState("");
   const [phone, setPhone] = useState("");
@@ -70,6 +72,14 @@ export default function LiveAuth({ type }: { type: string }) {
       if (window.location.hash) window.history.replaceState(null, "", window.location.pathname);
       const remaining = Math.ceil((Number(window.sessionStorage.getItem("procura.recovery-resend-at")) - Date.now()) / 1000);
       if (remaining > 0) setResendIn(Math.min(900, remaining));
+    } else if (type === "forgot-password") {
+      try {
+        const remaining = Math.ceil((Number(window.sessionStorage.getItem("procura.recovery-forgot-cooldown-at")) - Date.now()) / 1000);
+        if (remaining > 0) {
+          setResendIn(Math.min(900, remaining));
+          setRateLimited(true);
+        }
+      } catch { /* Server rate limits still apply when storage is unavailable. */ }
     }
   }, [type]);
   const [resendIn, setResendIn] = useState(0);
@@ -143,6 +153,8 @@ export default function LiveAuth({ type }: { type: string }) {
     submitting.current = true;
     setBusy(true);
     setError("");
+    setErrorRequestId("");
+    setRateLimited(false);
     setMessage("");
     try {
       const route = email ? "auth/email/verification/request" : `auth/otp/request?phone=${encodeURIComponent(destination)}`;
@@ -166,10 +178,16 @@ export default function LiveAuth({ type }: { type: string }) {
   }
 
   useEffect(() => {
-    if (resendIn <= 0) return;
+    if (resendIn <= 0) {
+      if (rateLimited) {
+        setRateLimited(false);
+        setError((current) => current === "Too many requests. Please wait before trying again." ? "" : current);
+      }
+      return;
+    }
     const timer = window.setTimeout(() => setResendIn((seconds) => Math.max(0, seconds - 1)), 1000);
     return () => window.clearTimeout(timer);
-  }, [resendIn]);
+  }, [resendIn, rateLimited]);
 
   useEffect(() => {
     if (autoRequested.current) return;
@@ -236,6 +254,8 @@ export default function LiveAuth({ type }: { type: string }) {
     submitting.current = true;
     setBusy(true);
     setError("");
+    setErrorRequestId("");
+    setRateLimited(false);
     setMessage("");
     try {
       if (register) {
@@ -312,11 +332,22 @@ export default function LiveAuth({ type }: { type: string }) {
         ? cause instanceof ApiError && cause.status === 401
           ? 'The email, phone number or password is incorrect. Please try again.'
           : 'We could not complete sign in or open your workspace. Please try again.'
-        : cause instanceof Error ? cause.message : "Request failed";
+        : cause instanceof ApiError && cause.status === 429
+          ? 'Too many requests. Please wait before trying again.'
+          : cause instanceof Error ? cause.message : "Request failed";
+      const reqId = cause instanceof ApiError && cause.requestId ? cause.requestId : "";
       setError(detail);
+      setErrorRequestId(reqId);
       if(cause instanceof ApiError){
         setFieldErrors(cause.fieldErrors);
-        if(cause.status===429)setResendIn(Math.min(900,Math.max(1,Number(cause.retryAfter)||60)));
+        if(cause.status===429){
+          const seconds=Math.min(900,Math.max(1,Number(cause.retryAfter)||60));
+          setResendIn(seconds);
+          setRateLimited(true);
+          if(forgot){
+            try{window.sessionStorage.setItem("procura.recovery-forgot-cooldown-at",String(Date.now()+seconds*1000));}catch{}
+          }
+        }
         if(reset && resetToken && cause.status===400){setResetToken("");setPassword("");setError("This password reset link has expired or has already been used. Request a new link.");}
       }
       toast.error("We could not complete that step", detail);
@@ -329,14 +360,22 @@ export default function LiveAuth({ type }: { type: string }) {
   async function resendRecovery() {
     if (busy || submitting.current || resendIn > 0 || !emailAddress) return;
     submitting.current = true;
-    setBusy(true); setError("");
+    setBusy(true); setError(""); setErrorRequestId(""); setRateLimited(false);
     try {
-      const result = await api<{message:string}>("auth/password/forgot", {method:"POST",body:json({identifier:emailAddress})});
+      const result = await api<{message:string}>("auth/password/forgot", {method:"POST",body:json({identifier:emailAddress.trim()})});
       setMessage(result.message); setResendIn(60);
       window.sessionStorage.setItem("procura.recovery-resend-at", String(Date.now()+60000));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Request failed");
-      if (cause instanceof ApiError && cause.status===429) setResendIn(Math.min(900, Math.max(1, Number(cause.retryAfter)||60)));
+      const reqId = cause instanceof ApiError && cause.requestId ? cause.requestId : "";
+      setErrorRequestId(reqId);
+      if (cause instanceof ApiError && cause.status===429) {
+        const seconds = Math.min(900, Math.max(1, Number(cause.retryAfter)||60));
+        setResendIn(seconds);
+        setRateLimited(true);
+        setError("Too many requests. Please wait before trying again.");
+      } else {
+        setError(cause instanceof Error ? cause.message : "Request failed");
+      }
     } finally { submitting.current = false; setBusy(false); }
   }
 
@@ -396,7 +435,7 @@ export default function LiveAuth({ type }: { type: string }) {
           {(forgot || reset) && <p className="auth-form-description">{t("If you cannot access a verified recovery contact, contact support for identity review.")} <Link prefetch={false} href="/contact">{t("Need help?")}</Link>{reset && <> <Link prefetch={false} href="/forgot-password">{t("Request new reset link")}</Link></>}</p>}
           {type === "login" && <div className="auth-session-slot">{checkingSession && <p className="auth-session-status" role="status">{arabic ? "جارٍ التحقق من جلستك…" : "Checking your existing session…"}</p>}</div>}
           {type === "login" && error && <button className="auth-resend" type="button" disabled={busy || checkingSession} onClick={()=>{setError("");setSessionAttempt(value=>value+1);}}>{t('Try again')}</button>}
-          {error && <div className="notice" role="alert">{t(error)}</div>}{register && error.includes("already registered") && <div className="auth-form-links"><Link prefetch={false} href="/login">{t("Sign in to your existing account")}</Link><Link prefetch={false} href="/verify-mobile">{t("Finish mobile verification using your original signup number")}</Link></div>}
+          {(error || (forgot && rateLimited && resendIn > 0)) && <div className="notice" role="alert">{rateLimited && resendIn > 0 ? (arabic ? `طلبات كثيرة. يرجى الانتظار ${resendIn} ثانية قبل طلب رمز استعادة جديد.` : `Too many requests. Please wait ${resendIn}s before requesting another recovery code.`) : t(error)}{errorRequestId ? ` (${arabic ? "رقم الطلب" : "Request ID"}: ${errorRequestId})` : ""}</div>}{register && error.includes("already registered") && <div className="auth-form-links"><Link prefetch={false} href="/login">{t("Sign in to your existing account")}</Link><Link prefetch={false} href="/verify-mobile">{t("Finish mobile verification using your original signup number")}</Link></div>}
           {(verify||email)&&!verificationReady&&error&&<Button type="button" variant="outline" onClick={()=>window.location.reload()}>{t('Try again')}</Button>}
           {message && <div className="notice success" role="status">{t(message)}</div>}
 
@@ -426,7 +465,7 @@ export default function LiveAuth({ type }: { type: string }) {
 
           {(verify || email) && <button className="auth-resend" type="button" disabled={busy || !verificationReady || resendIn > 0 || (verify && !phone)} onClick={() => void requestCode()}>{resendIn > 0 ? `${t("Resend available in")} ${resendIn}s` : t(verify ? "Resend verification code" : "Send a verification email")}</button>}
           {reset && !resetToken && <button className="auth-resend" type="button" disabled={busy || resendIn>0 || !emailAddress} onClick={()=>void resendRecovery()}>{resendIn>0 ? `${t("Resend available in")} ${resendIn}s` : t("Resend verification code")}</button>}
-          <Button type="submit" disabled={busy || !verificationReady}>{t(busy || !verificationReady ? "Please wait..." : register ? "Create account" : verify || email ? "Verify and continue" : forgot ? "Send recovery code" : reset ? (resetToken ? "Reset password" : "Verify code") : "Sign in")}</Button>
+          <Button type="submit" disabled={busy || !verificationReady || (forgot && resendIn > 0)}>{forgot && resendIn > 0 ? (arabic ? `يرجى الانتظار ${resendIn} ثانية...` : `Please wait ${resendIn}s...`) : t(busy || !verificationReady ? "Please wait..." : register ? "Create account" : verify || email ? "Verify and continue" : forgot ? "Send recovery code" : reset ? (resetToken ? "Reset password" : "Verify code") : "Sign in")}</Button>
 
           <div className="auth-form-links">{!register && <span>{t("New to Procumaterial?")} <Link prefetch={false} href="/register">{t("Create an account")}</Link></span>}{(forgot || reset) && <Link prefetch={false} href="/login">{t("Back to Login")}</Link>}{!register && !forgot && <Link prefetch={false} href="/forgot-password">{t("Forgot password?")}</Link>}{register && <span>{t("Already have an account?")} <Link prefetch={false} href="/login">{t("Sign in")}</Link></span>}{verify && <span>{t("Wrong number?")} <Link prefetch={false} href="/register">{t("Start again")}</Link></span>}{reset && <span>{t("Need another code?")} <Link prefetch={false} href="/forgot-password">{t("Request a new one")}</Link></span>}</div>
           {register && <p className="auth-consent">{t("By creating an account, you agree to our")} <Link prefetch={false} href="/terms">{t("Terms")}</Link> {t("and")} <Link prefetch={false} href="/privacy">{t("Privacy")}</Link>.</p>}

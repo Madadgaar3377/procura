@@ -16,6 +16,18 @@ class Settings(BaseSettings):
     refresh_days: int = 7
     admin_bootstrap_key: str = ''
     redis_url: str = ''
+    trusted_proxy_cidrs: str = Field(
+        default='127.0.0.1/32,::1/128',
+        validation_alias=AliasChoices('trusted_proxy_cidrs', 'TRUSTED_PROXY_CIDRS'),
+    )
+    trust_cloudflare_proxy: bool = Field(
+        default=False,
+        validation_alias=AliasChoices('trust_cloudflare_proxy', 'TRUST_CLOUDFLARE_PROXY'),
+    )
+    cloudflare_proxy_cidrs: str = Field(
+        default='',
+        validation_alias=AliasChoices('cloudflare_proxy_cidrs', 'CLOUDFLARE_PROXY_CIDRS'),
+    )
     cors_origins: str = 'https://www.procumaterial.com,https://procumaterial.com,http://localhost:3000'
 
     @field_validator('cors_origins', mode='before')

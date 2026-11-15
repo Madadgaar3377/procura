@@ -12,7 +12,7 @@ from typing import Literal
 
 import jwt
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -60,8 +60,7 @@ def otp_digest(purpose: str, recipient: str, code: str) -> str:
 
 def recipient_limit(request, *, scope, identity, limit, window_seconds):
     # Recipient/account quotas must be shared across requester addresses.
-    shared=Request({**request.scope,'client':('shared',0)})
-    enforce_rate_limit(shared,scope=scope,identity=identity,limit=limit,window_seconds=window_seconds)
+    enforce_rate_limit(request,scope=scope,identity=identity,limit=limit,window_seconds=window_seconds,scope_by_ip=False)
 
 
 def queue_delivery(db, **kwargs):
@@ -305,8 +304,35 @@ class PasswordRecoveryRequest(BaseModel):
     email: str | None = Field(default=None,max_length=200)
     phone: str | None = Field(default=None,max_length=80)
     phone_country: str | None = Field(default=None,min_length=2,max_length=2)
+    _normalized_recipient: str | None = PrivateAttr(default=None)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _clean_inputs(cls, data: object):
+        if not isinstance(data, dict):
+            return data
+        cleaned = dict(data)
+        for field in ('identifier', 'email', 'phone', 'phone_country'):
+            val = cleaned.get(field)
+            if isinstance(val, str):
+                stripped = val.strip()
+                cleaned[field] = stripped if stripped else None
+        return cleaned
+
+    @model_validator(mode='after')
+    def _validate_recipient(self):
+        if getattr(self, 'reset_token', None):
+            return self
+        supplied = [value for value in (self.identifier, self.email, self.phone) if value]
+        if len(supplied) != 1:
+            raise ValueError('Provide one email address or phone number')
+        value = supplied[0].strip()
+        self._normalized_recipient = normalize_email(value) if '@' in value else normalize_saudi_phone(value, self.phone_country, sms=True)
+        return self
 
     def recipient(self):
+        if self._normalized_recipient is not None:
+            return self._normalized_recipient
         supplied=[value for value in (self.identifier,self.email,self.phone) if value]
         if len(supplied)!=1:raise HTTPException(422,'Provide one email address or phone number')
         value=supplied[0].strip()
@@ -407,6 +433,7 @@ def checked_recovery_link(db,token):
 def password_forgot(payload:PasswordRecoveryRequest,request:Request,background_tasks:BackgroundTasks,db:Session=Depends(get_db)):
     recipient=payload.recipient()
     enforce_rate_limit(request,scope='password-reset-ip',identity='all',limit=10,window_seconds=900)
+    enforce_rate_limit(request,scope='password-reset-global',identity='all',limit=300,window_seconds=60,scope_by_ip=False)
     # A failed database lookup must not consume the recipient's resend allowance.
     # The IP limit above still bounds requests during a database outage.
     user=recovery_user(db,recipient)
