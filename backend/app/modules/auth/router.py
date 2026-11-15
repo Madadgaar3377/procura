@@ -277,7 +277,7 @@ def _update_user_avatar(target_user: User, actor: User, file: UploadFile, reques
     settings = get_settings()
     if settings.is_production and not settings.r2_enabled:
         raise HTTPException(503, 'Image storage is not configured')
-    max_bytes = min(5_000_000, settings.r2_max_image_bytes)
+    max_bytes = min(5 * 1024 * 1024, settings.r2_max_image_bytes)
     raw = file.file.read(max_bytes + 1)
     try:
         validate_file_content(file.filename, file.content_type, raw, ALLOWED_IMAGE_TYPES, max_bytes)
@@ -285,7 +285,7 @@ def _update_user_avatar(target_user: User, actor: User, file: UploadFile, reques
     except StorageValidationError as exc:
         raise HTTPException(exc.status_code, exc.message) from exc
 
-    key = build_object_key('public/avatars', target_user.id, out_ext)
+    key = build_object_key('profiles/avatars', target_user.id, out_ext)
     safe_name = safe_filename(file.filename, out_ext)
     stored = StoredFile(
         bucket_type='public',

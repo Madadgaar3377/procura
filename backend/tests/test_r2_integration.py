@@ -556,3 +556,82 @@ def test_alembic_avatar_logo_migration_upgrade_downgrade(tmp_path):
         insp = inspect(conn)
         assert "avatar_file_id" not in [c["name"] for c in insp.get_columns("users")]
         assert "logo_file_id" not in [c["name"] for c in insp.get_columns("organizations")]
+
+
+
+def test_avatar_formats_xmp_metadata_disguised_and_corrupted_images(r2_env):
+    from PIL.PngImagePlugin import PngInfo
+
+    # 1. Valid JPEG containing XMP/markup-like bytes in the first 512 bytes (APP1/COM segment)
+    jpg_buf = io.BytesIO()
+    Image.new("RGB", (120, 90), (10, 120, 200)).save(jpg_buf, format="JPEG")
+    raw_jpg = jpg_buf.getvalue()
+    # Inject a JPEG COM (0xFFFE) segment right after SOI (0xFFD8) containing XMP/SVG-like text
+    comment_payload = b"<x:xmpmeta><svg>metadata</svg></x:xmpmeta>"
+    com_segment = b"\xff\xfe" + (len(comment_payload) + 2).to_bytes(2, "big") + comment_payload
+    jpg_with_xmp = raw_jpg[:2] + com_segment + raw_jpg[2:]
+
+    res_jpg = r2_env.client.post(
+        "/api/v1/auth/me/avatar",
+        headers=_auth(r2_env.tokens["buyer"]),
+        files={"file": ("photo.jpg", jpg_with_xmp, "image/jpeg")},
+    )
+    assert res_jpg.status_code == 200, res_jpg.text
+    file_id = res_jpg.json()["avatar_file_id"]
+    with r2_env.SessionLocal() as db:
+        sf = db.get(StoredFile, file_id)
+        assert sf is not None
+        assert sf.object_key.startswith(f"profiles/avatars/{r2_env.ids['buyer_user']}/")
+
+    # Persistence across refresh (/auth/me)
+    me = r2_env.client.get("/api/v1/auth/me", headers=_auth(r2_env.tokens["buyer"]))
+    assert me.status_code == 200
+    assert me.json()["avatar_url"] == f"/api/v1/files/public/{file_id}"
+
+    # 2. Valid PNG with tEXt/XMP metadata in header
+    png_info = PngInfo()
+    png_info.add_text("XML:com.adobe.xmp", "<x:xmpmeta><html>xmp</html></x:xmpmeta>")
+    png_buf = io.BytesIO()
+    Image.new("RGBA", (80, 80), (200, 40, 40, 255)).save(png_buf, format="PNG", pnginfo=png_info)
+    res_png = r2_env.client.post(
+        "/api/v1/auth/me/avatar",
+        headers=_auth(r2_env.tokens["buyer"]),
+        files={"file": ("avatar.png", png_buf.getvalue(), "image/png")},
+    )
+    assert res_png.status_code == 200, res_png.text
+
+    # 3. Valid WebP
+    webp_buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (40, 180, 90)).save(webp_buf, format="WEBP")
+    res_webp = r2_env.client.post(
+        "/api/v1/auth/me/avatar",
+        headers=_auth(r2_env.tokens["buyer"]),
+        files={"file": ("avatar.webp", webp_buf.getvalue(), "image/webp")},
+    )
+    assert res_webp.status_code == 200, res_webp.text
+
+    # 4. HTML renamed to .jpg -> rejected with 422
+    html_as_jpg = r2_env.client.post(
+        "/api/v1/auth/me/avatar",
+        headers=_auth(r2_env.tokens["buyer"]),
+        files={"file": ("evil.jpg", b"<!DOCTYPE html><html><script>alert(1)</script></html>", "image/jpeg")},
+    )
+    assert html_as_jpg.status_code == 422
+    assert "Executable or active markup" in html_as_jpg.json()["detail"]
+
+    # 5. Executable renamed to .png -> rejected with 422
+    exe_as_png = r2_env.client.post(
+        "/api/v1/auth/me/avatar",
+        headers=_auth(r2_env.tokens["buyer"]),
+        files={"file": ("evil.png", b"MZ\x90\x00\x03\x00\x00\x00", "image/png")},
+    )
+    assert exe_as_png.status_code == 422
+    assert "Executable or active markup" in exe_as_png.json()["detail"]
+
+    # 6. Corrupted JPEG (valid magic bytes, broken body) -> rejected with 422
+    corrupt_jpg = r2_env.client.post(
+        "/api/v1/auth/me/avatar",
+        headers=_auth(r2_env.tokens["buyer"]),
+        files={"file": ("broken.jpg", b"\xff\xd8\xff\xe0not-a-real-jpeg-stream", "image/jpeg")},
+    )
+    assert corrupt_jpg.status_code == 422

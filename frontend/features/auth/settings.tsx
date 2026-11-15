@@ -78,7 +78,7 @@ export default function Settings(){
    variant="avatar"
    accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
    allowedTypes={['image/jpeg','image/png','image/webp']}
-   maxBytes={5_000_000}
+   maxBytes={5 * 1024 * 1024}
    previewUrl={assetUrl(user.avatar_url)}
    fallbackText={user.username.trim().split(/\s+/).map(word=>word[0]).slice(0,2).join('').toUpperCase()}
    title={tr('Profile picture','الصورة الشخصية')}

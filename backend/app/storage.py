@@ -12,23 +12,24 @@ import zipfile
 from app.config import get_settings
 
 ALLOWED_IMAGE_TYPES: dict[str, tuple[str, ...]] = {
-    '.jpg': ('image/jpeg',),
-    '.jpeg': ('image/jpeg',),
-    '.png': ('image/png',),
+    '.jpg': ('image/jpeg', 'image/pjpeg', 'image/jpg'),
+    '.jpeg': ('image/jpeg', 'image/pjpeg', 'image/jpg'),
+    '.png': ('image/png', 'image/x-png'),
     '.webp': ('image/webp',),
 }
 
 ALLOWED_DOCUMENT_TYPES: dict[str, tuple[str, ...]] = {
     '.pdf': ('application/pdf',),
-    '.png': ('image/png',),
-    '.jpg': ('image/jpeg',),
-    '.jpeg': ('image/jpeg',),
+    '.png': ('image/png', 'image/x-png'),
+    '.jpg': ('image/jpeg', 'image/pjpeg', 'image/jpg'),
+    '.jpeg': ('image/jpeg', 'image/pjpeg', 'image/jpg'),
     '.webp': ('image/webp',),
     '.xlsx': ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',),
     '.docx': ('application/vnd.openxmlformats-officedocument.wordprocessingml.document',),
 }
 
-_DANGEROUS_SNIPPETS = (b'<svg', b'<script', b'<!doctype html', b'<html')
+_DANGEROUS_SNIPPETS = (b'<svg', b'<script', b'<!doctype html', b'<html', b'<?php')
+_EXECUTABLE_PREFIXES = (b'MZ', b'\x7fELF', b'#!')
 
 
 class StorageValidationError(ValueError):
@@ -207,21 +208,23 @@ def validate_file_content(
     if suffix not in allowed or declared not in allowed[suffix]:
         raise StorageValidationError(415, 'Unsupported file type')
 
-    head = content[:512].lstrip().lower()
-    if any(marker in head for marker in _DANGEROUS_SNIPPETS):
-        raise StorageValidationError(422, 'Executable or active markup files are not allowed')
+    def _reject_disguised_or_mismatch(mismatch_msg: str) -> None:
+        head = content[:512].lstrip().lower()
+        if any(content.startswith(prefix) for prefix in _EXECUTABLE_PREFIXES) or any(marker in head for marker in _DANGEROUS_SNIPPETS):
+            raise StorageValidationError(422, 'Executable or active markup files are not allowed')
+        raise StorageValidationError(422, mismatch_msg)
 
     if suffix == '.pdf' and not content.startswith(b'%PDF'):
-        raise StorageValidationError(422, 'File content does not match PDF format')
+        _reject_disguised_or_mismatch('File content does not match PDF format')
     elif suffix == '.png' and not content.startswith(b'\x89PNG\r\n\x1a\n'):
-        raise StorageValidationError(422, 'File content does not match PNG format')
+        _reject_disguised_or_mismatch('File content does not match PNG format')
     elif suffix in {'.jpg', '.jpeg'} and not content.startswith(b'\xff\xd8\xff'):
-        raise StorageValidationError(422, 'File content does not match JPEG format')
+        _reject_disguised_or_mismatch('File content does not match JPEG format')
     elif suffix == '.webp' and not (len(content) >= 12 and content[:4] == b'RIFF' and content[8:12] == b'WEBP'):
-        raise StorageValidationError(422, 'File content does not match WebP format')
+        _reject_disguised_or_mismatch('File content does not match WebP format')
     elif suffix in {'.xlsx', '.docx'}:
         if not content.startswith(b'PK\x03\x04'):
-            raise StorageValidationError(422, 'File content does not match Office Open XML format')
+            _reject_disguised_or_mismatch('File content does not match Office Open XML format')
         try:
             with zipfile.ZipFile(io.BytesIO(content)) as zf:
                 names = set(zf.namelist())

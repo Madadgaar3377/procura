@@ -1,5 +1,5 @@
 "use client";
-import {useId,useRef,useState} from 'react';
+import {useEffect,useId,useRef,useState} from 'react';
 import {IconBuilding,IconPhoto,IconTrash,IconUpload} from '@tabler/icons-react';
 import {Button} from '@/components/ui/button';
 import {useLocale} from '@/lib/locale';
@@ -40,6 +40,20 @@ export function FileUpload({
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [localError, setLocalError] = useState('');
+  const [localPreview, setLocalPreview] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLocalPreview((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }, [previewUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (localPreview) URL.revokeObjectURL(localPreview);
+    };
+  }, [localPreview]);
 
   function handleFiles(list: FileList | null) {
     if (!list || list.length === 0 || busy) return;
@@ -47,17 +61,31 @@ export function FileUpload({
     const picked = Array.from(list);
     for (const file of picked) {
       if (file.size > maxBytes) {
-        const mb = Math.round(maxBytes / 1_000_000);
+        const mb = Math.max(1, Math.round(maxBytes / (1024 * 1024)));
         setLocalError(tr(`File exceeds the ${mb} MB limit.`, `يتجاوز الملف الحد الأقصى (${mb} ميجابايت).`));
         return;
       }
-      if (allowedTypes.length > 0 && !allowedTypes.includes(file.type)) {
+      if (allowedTypes.length > 0 && file.type && !allowedTypes.includes(file.type)) {
         setLocalError(tr('Unsupported file type.', 'نوع الملف غير مدعوم.'));
         return;
       }
     }
-    void onSelect(picked);
+    if (variant !== 'document' && picked[0]?.type.startsWith('image/')) {
+      const nextUrl = URL.createObjectURL(picked[0]);
+      setLocalPreview((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return nextUrl;
+      });
+    }
+    void Promise.resolve(onSelect(picked)).catch(() => {
+      setLocalPreview((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    });
   }
+
+  const activePreview = localPreview || previewUrl;
 
   return (
     <div className="pm-upload" dir={arabic ? 'rtl' : 'ltr'}>
@@ -75,9 +103,9 @@ export function FileUpload({
         }}
       >
         {variant !== 'document' && (
-          <span className={`pm-upload-preview ${variant}`} aria-hidden={!previewUrl}>
-            {previewUrl ? (
-              <img src={previewUrl} alt={title} />
+          <span className={`pm-upload-preview ${variant}`} aria-hidden={!activePreview}>
+            {activePreview ? (
+              <img src={activePreview} alt={title} />
             ) : variant === 'logo' ? (
               <IconBuilding size={26} />
             ) : (
