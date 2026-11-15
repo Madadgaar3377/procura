@@ -41,6 +41,7 @@ export function FileUpload({
   const [dragging, setDragging] = useState(false);
   const [localError, setLocalError] = useState('');
   const [localPreview, setLocalPreview] = useState<string | null>(null);
+  const [imgFailed, setImgFailed] = useState(false);
 
   useEffect(() => {
     setLocalPreview((prev) => {
@@ -87,6 +88,10 @@ export function FileUpload({
 
   const activePreview = localPreview || previewUrl;
 
+  useEffect(() => {
+    setImgFailed(false);
+  }, [activePreview]);
+
   return (
     <div className="pm-upload" dir={arabic ? 'rtl' : 'ltr'}>
       <div
@@ -103,9 +108,9 @@ export function FileUpload({
         }}
       >
         {variant !== 'document' && (
-          <span className={`pm-upload-preview ${variant}`} aria-hidden={!activePreview}>
-            {activePreview ? (
-              <img src={activePreview} alt={title} />
+          <span className={`pm-upload-preview ${variant}`} aria-hidden={!activePreview || imgFailed}>
+            {activePreview && !imgFailed ? (
+              <img src={activePreview} alt={title} onError={() => setImgFailed(true)} />
             ) : variant === 'logo' ? (
               <IconBuilding size={26} />
             ) : (

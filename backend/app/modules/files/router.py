@@ -196,6 +196,8 @@ def public_asset(file_id: str, db: Session = Depends(get_db)):
             try:
                 return RedirectResponse(public_object_url(file.object_key), status_code=307,
                     headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+            except ValueError as exc:
+                raise HTTPException(404, 'File not found') from exc
             except StorageUnavailable:
                 pass
         try:

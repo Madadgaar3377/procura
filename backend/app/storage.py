@@ -70,6 +70,9 @@ def bucket_for(bucket_type: str) -> str:
     raise ValueError('Invalid bucket type')
 
 
+_PUBLIC_KEY_PREFIXES = ('public/', 'profiles/avatars/')
+
+
 def public_object_url(key: str) -> str:
     """Build delivery URLs only for explicitly public-key paths with configured DNS."""
     from urllib.parse import quote, urlsplit
@@ -77,7 +80,8 @@ def public_object_url(key: str) -> str:
     parsed = urlsplit(base)
     if not base or parsed.scheme != 'https' or not parsed.netloc or ' ' in base:
         raise StorageUnavailable('Public image delivery domain is not configured')
-    if not key.startswith('public/') or '..' in key.split('/') or key.startswith('/'):
+    parts = key.split('/')
+    if not key.startswith(_PUBLIC_KEY_PREFIXES) or '..' in parts or '' in parts or key.startswith('/'):
         raise ValueError('Invalid public object key')
     return f'{base}/{quote(key, safe="/")}'
 

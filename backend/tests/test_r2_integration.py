@@ -635,3 +635,87 @@ def test_avatar_formats_xmp_metadata_disguised_and_corrupted_images(r2_env):
         files={"file": ("broken.jpg", b"\xff\xd8\xff\xe0not-a-real-jpeg-stream", "image/jpeg")},
     )
     assert corrupt_jpg.status_code == 422
+
+
+
+def test_public_avatar_redirect_with_public_base_url_and_private_isolation(r2_env, monkeypatch):
+    from app.modules.files import router as files_mod
+
+    configured = Settings(
+        r2_enabled=True,
+        r2_public_bucket="procumaterial-public",
+        r2_private_bucket="procumaterial-private",
+        r2_public_base_url="https://assets.procumaterial.com",
+        r2_presign_ttl_seconds=300,
+        max_upload_bytes=10 * 1024 * 1024,
+        environment="test",
+    )
+    monkeypatch.setattr(storage, "get_settings", lambda: configured)
+    monkeypatch.setattr(files_mod, "get_settings", lambda: configured)
+
+    # Upload avatar
+    res = r2_env.client.post(
+        "/api/v1/auth/me/avatar",
+        headers=_auth(r2_env.tokens["buyer"]),
+        files={"file": ("avatar.png", _make_png(128, 128), "image/png")},
+    )
+    assert res.status_code == 200, res.text
+    file_id = res.json()["avatar_file_id"]
+    avatar_url = res.json()["avatar_url"]
+    assert avatar_url == f"/api/v1/files/public/{file_id}"
+
+    # Public endpoint returns 307 redirect to https://assets.procumaterial.com/profiles/avatars/{user_id}/...
+    pub = r2_env.client.get(avatar_url, follow_redirects=False)
+    assert pub.status_code == 307, pub.text
+    location = pub.headers["location"]
+    assert location.startswith(f"https://assets.procumaterial.com/profiles/avatars/{r2_env.ids['buyer_user']}/")
+
+    # Missing file returns 404
+    missing = r2_env.client.get("/api/v1/files/public/00000000-0000-0000-0000-000000000000", follow_redirects=False)
+    assert missing.status_code == 404
+
+    # Private document cannot be accessed via public endpoint
+    with r2_env.SessionLocal() as db:
+        priv = StoredFile(
+            id=str(uuid4()),
+            bucket_type="private",
+            object_key="private/rfq/123/secret.pdf",
+            original_filename="secret.pdf",
+            safe_filename="secret.pdf",
+            content_type="application/pdf",
+            file_extension=".pdf",
+            size_bytes=10,
+            visibility="private",
+            purpose="rfq_attachment",
+            status="available",
+            owner_user_id=r2_env.ids["buyer_user"],
+            uploaded_by_user_id=r2_env.ids["buyer_user"],
+            entity_type="rfq",
+            entity_id=r2_env.ids["rfq"],
+        )
+        bad_pub = StoredFile(
+            id=str(uuid4()),
+            bucket_type="public",
+            object_key="private/rfq/123/tampered.pdf",
+            original_filename="tampered.pdf",
+            safe_filename="tampered.pdf",
+            content_type="application/pdf",
+            file_extension=".pdf",
+            size_bytes=10,
+            visibility="public",
+            purpose="user_avatar",
+            status="available",
+            owner_user_id=r2_env.ids["buyer_user"],
+            uploaded_by_user_id=r2_env.ids["buyer_user"],
+            entity_type="user",
+            entity_id=r2_env.ids["buyer_user"],
+        )
+        db.add_all([priv, bad_pub])
+        db.commit()
+        priv_id, bad_pub_id = priv.id, bad_pub.id
+
+    assert r2_env.client.get(f"/api/v1/files/public/{priv_id}", follow_redirects=False).status_code == 404
+    assert r2_env.client.get(f"/api/v1/files/public/{bad_pub_id}", follow_redirects=False).status_code == 404
+
+    with pytest.raises(ValueError, match="Invalid public object key"):
+        storage.public_object_url("private/rfq/123/secret.pdf")
