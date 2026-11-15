@@ -3,25 +3,34 @@ from pathlib import PurePath
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import get_db
-from app.models import RFQ, StoredFile, User, utcnow
+from app.models import Organization, Quotation, RFQ, StoredFile, User, utcnow
 from app.security import audit, current_user, org_member
 from app.rate_limit import enforce_rate_limit
-from app.storage import (StorageUnavailable, delete_object, generate_download_url,
-                         generate_upload_url, get_object_metadata, get_object_prefix)
+from app.storage import (ALLOWED_DOCUMENT_TYPES, StorageUnavailable, delete_object, generate_download_url,
+                         generate_upload_url, get_object_metadata, get_object_prefix, public_object_url,
+                         safe_filename, stream_object)
 
 router = APIRouter(prefix='/files', tags=['File storage'])
-ALLOWED = {'.pdf': ('application/pdf', b'%PDF'), '.png': ('image/png', b'\x89PNG\r\n\x1a\n'),
-           '.jpg': ('image/jpeg', b'\xff\xd8\xff'), '.jpeg': ('image/jpeg', b'\xff\xd8\xff')}
+ALLOWED = {
+    '.pdf': ('application/pdf', b'%PDF'),
+    '.png': ('image/png', b'\x89PNG\r\n\x1a\n'),
+    '.jpg': ('image/jpeg', b'\xff\xd8\xff'),
+    '.jpeg': ('image/jpeg', b'\xff\xd8\xff'),
+    '.webp': ('image/webp', b'RIFF'),
+    '.xlsx': ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', b'PK\x03\x04'),
+    '.docx': ('application/vnd.openxmlformats-officedocument.wordprocessingml.document', b'PK\x03\x04'),
+}
 
 
 class UploadRequest(BaseModel):
-    purpose: str = Field(pattern='^rfq_attachment$')
+    purpose: str = Field(pattern='^(rfq_attachment|quotation_attachment|verification_document)$')
     entity_id: str = Field(min_length=1, max_length=36)
     filename: str = Field(min_length=1, max_length=200)
     content_type: str = Field(max_length=120)
@@ -42,11 +51,29 @@ def _authorized(rfq, user, db, *, edit=False):
 
 
 def _file_access(file, user, db, *, edit=False):
-    if file.entity_type != 'rfq' or file.purpose != 'rfq_attachment':
-        if not user.is_admin:
-            raise HTTPException(404, 'File not found')
+    if file.purpose == 'rfq_attachment' and file.entity_type == 'rfq':
+        _authorized(db.get(RFQ, file.entity_id), user, db, edit=edit)
         return
-    _authorized(db.get(RFQ, file.entity_id), user, db, edit=edit)
+    if file.purpose == 'quotation_attachment' and file.entity_type == 'quotation':
+        quote = db.get(Quotation, file.entity_id)
+        if not quote:
+            raise HTTPException(404, 'Quotation not found')
+        if edit:
+            org_member(db, user, quote.supplier_org_id, {'owner', 'manager', 'supplier'})
+            if quote.status != 'draft':
+                raise HTTPException(409, 'Only draft quotation attachments may be changed')
+            return
+        from app.modules.quotations.router import get_quote
+        get_quote(quote.id, user, db)
+        return
+    if file.purpose == 'verification_document' and file.entity_type == 'organization':
+        if edit:
+            raise HTTPException(403, 'Verification documents are retained for audit compliance')
+        if not user.is_admin:
+            org_member(db, user, file.entity_id, {'owner', 'manager'})
+        return
+    if not user.is_admin:
+        raise HTTPException(404, 'File not found')
 
 
 @router.post('/upload-url', status_code=201)
@@ -55,30 +82,53 @@ def upload_url(payload: UploadRequest, request: Request, user: User = Depends(cu
     settings = get_settings()
     if not settings.r2_enabled:
         raise HTTPException(503, 'File storage is unavailable')
-    rfq = db.get(RFQ, payload.entity_id)
-    _authorized(rfq, user, db, edit=True)
+    if payload.purpose == 'rfq_attachment':
+        rfq = db.get(RFQ, payload.entity_id)
+        _authorized(rfq, user, db, edit=True)
+        org_id = rfq.buyer_org_id
+        entity_type = 'rfq'
+        key_prefix = f'private/rfq/{rfq.id}'
+    elif payload.purpose == 'quotation_attachment':
+        quote = db.get(Quotation, payload.entity_id)
+        if not quote:
+            raise HTTPException(404, 'Quotation not found')
+        org_member(db, user, quote.supplier_org_id, {'owner', 'manager', 'supplier'})
+        if quote.status != 'draft':
+            raise HTTPException(409, 'Only draft quotation attachments may be changed')
+        org_id = quote.supplier_org_id
+        entity_type = 'quotation'
+        key_prefix = f'private/quotation/{quote.id}'
+    else:
+        org = db.get(Organization, payload.entity_id)
+        if not org:
+            raise HTTPException(404, 'Organization not found')
+        org_member(db, user, org.id, {'owner', 'manager'})
+        org_id = org.id
+        entity_type = 'organization'
+        key_prefix = f'private/verification/{org.id}'
+
     suffix = PurePath(payload.filename.replace('\\', '/')).suffix.lower()
     spec = ALLOWED.get(suffix)
     if not spec or payload.content_type != spec[0]:
-        raise HTTPException(415, 'Attach a PDF, PNG or JPEG')
+        raise HTTPException(415, 'Attach a PDF, XLSX, DOCX, PNG, JPEG or WebP file')
     if payload.size_bytes > settings.r2_max_document_bytes:
         raise HTTPException(413, 'File exceeds the configured size limit')
-    count = db.scalar(select(func.count(StoredFile.id)).where(StoredFile.entity_type == 'rfq',
-        StoredFile.entity_id == rfq.id, StoredFile.status.in_(['pending_upload', 'available']))) or 0
+    count = db.scalar(select(func.count(StoredFile.id)).where(StoredFile.entity_type == entity_type,
+        StoredFile.entity_id == payload.entity_id, StoredFile.purpose == payload.purpose,
+        StoredFile.status.in_(['pending_upload', 'available']))) or 0
     if count >= 10:
-        raise HTTPException(422, 'At most 10 RFQ attachments are allowed')
-    safe = PurePath(payload.filename.replace('\\', '/')).name
-    safe = ''.join(c for c in safe if c.isprintable() and c not in '"\r\n')[:200] or 'attachment' + suffix
-    file = StoredFile(bucket_type='private', object_key=f'private/rfq/{rfq.id}/{uuid4()}',
+        raise HTTPException(422, 'At most 10 attachments are allowed')
+    safe = safe_filename(payload.filename, suffix)
+    file = StoredFile(bucket_type='private', object_key=f'{key_prefix}/{uuid4()}{suffix}',
         original_filename=safe, safe_filename=safe, content_type=spec[0], file_extension=suffix,
-        size_bytes=payload.size_bytes, visibility='private', purpose='rfq_attachment', status='pending_upload',
-        owner_user_id=user.id, uploaded_by_user_id=user.id, organization_id=rfq.buyer_org_id,
-        entity_type='rfq', entity_id=rfq.id)
+        size_bytes=payload.size_bytes, visibility='private', purpose=payload.purpose, status='pending_upload',
+        owner_user_id=user.id, uploaded_by_user_id=user.id, organization_id=org_id,
+        entity_type=entity_type, entity_id=payload.entity_id)
     db.add(file)
     try:
         url = generate_upload_url('private', file.object_key, spec[0])
         db.flush()
-        audit(db, user, 'file.upload_authorized', rfq.buyer_org_id, file.id, purpose=file.purpose)
+        audit(db, user, 'file.upload_authorized', org_id, file.id, purpose=file.purpose)
         db.commit()
     except StorageUnavailable as exc:
         db.rollback()
@@ -132,6 +182,66 @@ def complete(file_id: str, user: User = Depends(current_user), db: Session = Dep
     audit(db, user, 'file.upload_completed', file.organization_id, file.id, size_bytes=file.size_bytes)
     db.commit()
     return {'id': file.id, 'status': file.status, 'size_bytes': file.size_bytes}
+
+
+@router.get('/public/{file_id}')
+def public_asset(file_id: str, db: Session = Depends(get_db)):
+    from pathlib import Path
+    file = db.get(StoredFile, file_id)
+    if not file or file.deleted_at or file.status != 'available' or file.bucket_type != 'public' or file.visibility != 'public':
+        raise HTTPException(404, 'File not found')
+    settings = get_settings()
+    if settings.r2_enabled:
+        if settings.r2_public_base_url.strip():
+            try:
+                return RedirectResponse(public_object_url(file.object_key), status_code=307,
+                    headers={'Cache-Control': 'public, max-age=31536000, immutable'})
+            except StorageUnavailable:
+                pass
+        try:
+            data, content_type, _ = stream_object('public', file.object_key)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, 'File not found') from exc
+        except StorageUnavailable as exc:
+            raise HTTPException(503, 'File storage is temporarily unavailable') from exc
+        return Response(content=data, media_type=file.content_type or content_type, headers={
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'X-Content-Type-Options': 'nosniff',
+        })
+    if settings.is_production:
+        raise HTTPException(503, 'File storage is unavailable')
+    root = (Path(settings.upload_dir).resolve() / 'public').resolve()
+    target = (root / file.object_key).resolve()
+    if not target.is_relative_to(root) or not target.is_file():
+        raise HTTPException(404, 'File not found')
+    return FileResponse(target, media_type=file.content_type, headers={
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff',
+    })
+
+
+@router.get('/{file_id}/download')
+def download_stream(file_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from urllib.parse import quote
+    file = db.get(StoredFile, file_id)
+    if not file or file.deleted_at or file.status != 'available':
+        raise HTTPException(404, 'File not found')
+    _file_access(file, user, db)
+    try:
+        data, content_type, _ = stream_object(file.bucket_type, file.object_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, 'File not found') from exc
+    except StorageUnavailable as exc:
+        raise HTTPException(503, 'File storage is temporarily unavailable') from exc
+    audit(db, user, 'file.download_authorized', file.organization_id, file.id)
+    db.commit()
+    disposition = f'attachment; filename="{quote(file.safe_filename, safe="")}"'
+    return Response(content=data, media_type=file.content_type or content_type, headers={
+        'Content-Disposition': disposition,
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+        'X-Robots-Tag': 'noindex, nofollow',
+    })
 
 
 @router.get('/{file_id}/download-url')

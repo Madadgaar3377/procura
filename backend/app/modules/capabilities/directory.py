@@ -77,7 +77,7 @@ def supplier_products(supplier_id:str,db:Annotated[Session,Depends(get_db)],q:st
 def public_profiles(db: Session, organizations, include_categories=False):
     """Only approved, active capability labels; never contacts or private rates."""
     if not include_categories:
-        return [{'id':org.id,'name':org.name,'city':org.city,'verified':True} for org in organizations]
+        return [{'id':org.id,'name':org.name,'city':org.city,'verified':True,'logo_url':f'/api/v1/files/public/{org.logo_file_id}' if org.logo_file_id else None} for org in organizations]
     ids=[org.id for org in organizations]
     main=aliased(Category)
     labels={org_id:set() for org_id in ids}
@@ -91,6 +91,7 @@ def public_profiles(db: Session, organizations, include_categories=False):
         for org_id,name,name_ar,parent,parent_ar,parent_id in rows:
             labels[org_id].add((parent if parent_id else name,(parent_ar or parent) if parent_id else (name_ar or name)))
     return [{'id':org.id,'name':org.name,'city':org.city,'verified':True,
+             'logo_url':f'/api/v1/files/public/{org.logo_file_id}' if org.logo_file_id else None,
              'main_categories':[en for en,ar in sorted(labels[org.id])],
              'main_categories_ar':[ar for en,ar in sorted(labels[org.id])]}
             for org in organizations]
@@ -119,7 +120,7 @@ def discover(db:Annotated[Session,Depends(get_db)],category_id:str|None=None,cit
     if coverage:
         # Literal comparison: wildcard characters must never broaden service coverage.
         capability=capability.where(func.lower(func.trim(Capability.city))==coverage.lower())
-    query=select(Organization.id,Organization.name,Organization.city).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),
+    query=select(Organization.id,Organization.name,Organization.city,Organization.logo_file_id).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),
         Organization.verified_status=='verified')
     if verified is False:
         query=query.where(False)
@@ -203,7 +204,7 @@ def add_coverage(db,profiles,include_categories=False,include_groups=False,share
 @cached_get('public-supplier-profile', 120)
 def supplier_detail(db:Annotated[Session,Depends(get_db)],supplier_id:str,include_categories:bool=False,include_coverage:bool=False,include_profile:bool=False):
     from fastapi import HTTPException
-    org=db.execute(select(Organization.id,Organization.name,Organization.city).where(
+    org=db.execute(select(Organization.id,Organization.name,Organization.city,Organization.logo_file_id).where(
         Organization.id==supplier_id,Organization.is_supplier.is_(True),
         Organization.is_active.is_(True),Organization.verified_status=='verified')).first()
     if not org:
@@ -237,9 +238,9 @@ def related_suppliers(supplier_id:str,db:Annotated[Session,Depends(get_db)],limi
     sub_overlap=func.count(func.distinct(case((candidate.c.sub_id.in_(sub_ids),candidate.c.sub_id),else_=None)))
     main_overlap=func.count(func.distinct(candidate.c.main_id))
     city_overlap=func.count(func.distinct(case((and_(candidate.c.city.in_(city_ids),candidate.c.city!=''),candidate.c.city),else_=None)))
-    query=select(Organization.id,Organization.name,Organization.city).join(candidate,candidate.c.org_id==Organization.id).where(Organization.id!=supplier_id,
+    query=select(Organization.id,Organization.name,Organization.city,Organization.logo_file_id).join(candidate,candidate.c.org_id==Organization.id).where(Organization.id!=supplier_id,
         Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.verified_status=='verified').group_by(
-        Organization.id,Organization.name,Organization.city).order_by(
+        Organization.id,Organization.name,Organization.city,Organization.logo_file_id).order_by(
         sub_overlap.desc(),main_overlap.desc(),city_overlap.desc(),Organization.name,Organization.id).limit(limit)
     organizations=db.execute(query).all()
     if not organizations:return []

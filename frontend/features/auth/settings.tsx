@@ -5,13 +5,14 @@ import * as Dialog from '@radix-ui/react-dialog';
 import {IconUser,IconLock,IconDevices,IconBell,IconEye,IconEyeOff,IconX,IconShieldCheck,IconCheck} from '@tabler/icons-react';
 import './settings.css';
 import {useEffect,useState} from 'react';
-import {api,json} from '@/lib/api/client';
+import {api,assetUrl,json,upload} from '@/lib/api/client';
 import {ApiError} from '@/lib/api/errors';
 import {useLocale} from '@/lib/locale';
 import {useApi} from '@/lib/api/use-api';
 import {useSession,signOut} from './session';
 import {Heading,State} from '@/features/shared/ui';
 import {Button} from '@/components/ui/button';
+import {FileUpload} from '@/components/ui/file-upload';
 
 type SessionRow={id:string;created_at:string;expires_at:string;current:boolean};
 type Preferences={events:Record<string,boolean>;in_app_enabled:boolean;email_available:boolean;sms_available:boolean};
@@ -20,6 +21,7 @@ export default function Settings(){
  const tr=(en:string,ar:string)=>arabic?ar:en;
  const sessions=useApi<SessionRow[]>('auth/sessions');const prefs=useApi<Preferences>('auth/account-preferences');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
+ const [avatarProgress,setAvatarProgress]=useState<number|null>(null);
  const [channel,setChannel]=useState<'email'|'phone'|null>(null),[code,setCode]=useState('');
  const [cooldowns,setCooldowns]=useState({email:0,phone:0});const [now,setNow]=useState(0);
  const [visible,setVisible]=useState<Record<string,boolean>>({});
@@ -65,7 +67,44 @@ export default function Settings(){
  {error&&!channel&&!confirm&&<p role="alert" className="settings-feedback error">{t(error)}</p>}{notice&&<p role="status" className="settings-feedback success"><IconCheck size={18} aria-hidden="true"/>{notice}</p>}
  <section key={tab} id={`settings-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} tabIndex={0} className="settings-content">
  {tab==='account'&&<>
- <div className="settings-profile"><span className="settings-avatar" aria-hidden="true">{user.username.trim().split(/\s+/).map(word=>word[0]).slice(0,2).join('').toUpperCase()}</span><div><h2>{user.username}</h2><p>{tr('Personal account','الحساب الشخصي')}</p></div><span className="settings-profile-label"><IconShieldCheck size={17} aria-hidden="true"/>Procurement</span></div>
+ <div className="settings-profile">
+   <span className="settings-avatar" aria-hidden="true" style={{borderRadius:'999px',overflow:'hidden'}}>
+     {user.avatar_url ? <img src={assetUrl(user.avatar_url)} alt={user.username} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : user.username.trim().split(/\s+/).map(word=>word[0]).slice(0,2).join('').toUpperCase()}
+   </span>
+   <div><h2>{user.username}</h2><p>{tr('Personal account','الحساب الشخصي')}</p></div>
+   <span className="settings-profile-label"><IconShieldCheck size={17} aria-hidden="true"/>Procurement</span>
+ </div>
+ <FileUpload
+   variant="avatar"
+   accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp"
+   allowedTypes={['image/jpeg','image/png','image/webp']}
+   maxBytes={5_000_000}
+   previewUrl={assetUrl(user.avatar_url)}
+   fallbackText={user.username.trim().split(/\s+/).map(word=>word[0]).slice(0,2).join('').toUpperCase()}
+   title={tr('Profile picture','الصورة الشخصية')}
+   hint={tr('JPEG, PNG or WebP. Maximum 5 MB.','JPEG أو PNG أو WebP. الحد الأقصى 5 ميجابايت.')}
+   busy={busy}
+   progress={avatarProgress}
+   onSelect={async ([file])=>{
+     if(!file)return;
+     await run(async()=>{
+       const body=new FormData();
+       body.set('file',file);
+       await upload('auth/me/avatar',body,p=>setAvatarProgress(p));
+       setAvatarProgress(null);
+       await reload();
+       setNotice(tr('Profile picture updated.','تم تحديث الصورة الشخصية.'));
+     });
+     setAvatarProgress(null);
+   }}
+   onRemove={user.avatar_url ? async()=>{
+     await run(async()=>{
+       await api('auth/me/avatar',{method:'DELETE'});
+       await reload();
+       setNotice(tr('Profile picture removed.','تمت إزالة الصورة الشخصية.'));
+     });
+   } : undefined}
+ />
  <dl className="settings-account-grid"><div><dt>{tr('Display name','اسم العرض')}</dt><dd><bdi>{user.username}</bdi></dd></div><div><dt>{tr('Account security','أمان الحساب')}</dt><dd>{tr('Manage your verified contact details below.','إدارة بيانات الاتصال المؤكدة أدناه.')}</dd></div>
  {(['email','phone'] as const).map(which=>{const verified=which==='email'?user.email_verified:user.phone_verified;const contact=which==='email'?user.email:user.phone;return <div key={which}><dt>{which==='email'?tr('Registered email','البريد الإلكتروني المسجل'):tr('Registered phone','رقم الهاتف المسجل')}</dt><dd><bdi>{contact||tr('Not configured','غير مسجل')}</bdi><span className={`settings-badge ${verified?'verified':'pending'}`}>{verified&&<IconCheck size={14} aria-hidden="true"/>}{verified?tr('Verified','مؤكد'):tr('Unverified','غير مؤكد')}</span></dd>{!verified&&contact&&<Button variant="outline" disabled={busy||remaining(which)>0} onClick={()=>void request(which)}>{remaining(which)>0?`${tr('Resend in','إعادة الإرسال خلال')} ${remaining(which)} ${tr('s','ث')}`:which==='email'?tr('Verify Email','تأكيد البريد الإلكتروني'):tr('Verify Phone','تأكيد الهاتف')}</Button>}</div>;})}</dl>
  <PhoneChange onVerified={reload}/>

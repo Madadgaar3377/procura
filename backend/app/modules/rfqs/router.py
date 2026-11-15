@@ -3,7 +3,7 @@ import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -231,41 +231,48 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
     if rfq.status!='draft':raise HTTPException(409,'Only draft attachments may be changed')
     settings=get_settings()
     if settings.is_production and not settings.r2_enabled:raise HTTPException(503,'Private attachment storage is not configured')
-    if len(rfq.attachment_records or [])>=10:raise HTTPException(422,'At most 10 RFQ attachments are allowed')
-    signatures={'application/pdf':b'%PDF', 'image/png':b'\x89PNG\r\n\x1a\n', 'image/jpeg':b'\xff\xd8\xff'}
-    if file.content_type not in signatures:raise HTTPException(415,'Attach a PDF, PNG or JPEG')
-    content=file.file.read(settings.max_upload_bytes+1)
-    if len(content)>settings.max_upload_bytes:raise HTTPException(413,'Attachment too large')
-    if not content.startswith(signatures[file.content_type]):raise HTTPException(422,'Attachment content does not match its type')
+    from app.models import StoredFile
+    from app.storage import (ALLOWED_DOCUMENT_TYPES, StorageUnavailable, StorageValidationError,
+        cleanup_object_best_effort, safe_filename, upload_file as r2_upload, validate_file_content)
+    stored_count=db.scalar(select(func.count(StoredFile.id)).where(StoredFile.entity_type=='rfq',
+        StoredFile.entity_id==rfq.id,StoredFile.status.in_(['pending_upload','available']),StoredFile.deleted_at.is_(None))) or 0
+    if len(rfq.attachment_records or [])+stored_count>=10:raise HTTPException(422,'At most 10 RFQ attachments are allowed')
+    max_bytes=min(settings.max_upload_bytes,settings.r2_max_document_bytes)
+    content=file.file.read(max_bytes+1)
+    try:
+        suffix,ct=validate_file_content(file.filename,file.content_type,content,ALLOWED_DOCUMENT_TYPES,max_bytes)
+    except StorageValidationError as exc:
+        raise HTTPException(exc.status_code,exc.message) from exc
+    filename=safe_filename(file.filename,suffix)
     if settings.r2_enabled:
-        from pathlib import PurePath
-        from app.models import StoredFile
-        from app.storage import StorageUnavailable, upload_file as r2_upload
         from app.rate_limit import enforce_rate_limit
         enforce_rate_limit(request,scope='api-r2-upload',identity=user.id,limit=10,window_seconds=60)
-        suffix=PurePath((file.filename or '').replace('\\','/')).suffix.lower()
-        if suffix not in {'.pdf','.png','.jpg','.jpeg'}:raise HTTPException(415,'Attach a PDF, PNG or JPEG')
-        stored=StoredFile(bucket_type='private',object_key=f'private/rfq/{rfq.id}/{uuid4()}',
-            original_filename=filename,safe_filename=filename,content_type=file.content_type,file_extension=suffix,
+        stored=StoredFile(bucket_type='private',object_key=f'private/rfq/{rfq.id}/{uuid4()}{suffix}',
+            original_filename=filename,safe_filename=filename,content_type=ct,file_extension=suffix,
             size_bytes=len(content),visibility='private',purpose='rfq_attachment',status='pending_upload',
             owner_user_id=user.id,uploaded_by_user_id=user.id,organization_id=rfq.buyer_org_id,
             entity_type='rfq',entity_id=rfq.id)
         db.add(stored)
+        uploaded=False
         try:
-            result=r2_upload('private',stored.object_key,io.BytesIO(content),file.content_type,
-                max_bytes=settings.max_upload_bytes)
+            result=r2_upload('private',stored.object_key,io.BytesIO(content),ct,
+                max_bytes=max_bytes)
+            uploaded=True
             stored.size_bytes=result['size_bytes'];stored.etag=result['etag'];stored.checksum_sha256=result['checksum_sha256']
             stored.status='available'
             audit(db,user,'rfq.attachment_uploaded',rfq.buyer_org_id,rfq.id,file_id=stored.id)
             db.commit()
         except StorageUnavailable as exc:
             db.rollback();raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        except Exception:
+            db.rollback()
+            if uploaded:cleanup_object_best_effort('private',stored.object_key)
+            raise
         return {'id':stored.id,'filename':stored.safe_filename,'content_type':stored.content_type,'size':stored.size_bytes}
     attachment_id=uuid4().hex
     storage=LocalImportStorage(str(Path(settings.upload_dir)/'rfq-attachments'))
     key=rfq.id+'/'+attachment_id
-    filename=Path((file.filename or 'attachment').replace('\\','/')).name[:200]
-    entry={'id':attachment_id,'filename':filename,'content_type':file.content_type,'size':len(content),'storage_key':key}
+    entry={'id':attachment_id,'filename':filename,'content_type':ct,'size':len(content),'storage_key':key}
     storage.write(key,io.BytesIO(content),settings.max_upload_bytes)
     try:
         rfq.attachment_records=[*(rfq.attachment_records or []),entry]
@@ -297,7 +304,7 @@ def download_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_u
         try:url=generate_download_url('private',stored.object_key,stored.safe_filename,stored.content_type)
         except StorageUnavailable as exc:raise HTTPException(503,'File storage is temporarily unavailable') from exc
         audit(db,user,'file.download_authorized',rfq.buyer_org_id,stored.id);db.commit()
-        return RedirectResponse(url,status_code=307,headers={'Cache-Control':'private, no-store'})
+        return RedirectResponse(url,status_code=307,headers={'Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow'})
     entry=next((entry for entry in (rfq.attachment_records or []) if entry['id']==attachment_id),None)
     if not entry:raise HTTPException(404,'Attachment not found')
     settings=get_settings()
@@ -306,7 +313,7 @@ def download_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_u
     target=storage._target(entry['storage_key'])
     if not target.is_file():raise HTTPException(404,'Attachment not found')
     return FileResponse(target,media_type=entry['content_type'],filename=entry['filename'],
-                        headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
+                        headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex, nofollow'})
 
 
 @router.delete('/{rfq_id}/attachments/{attachment_id}', response_model=RFQAttachmentRemovalOut)

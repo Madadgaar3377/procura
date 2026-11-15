@@ -35,8 +35,13 @@ def contract(name, model, exclude=()):
         fields[column.key] = (kind, ...)
     return create_model(name, __base__=ResponseModel, **fields)
 
-UserOut = contract('UserOut', models.User, ('password_hash',))
-OrganizationOut = contract('OrganizationOut', models.Organization, ('quote_automation',))
+_UserColumns = contract('UserColumns', models.User, ('password_hash',))
+class UserOut(_UserColumns):
+    avatar_url: str | None = None
+
+_OrgColumns = contract('OrganizationColumns', models.Organization, ('quote_automation',))
+class OrganizationOut(_OrgColumns):
+    logo_url: str | None = None
 MaterialOut = contract('MaterialOut', models.Material, ('source_identity', 'import_batch_id', 'import_row_number'))
 CategoryOut = contract('CategoryOut', models.Category)
 class CategorySummary(CategoryOut):
@@ -213,6 +218,7 @@ class QuoteDetail(ResponseModel):
     supplier_name: str | None = None
     rfq_reference: str | None = None
     favorite: bool = False
+    attachments: list[RFQAttachmentOut] = Field(default_factory=list)
 
 class QuotationSummary(QuotationOut):
     supplier_name: str
@@ -319,6 +325,7 @@ class PublicSupplier(ResponseModel):
     name: str
     city: str | None
     verified: bool
+    logo_url: str | None = None
     main_categories: list[str] = Field(default_factory=list)
     main_categories_ar: list[str] = Field(default_factory=list)
 

@@ -2,7 +2,7 @@ from app.search import ListSearch
 from app.response_contracts import ClaimDetailsOut, ClaimOut, ClaimableSupplierMatch, MemberOut, OrganizationOut, ReviewQueue, VerificationOut
 import os, uuid
 from types import SimpleNamespace
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select, or_, func, literal
 from sqlalchemy.exc import IntegrityError
@@ -750,6 +750,111 @@ def update(org_id:str,payload:OrgUpdate,user:User=Depends(current_user),db:Sessi
     audit(db,user,'organization.updated',org_id,org_id)
     db.commit();return record(org)
 
+
+@router.post('/{org_id}/logo',response_model=OrganizationOut)
+def upload_logo(org_id:str,request:Request,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    import io
+    from datetime import UTC, datetime
+    from hashlib import sha256
+    from app.rate_limit import enforce_rate_limit
+    from app.storage import (
+        ALLOWED_IMAGE_TYPES,
+        StorageUnavailable,
+        StorageValidationError,
+        build_object_key,
+        cleanup_object_best_effort,
+        optimize_image_variant,
+        safe_filename,
+        upload_file as r2_upload,
+        validate_file_content,
+    )
+
+    if not user.is_admin:
+        org_member(db,user,org_id,{'owner','manager'})
+    enforce_rate_limit(request,scope='api-r2-upload',identity=user.id,limit=10,window_seconds=60)
+    settings=get_settings()
+    if settings.is_production and not settings.r2_enabled:
+        raise HTTPException(503,'Logo storage is not configured')
+    max_bytes=min(5_000_000,settings.r2_max_image_bytes)
+    raw=file.file.read(max_bytes+1)
+    try:
+        validate_file_content(file.filename,file.content_type,raw,ALLOWED_IMAGE_TYPES,max_bytes)
+        optimized,out_ct,out_ext=optimize_image_variant(raw,max_dim=600,square_crop=False)
+    except StorageValidationError as exc:
+        raise HTTPException(exc.status_code,exc.message) from exc
+
+    key=build_object_key('public/logos',org_id,out_ext)
+    safe_name=safe_filename(file.filename,out_ext)
+    stored=StoredFile(
+        bucket_type='public',object_key=key,original_filename=safe_name,safe_filename=safe_name,
+        content_type=out_ct,file_extension=out_ext,size_bytes=len(optimized),visibility='public',
+        purpose='organization_logo',status='pending_upload',owner_user_id=user.id,
+        uploaded_by_user_id=user.id,organization_id=org_id,entity_type='organization',entity_id=org_id,
+    )
+    uploaded_to_r2=False
+    local_target:Path|None=None
+    if settings.r2_enabled:
+        try:
+            meta=r2_upload('public',key,io.BytesIO(optimized),out_ct,cache_control='public, max-age=31536000, immutable',max_bytes=max_bytes)
+            stored.size_bytes=meta['size_bytes'];stored.etag=meta['etag'];stored.checksum_sha256=meta['checksum_sha256']
+            uploaded_to_r2=True
+        except StorageUnavailable as exc:
+            raise HTTPException(503,'File storage is temporarily unavailable') from exc
+    else:
+        root=(Path(settings.upload_dir).resolve()/'public').resolve()
+        local_target=(root/key).resolve()
+        local_target.parent.mkdir(parents=True,exist_ok=True)
+        local_target.write_bytes(optimized)
+        stored.checksum_sha256=sha256(optimized).hexdigest()
+
+    old_file:StoredFile|None=None
+    try:
+        org=db.scalar(select(Organization).where(Organization.id==org_id).with_for_update())
+        if not org:raise HTTPException(404,'Organization not found')
+        old_file=db.get(StoredFile,org.logo_file_id) if org.logo_file_id else None
+        stored.status='available'
+        db.add(stored);db.flush()
+        org.logo_file_id=stored.id
+        if old_file and old_file.deleted_at is None:
+            old_file.status='deleted';old_file.deleted_at=datetime.now(UTC)
+        audit(db,user,'organization.logo_updated',org_id,org_id,file_id=stored.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        if uploaded_to_r2:cleanup_object_best_effort('public',key)
+        if local_target and local_target.exists():local_target.unlink(missing_ok=True)
+        raise
+
+    if old_file:
+        if settings.r2_enabled:cleanup_object_best_effort('public',old_file.object_key)
+        else:
+            old_local=(Path(settings.upload_dir).resolve()/'public'/old_file.object_key).resolve()
+            if old_local.is_file():old_local.unlink(missing_ok=True)
+    return record(org)
+
+
+@router.delete('/{org_id}/logo',response_model=OrganizationOut)
+def delete_logo(org_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    from datetime import UTC, datetime
+    from app.storage import cleanup_object_best_effort
+
+    if not user.is_admin:
+        org_member(db,user,org_id,{'owner','manager'})
+    org=db.scalar(select(Organization).where(Organization.id==org_id).with_for_update())
+    if not org:raise HTTPException(404,'Organization not found')
+    old_file=db.get(StoredFile,org.logo_file_id) if org.logo_file_id else None
+    org.logo_file_id=None
+    if old_file and old_file.deleted_at is None:
+        old_file.status='deleted';old_file.deleted_at=datetime.now(UTC)
+    audit(db,user,'organization.logo_removed',org_id,org_id)
+    db.commit()
+    if old_file:
+        if get_settings().r2_enabled:cleanup_object_best_effort('public',old_file.object_key)
+        else:
+            old_local=(Path(get_settings().upload_dir).resolve()/'public'/old_file.object_key).resolve()
+            if old_local.is_file():old_local.unlink(missing_ok=True)
+    return record(org)
+
 @router.post('/{org_id}/verification',response_model=VerificationOut)
 def request_verification(org_id:str,payload:VerifyCreate,user:User=Depends(current_user),db:Session=Depends(get_db)):
     org_member(db,user,org_id,{'owner','manager'})
@@ -777,36 +882,39 @@ def verification_history(org_id:str,user:User=Depends(current_user),db:Session=D
 
 @router.post('/{org_id}/documents')
 def upload_document(org_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    from app.storage import ALLOWED_IMAGE_TYPES, StorageValidationError, cleanup_object_best_effort, safe_filename, validate_file_content
     org_member(db,user,org_id,{'owner','manager'})
-    if file.content_type not in {'application/pdf','image/jpeg','image/png'}:
-        raise HTTPException(415,'Unsupported document type')
-    content=file.file.read(get_settings().max_upload_bytes+1)
-    if len(content)>get_settings().max_upload_bytes:raise HTTPException(413,'Document too large')
-    # Magic-byte check; production requires malware scan and configured private R2 storage.
-    signatures={'application/pdf':content.startswith(b'%PDF'), 'image/jpeg':content.startswith(b'\xff\xd8\xff'), 'image/png':content.startswith(b'\x89PNG\r\n\x1a\n')}
-    if not signatures[file.content_type]:raise HTTPException(422,'File content does not match declared type')
     settings=get_settings()
+    allowed={**ALLOWED_IMAGE_TYPES,'.pdf':('application/pdf',)}
+    content=file.file.read(settings.max_upload_bytes+1)
+    try:
+        suffix,ct=validate_file_content(file.filename,file.content_type,content,allowed,settings.max_upload_bytes)
+    except StorageValidationError as exc:
+        raise HTTPException(exc.status_code,exc.message) from exc
     if settings.r2_enabled:
         from hashlib import sha256
-        from pathlib import PurePath
         from app.storage import StorageUnavailable,upload_file as r2_upload
-        suffix=PurePath((file.filename or '').replace('\\','/')).suffix.lower()
-        if suffix not in {'.pdf','.png','.jpg','.jpeg'}:raise HTTPException(415,'Unsupported document type')
-        stored=StoredFile(bucket_type='private',object_key=f'private/verification/{org_id}/{uuid.uuid4()}',
-            original_filename=PurePath((file.filename or 'document').replace('\\','/')).name[:200],
-            safe_filename=PurePath((file.filename or 'document').replace('\\','/')).name[:200],
-            content_type=file.content_type,file_extension=suffix,size_bytes=len(content),visibility='private',
+        safe_name=safe_filename(file.filename,suffix)
+        stored=StoredFile(bucket_type='private',object_key=f'private/verification/{org_id}/{uuid.uuid4()}{suffix}',
+            original_filename=safe_name,safe_filename=safe_name,
+            content_type=ct,file_extension=suffix,size_bytes=len(content),visibility='private',
             purpose='verification_document',status='available',owner_user_id=user.id,uploaded_by_user_id=user.id,
             organization_id=org_id,entity_type='organization',entity_id=org_id,checksum_sha256=sha256(content).hexdigest())
         db.add(stored)
+        uploaded=False
         try:
-            meta=r2_upload('private',stored.object_key,__import__('io').BytesIO(content),file.content_type,
+            meta=r2_upload('private',stored.object_key,__import__('io').BytesIO(content),ct,
                 max_bytes=settings.r2_max_document_bytes)
+            uploaded=True
             stored.size_bytes=meta['size_bytes'];stored.etag=meta['etag']
             audit(db,user,'verification.document_uploaded',org_id,file_id=stored.id)
             db.commit()
         except StorageUnavailable as exc:
             db.rollback();raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        except Exception:
+            db.rollback()
+            if uploaded:cleanup_object_best_effort('private',stored.object_key)
+            raise
         return {'document_key':stored.id,'scan_status':'not_scanned'}
     if settings.is_production: raise HTTPException(503,'Production document storage is not configured')
     os.makedirs(get_settings().upload_dir,exist_ok=True)
@@ -816,6 +924,39 @@ def upload_document(org_id:str,file:UploadFile=File(...),user:User=Depends(curre
     audit(db,user,'verification.document_uploaded',org_id,document_key=key)
     db.commit()
     return {'document_key':key,'scan_status':'not_scanned_development_only'}
+
+
+@router.get('/{org_id}/documents')
+def list_documents(org_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    if not user.is_admin:
+        org_member(db,user,org_id,{'owner','manager'})
+    files=db.scalars(select(StoredFile).where(
+        StoredFile.organization_id==org_id,
+        StoredFile.purpose.in_(['verification_document','claim_document']),
+        StoredFile.status=='available',
+        StoredFile.deleted_at.is_(None),
+    ).order_by(StoredFile.created_at.desc())).all()
+    return [{'id':f.id,'filename':f.safe_filename,'content_type':f.content_type,'size_bytes':f.size_bytes,'purpose':f.purpose,'created_at':f.created_at} for f in files]
+
+
+@router.get('/{org_id}/documents/{file_id}')
+def download_org_document(org_id:str,file_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    if not user.is_admin:
+        org_member(db,user,org_id,{'owner','manager'})
+    stored=db.scalar(select(StoredFile).where(
+        StoredFile.id==file_id,
+        StoredFile.organization_id==org_id,
+        StoredFile.purpose.in_(['verification_document','claim_document']),
+        StoredFile.status=='available',
+        StoredFile.deleted_at.is_(None),
+    ))
+    if not stored:raise HTTPException(404,'Document not found')
+    from app.storage import StorageUnavailable,generate_download_url
+    try:url=generate_download_url('private',stored.object_key,stored.safe_filename,stored.content_type)
+    except StorageUnavailable as exc:raise HTTPException(503,'File storage is temporarily unavailable') from exc
+    audit(db,user,'verification.document_download_authorized',org_id,stored.id)
+    db.commit()
+    return RedirectResponse(url,status_code=307,headers={'Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow'})
 
 @router.get('/admin/review/verification/{verification_id}/document-url')
 def verification_document_url(verification_id:str,admin:User=Depends(admin_user),db:Session=Depends(get_db)):

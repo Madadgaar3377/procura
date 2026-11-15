@@ -11,7 +11,7 @@ from hashlib import sha256
 from typing import Literal
 
 import jwt
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError
@@ -254,6 +254,150 @@ def me(user:User=Depends(current_user)):
     data=record(user)
     data.pop('password_hash',None)
     return data
+
+
+def _update_user_avatar(target_user: User, actor: User, file: UploadFile, request: Request, db: Session) -> dict:
+    import io
+    from pathlib import Path
+    from uuid import uuid4
+    from app.models import StoredFile
+    from app.storage import (
+        ALLOWED_IMAGE_TYPES,
+        StorageUnavailable,
+        StorageValidationError,
+        build_object_key,
+        cleanup_object_best_effort,
+        optimize_image_variant,
+        safe_filename,
+        upload_file as r2_upload,
+        validate_file_content,
+    )
+
+    enforce_rate_limit(request, scope='api-r2-upload', identity=actor.id, limit=10, window_seconds=60)
+    settings = get_settings()
+    if settings.is_production and not settings.r2_enabled:
+        raise HTTPException(503, 'Image storage is not configured')
+    max_bytes = min(5_000_000, settings.r2_max_image_bytes)
+    raw = file.file.read(max_bytes + 1)
+    try:
+        validate_file_content(file.filename, file.content_type, raw, ALLOWED_IMAGE_TYPES, max_bytes)
+        optimized, out_ct, out_ext = optimize_image_variant(raw, max_dim=512, square_crop=True)
+    except StorageValidationError as exc:
+        raise HTTPException(exc.status_code, exc.message) from exc
+
+    key = build_object_key('public/avatars', target_user.id, out_ext)
+    safe_name = safe_filename(file.filename, out_ext)
+    stored = StoredFile(
+        bucket_type='public',
+        object_key=key,
+        original_filename=safe_name,
+        safe_filename=safe_name,
+        content_type=out_ct,
+        file_extension=out_ext,
+        size_bytes=len(optimized),
+        visibility='public',
+        purpose='user_avatar',
+        status='pending_upload',
+        owner_user_id=target_user.id,
+        uploaded_by_user_id=actor.id,
+        entity_type='user',
+        entity_id=target_user.id,
+    )
+    uploaded_to_r2 = False
+    local_target: Path | None = None
+    if settings.r2_enabled:
+        try:
+            res = r2_upload('public', key, io.BytesIO(optimized), out_ct, cache_control='public, max-age=31536000, immutable', max_bytes=max_bytes)
+            stored.size_bytes = res['size_bytes']
+            stored.etag = res['etag']
+            stored.checksum_sha256 = res['checksum_sha256']
+            uploaded_to_r2 = True
+        except StorageUnavailable as exc:
+            raise HTTPException(503, 'File storage is temporarily unavailable') from exc
+    else:
+        root = (Path(settings.upload_dir).resolve() / 'public').resolve()
+        local_target = (root / key).resolve()
+        local_target.parent.mkdir(parents=True, exist_ok=True)
+        local_target.write_bytes(optimized)
+        stored.checksum_sha256 = sha256(optimized).hexdigest()
+
+    old_file: StoredFile | None = None
+    try:
+        locked_user = db.scalar(select(User).where(User.id == target_user.id).with_for_update())
+        if not locked_user:
+            raise HTTPException(404, 'User not found')
+        old_file = db.get(StoredFile, locked_user.avatar_file_id) if locked_user.avatar_file_id else None
+        stored.status = 'available'
+        db.add(stored)
+        db.flush()
+        locked_user.avatar_file_id = stored.id
+        if old_file and old_file.deleted_at is None:
+            old_file.status = 'deleted'
+            old_file.deleted_at = datetime.now(UTC)
+        audit(db, actor, 'auth.avatar_updated', entity_id=locked_user.id, file_id=stored.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        if uploaded_to_r2:
+            cleanup_object_best_effort('public', key)
+        if local_target and local_target.exists():
+            local_target.unlink(missing_ok=True)
+        raise
+
+    if old_file:
+        if settings.r2_enabled:
+            cleanup_object_best_effort('public', old_file.object_key)
+        else:
+            old_local = (Path(settings.upload_dir).resolve() / 'public' / old_file.object_key).resolve()
+            if old_local.is_file():
+                old_local.unlink(missing_ok=True)
+
+    data = record(locked_user)
+    data.pop('password_hash', None)
+    return data
+
+
+@router.post('/me/avatar', response_model=UserOut)
+def upload_my_avatar(request: Request, file: UploadFile = File(...), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return _update_user_avatar(user, user, file, request, db)
+
+
+@router.delete('/me/avatar', response_model=UserOut)
+def delete_my_avatar(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from pathlib import Path
+    from app.models import StoredFile
+    from app.storage import cleanup_object_best_effort
+
+    locked_user = db.scalar(select(User).where(User.id == user.id).with_for_update())
+    if not locked_user:
+        raise HTTPException(404, 'User not found')
+    old_file = db.get(StoredFile, locked_user.avatar_file_id) if locked_user.avatar_file_id else None
+    locked_user.avatar_file_id = None
+    if old_file and old_file.deleted_at is None:
+        old_file.status = 'deleted'
+        old_file.deleted_at = datetime.now(UTC)
+    audit(db, user, 'auth.avatar_removed', entity_id=locked_user.id)
+    db.commit()
+    if old_file:
+        if get_settings().r2_enabled:
+            cleanup_object_best_effort('public', old_file.object_key)
+        else:
+            old_local = (Path(get_settings().upload_dir).resolve() / 'public' / old_file.object_key).resolve()
+            if old_local.is_file():
+                old_local.unlink(missing_ok=True)
+    data = record(locked_user)
+    data.pop('password_hash', None)
+    return data
+
+
+@router.post('/users/{user_id}/avatar', response_model=UserOut)
+def upload_user_avatar(user_id: str, request: Request, file: UploadFile = File(...), actor: User = Depends(current_user), db: Session = Depends(get_db)):
+    if actor.id != user_id and not actor.is_admin:
+        raise HTTPException(403, 'Not authorized to update this avatar')
+    target_user = db.get(User, user_id)
+    if not target_user:
+        raise HTTPException(404, 'User not found')
+    return _update_user_avatar(target_user, actor, file, request, db)
 
 
 class EmailOTPVerify(BaseModel):

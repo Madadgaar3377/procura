@@ -3,9 +3,39 @@ from __future__ import annotations
 
 from functools import lru_cache
 from hashlib import sha256
+import io
+from pathlib import PurePath
 from typing import BinaryIO
+from uuid import uuid4
+import zipfile
 
 from app.config import get_settings
+
+ALLOWED_IMAGE_TYPES: dict[str, tuple[str, ...]] = {
+    '.jpg': ('image/jpeg',),
+    '.jpeg': ('image/jpeg',),
+    '.png': ('image/png',),
+    '.webp': ('image/webp',),
+}
+
+ALLOWED_DOCUMENT_TYPES: dict[str, tuple[str, ...]] = {
+    '.pdf': ('application/pdf',),
+    '.png': ('image/png',),
+    '.jpg': ('image/jpeg',),
+    '.jpeg': ('image/jpeg',),
+    '.webp': ('image/webp',),
+    '.xlsx': ('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',),
+    '.docx': ('application/vnd.openxmlformats-officedocument.wordprocessingml.document',),
+}
+
+_DANGEROUS_SNIPPETS = (b'<svg', b'<script', b'<!doctype html', b'<html')
+
+
+class StorageValidationError(ValueError):
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+        self.message = message
 
 
 class StorageUnavailable(RuntimeError):
@@ -143,3 +173,119 @@ def health_check() -> bool:
     settings = get_settings()
     client.head_bucket(Bucket=settings.r2_private_bucket)
     return True
+
+
+def safe_filename(raw: str | None, fallback_ext: str = '') -> str:
+    name = PurePath((raw or 'file').replace('\\', '/')).name
+    cleaned = ''.join(c for c in name if c.isprintable() and c not in '"\r\n/\\')[:200]
+    if not cleaned:
+        return f'file{fallback_ext}'
+    return cleaned
+
+
+def build_object_key(prefix: str, entity_id: str, suffix: str = '') -> str:
+    clean_prefix = prefix.strip('/')
+    clean_suffix = suffix if suffix.startswith('.') or not suffix else f'.{suffix}'
+    return f'{clean_prefix}/{entity_id}/{uuid4()}{clean_suffix}'
+
+
+def validate_file_content(
+    filename: str | None,
+    content_type: str | None,
+    content: bytes,
+    allowed: dict[str, tuple[str, ...]],
+    max_bytes: int,
+) -> tuple[str, str]:
+    """Validate extension, declared MIME, size, and actual binary signature."""
+    if not content:
+        raise StorageValidationError(422, 'Uploaded file is empty')
+    if len(content) > max_bytes:
+        raise StorageValidationError(413, 'File exceeds the configured size limit')
+
+    suffix = PurePath((filename or '').replace('\\', '/')).suffix.lower()
+    declared = (content_type or '').split(';', 1)[0].strip().lower()
+    if suffix not in allowed or declared not in allowed[suffix]:
+        raise StorageValidationError(415, 'Unsupported file type')
+
+    head = content[:512].lstrip().lower()
+    if any(marker in head for marker in _DANGEROUS_SNIPPETS):
+        raise StorageValidationError(422, 'Executable or active markup files are not allowed')
+
+    if suffix == '.pdf' and not content.startswith(b'%PDF'):
+        raise StorageValidationError(422, 'File content does not match PDF format')
+    elif suffix == '.png' and not content.startswith(b'\x89PNG\r\n\x1a\n'):
+        raise StorageValidationError(422, 'File content does not match PNG format')
+    elif suffix in {'.jpg', '.jpeg'} and not content.startswith(b'\xff\xd8\xff'):
+        raise StorageValidationError(422, 'File content does not match JPEG format')
+    elif suffix == '.webp' and not (len(content) >= 12 and content[:4] == b'RIFF' and content[8:12] == b'WEBP'):
+        raise StorageValidationError(422, 'File content does not match WebP format')
+    elif suffix in {'.xlsx', '.docx'}:
+        if not content.startswith(b'PK\x03\x04'):
+            raise StorageValidationError(422, 'File content does not match Office Open XML format')
+        try:
+            with zipfile.ZipFile(io.BytesIO(content)) as zf:
+                names = set(zf.namelist())
+        except zipfile.BadZipFile as exc:
+            raise StorageValidationError(422, 'Uploaded Office document is corrupted') from exc
+        if '[Content_Types].xml' not in names:
+            raise StorageValidationError(422, 'Uploaded Office document is invalid')
+        required_prefix = 'xl/' if suffix == '.xlsx' else 'word/'
+        if not any(name.startswith(required_prefix) for name in names):
+            raise StorageValidationError(422, 'Uploaded Office document does not match its declared type')
+
+    return suffix, allowed[suffix][0]
+
+
+def optimize_image_variant(
+    content: bytes,
+    *,
+    max_dim: int = 512,
+    square_crop: bool = False,
+) -> tuple[bytes, str, str]:
+    """Decode, strip EXIF/metadata, resize/crop, and encode a clean WebP image."""
+    from PIL import Image, ImageOps, UnidentifiedImageError
+
+    Image.MAX_IMAGE_PIXELS = 25_000_000
+    try:
+        with Image.open(io.BytesIO(content)) as img:
+            img.verify()
+        with Image.open(io.BytesIO(content)) as img:
+            oriented = ImageOps.exif_transpose(img)
+            if oriented.mode not in ('RGB', 'RGBA'):
+                oriented = oriented.convert('RGBA' if 'A' in oriented.getbands() else 'RGB')
+            if square_crop:
+                w, h = oriented.size
+                side = min(w, h)
+                left = (w - side) // 2
+                top = (h - side) // 2
+                oriented = oriented.crop((left, top, left + side, top + side))
+            oriented.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            oriented.save(out, format='WEBP', quality=85, method=4)
+            return out.getvalue(), 'image/webp', '.webp'
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise StorageValidationError(422, 'Uploaded image could not be processed') from exc
+
+
+def stream_object(bucket_type: str, key: str) -> tuple[bytes, str, int]:
+    from botocore.exceptions import BotoCoreError, ClientError
+    try:
+        response = get_storage_client().get_object(Bucket=bucket_for(bucket_type), Key=key)
+        data = response['Body'].read()
+        content_type = response.get('ContentType') or 'application/octet-stream'
+        return data, content_type, len(data)
+    except ClientError as exc:
+        if exc.response.get('ResponseMetadata', {}).get('HTTPStatusCode') == 404 or exc.response.get('Error', {}).get('Code') in {'404', 'NoSuchKey', 'NotFound'}:
+            raise FileNotFoundError(key) from exc
+        raise StorageUnavailable('Object storage request failed') from exc
+    except BotoCoreError as exc:
+        raise StorageUnavailable('Object storage request failed') from exc
+
+
+def cleanup_object_best_effort(bucket_type: str, key: str | None) -> None:
+    if not key:
+        return
+    try:
+        delete_object(bucket_type, key)
+    except StorageUnavailable:
+        pass

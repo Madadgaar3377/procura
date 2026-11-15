@@ -2,11 +2,11 @@ from app.search import ListSearch
 from app.response_contracts import QuotationSummary, Comparison, QuoteDetail
 from datetime import datetime,timezone
 from decimal import Decimal,ROUND_HALF_UP
-from fastapi import APIRouter,Depends,HTTPException
+from fastapi import APIRouter,Depends,File,HTTPException,Request,UploadFile
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import func,select
 from app.database import get_db
-from app.models import Invitation,Quotation,QuoteLine,RFQ,RFQItem,PriceBookItem,User,Member,Notification,Outbox,Organization
+from app.models import Invitation,Quotation,QuoteLine,RFQ,RFQItem,PriceBookItem,StoredFile,User,Member,Notification,Outbox,Organization
 from app.schemas import QuoteIn
 from app.security import current_user,org_member,audit
 from app.serializers import record
@@ -18,7 +18,10 @@ SUBMITTED_STATUSES = {'submitted', 'shortlisted', 'awarded', 'rejected'}
 def snapshot(db,quote,lines=None):
     if lines is None:
         lines=db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()
-    return {'quotation':record(quote),'lines':[record(l) for l in lines]}
+    attachments=[{'id':f.id,'filename':f.safe_filename,'content_type':f.content_type,'size':f.size_bytes}
+        for f in db.scalars(select(StoredFile).where(StoredFile.entity_type=='quotation',StoredFile.entity_id==quote.id,
+            StoredFile.purpose=='quotation_attachment',StoredFile.status=='available',StoredFile.deleted_at.is_(None)).order_by(StoredFile.created_at)).all()]
+    return {'quotation':record(quote),'lines':[record(l) for l in lines],'attachments':attachments}
 
 def invoice(db,quote,lines=None):
     if lines is None:
@@ -179,3 +182,118 @@ def decision_history(quotation_id:str,user:User=Depends(current_user),db:Session
     return [{'action':event.action,'created_at':event.created_at,'details':event.metadata_json}
             for event in db.scalars(select(AuditEvent).where(AuditEvent.entity_id==quotation_id,
             AuditEvent.action.in_({'quotation.shortlisted','quotation.awarded','quotation.rejected'})).order_by(AuditEvent.created_at,AuditEvent.id)).all()]
+
+
+@router.post('/{quotation_id}/attachments')
+def upload_quote_attachment(quotation_id:str,request:Request,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    import io
+    from hashlib import sha256
+    from pathlib import Path
+    from uuid import uuid4
+    from app.config import get_settings
+    from app.rate_limit import enforce_rate_limit
+    from app.storage import (ALLOWED_DOCUMENT_TYPES,StorageUnavailable,StorageValidationError,
+        build_object_key,cleanup_object_best_effort,safe_filename,upload_file as r2_upload,validate_file_content)
+
+    quote=db.scalar(select(Quotation).where(Quotation.id==quotation_id).with_for_update())
+    if not quote:raise HTTPException(404,'Quotation not found')
+    org_member(db,user,quote.supplier_org_id,{'owner','manager','supplier'})
+    if quote.status!='draft':raise HTTPException(409,'Only draft quotation attachments may be changed')
+    settings=get_settings()
+    if settings.is_production and not settings.r2_enabled:raise HTTPException(503,'Private attachment storage is not configured')
+    count=db.scalar(select(func.count(StoredFile.id)).where(StoredFile.entity_type=='quotation',
+        StoredFile.entity_id==quote.id,StoredFile.purpose=='quotation_attachment',
+        StoredFile.status.in_(['pending_upload','available']),StoredFile.deleted_at.is_(None))) or 0
+    if count>=10:raise HTTPException(422,'At most 10 quotation attachments are allowed')
+    max_bytes=min(settings.max_upload_bytes,settings.r2_max_document_bytes)
+    content=file.file.read(max_bytes+1)
+    try:
+        suffix,ct=validate_file_content(file.filename,file.content_type,content,ALLOWED_DOCUMENT_TYPES,max_bytes)
+    except StorageValidationError as exc:
+        raise HTTPException(exc.status_code,exc.message) from exc
+    enforce_rate_limit(request,scope='api-r2-upload',identity=user.id,limit=10,window_seconds=60)
+    filename=safe_filename(file.filename,suffix)
+    key=build_object_key('private/quotation',quote.id,suffix)
+    stored=StoredFile(bucket_type='private',object_key=key,original_filename=filename,safe_filename=filename,
+        content_type=ct,file_extension=suffix,size_bytes=len(content),visibility='private',
+        purpose='quotation_attachment',status='pending_upload',owner_user_id=user.id,
+        uploaded_by_user_id=user.id,organization_id=quote.supplier_org_id,entity_type='quotation',entity_id=quote.id)
+    uploaded_to_r2=False
+    local_target:Path|None=None
+    if settings.r2_enabled:
+        try:
+            res=r2_upload('private',key,io.BytesIO(content),ct,max_bytes=max_bytes)
+            stored.size_bytes=res['size_bytes'];stored.etag=res['etag'];stored.checksum_sha256=res['checksum_sha256']
+            uploaded_to_r2=True
+        except StorageUnavailable as exc:
+            raise HTTPException(503,'File storage is temporarily unavailable') from exc
+    else:
+        root=(Path(settings.upload_dir).resolve()/'quotation-attachments').resolve()
+        local_target=(root/f'{quote.id}/{uuid4().hex}{suffix}').resolve()
+        local_target.parent.mkdir(parents=True,exist_ok=True)
+        local_target.write_bytes(content)
+        stored.object_key=str(local_target.relative_to(root).as_posix())
+        stored.checksum_sha256=sha256(content).hexdigest()
+    try:
+        stored.status='available'
+        db.add(stored)
+        db.flush()
+        audit(db,user,'quotation.attachment_uploaded',quote.supplier_org_id,quote.id,file_id=stored.id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        if uploaded_to_r2:cleanup_object_best_effort('private',key)
+        if local_target and local_target.exists():local_target.unlink(missing_ok=True)
+        raise
+    return {'id':stored.id,'filename':stored.safe_filename,'content_type':stored.content_type,'size':stored.size_bytes}
+
+
+@router.get('/{quotation_id}/attachments/{attachment_id}')
+def download_quote_attachment(quotation_id:str,attachment_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    from pathlib import Path
+    from fastapi.responses import FileResponse,RedirectResponse
+    from app.config import get_settings
+    from app.storage import StorageUnavailable,generate_download_url
+
+    get_quote(quotation_id,user,db)
+    stored=db.scalar(select(StoredFile).where(StoredFile.id==attachment_id,StoredFile.entity_type=='quotation',
+        StoredFile.entity_id==quotation_id,StoredFile.purpose=='quotation_attachment',
+        StoredFile.status=='available',StoredFile.deleted_at.is_(None)))
+    if not stored:raise HTTPException(404,'Attachment not found')
+    settings=get_settings()
+    if settings.r2_enabled:
+        try:url=generate_download_url('private',stored.object_key,stored.safe_filename,stored.content_type)
+        except StorageUnavailable as exc:raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        audit(db,user,'file.download_authorized',stored.organization_id,stored.id);db.commit()
+        return RedirectResponse(url,status_code=307,headers={'Cache-Control':'private, no-store','X-Robots-Tag':'noindex, nofollow'})
+    if settings.is_production:raise HTTPException(503,'File storage is not configured')
+    root=(Path(settings.upload_dir).resolve()/'quotation-attachments').resolve()
+    target=(root/stored.object_key).resolve()
+    if not target.is_relative_to(root) or not target.is_file():raise HTTPException(404,'Attachment not found')
+    return FileResponse(target,media_type=stored.content_type,filename=stored.safe_filename,
+        headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','X-Robots-Tag':'noindex, nofollow'})
+
+
+@router.delete('/{quotation_id}/attachments/{attachment_id}')
+def remove_quote_attachment(quotation_id:str,attachment_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    from datetime import UTC,datetime
+    from pathlib import Path
+    from app.config import get_settings
+    from app.storage import cleanup_object_best_effort
+
+    quote=db.scalar(select(Quotation).where(Quotation.id==quotation_id).with_for_update())
+    if not quote:raise HTTPException(404,'Quotation not found')
+    org_member(db,user,quote.supplier_org_id,{'owner','manager','supplier'})
+    if quote.status!='draft':raise HTTPException(409,'Only draft quotation attachments may be changed')
+    stored=db.scalar(select(StoredFile).where(StoredFile.id==attachment_id,StoredFile.entity_type=='quotation',
+        StoredFile.entity_id==quotation_id,StoredFile.purpose=='quotation_attachment'))
+    if not stored or stored.deleted_at is not None:raise HTTPException(404,'Attachment not found')
+    stored.status='deleted';stored.deleted_at=datetime.now(UTC)
+    audit(db,user,'quotation.attachment_removed',quote.supplier_org_id,quote.id,attachment_id=stored.id)
+    db.commit()
+    if get_settings().r2_enabled:cleanup_object_best_effort('private',stored.object_key)
+    else:
+        root=(Path(get_settings().upload_dir).resolve()/'quotation-attachments').resolve()
+        target=(root/stored.object_key).resolve()
+        if target.is_relative_to(root) and target.is_file():target.unlink(missing_ok=True)
+    return {'removed':True}

@@ -55,6 +55,7 @@ class User(TimeID, Base):
     phone_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    avatar_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
 
 class AccountPreference(Base):
     __tablename__ = 'account_preferences'
@@ -132,6 +133,7 @@ class Organization(TimeID, Base):
     is_buyer: Mapped[bool] = mapped_column(Boolean, default=True)
     is_supplier: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    logo_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     quote_automation: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
 
 class PublicProfileConsent(Base):

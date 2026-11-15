@@ -9,6 +9,13 @@ export function apiUrl(path:string):string {
   return `${base}/${path.replace(/^\//,'')}`;
 }
 
+export function assetUrl(path?:string|null):string|undefined {
+  if(!path)return undefined;
+  if(/^https?:\/\//.test(path))return path;
+  const clean=path.replace(/^\/api\/v1\//,'');
+  return apiUrl(clean);
+}
+
 let refreshing:Promise<boolean>|null=null;
 const reads=new Map<string,Promise<unknown>>();
 function browserRoute(path:string):string {
