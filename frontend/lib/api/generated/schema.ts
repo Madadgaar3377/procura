@@ -16,6 +16,7 @@ export interface Schemas {
   "Body_upload_api_v1_imports__kind__post": { "file": string; "sheet_name"?: string | null };
   "Body_upload_api_v1_pricebooks__org_id__bulk_import_post": { "file": string };
   "Body_upload_attachment_api_v1_rfqs__rfq_id__attachments_post": { "file": string };
+  "Body_upload_claim_document_api_v1_organizations__org_id__claims_documents_post": { "file": string };
   "Body_upload_document_api_v1_organizations__org_id__documents_post": { "file": string };
   "Body_upload_materials_api_v1_imports_bulk_materials_post": { "file": string };
   "Body_upload_suppliers_api_v1_imports_bulk_suppliers_post": { "file": string };
@@ -34,8 +35,10 @@ export interface Schemas {
   "CategoryIn": { "code"?: string | null; "name_en": string; "name_ar"?: string; "parent_id"?: string | null; "sort_order"?: number };
   "CategoryOut": { "code": string; "name_en": string; "normalized_name": string | null; "name_ar": string; "parent_id": string | null; "active": boolean; "sort_order": number; "updated_at": string; "id": string; "created_at": string };
   "CategorySummary": { "code": string; "name_en": string; "normalized_name": string | null; "name_ar": string; "parent_id": string | null; "active": boolean; "sort_order": number; "updated_at": string; "id": string; "created_at": string; "materials_count": number };
-  "ClaimCreate": { "evidence": string };
-  "ClaimOut": { "org_id": string; "claimant_id": string; "evidence": string; "status": string; "reviewer_id": string | null; "id": string; "created_at": string };
+  "ClaimCreate": { "evidence": string; "document_key"?: string | null; "cr_number"?: string | null };
+  "ClaimDetailsOut": { "org_id": string; "claimant_id": string; "evidence": string; "document_key": string | null; "matched_by": string | null; "requested_cr_number": string | null; "assigned_role": string; "has_existing_owner": boolean; "status": string; "reviewer_id": string | null; "reviewer_notes": string | null; "reviewed_at": string | null; "id": string; "created_at": string; "org_name"?: string; "org_city"?: string | null; "org_cr_number"?: string | null; "org_verified_status"?: string; "claimant_username"?: string | null; "claimant_email"?: string | null; "claimant_phone"?: string | null };
+  "ClaimOut": { "org_id": string; "claimant_id": string; "evidence": string; "document_key": string | null; "matched_by": string | null; "requested_cr_number": string | null; "assigned_role": string; "has_existing_owner": boolean; "status": string; "reviewer_id": string | null; "reviewer_notes": string | null; "reviewed_at": string | null; "id": string; "created_at": string };
+  "ClaimableSupplierMatch": { "id": string; "name": string; "trading_name"?: string | null; "city"?: string | null; "region"?: string | null; "verified_status": string; "has_owner": boolean; "match_reasons"?: Array<string> };
   "Comparison": { "rfq_id": string; "quotations": Array<Schemas["QuoteDetail"]> };
   "ContactActionConfirmation": { "confirm": boolean };
   "ContactChannelAdminInput": { "kind": string; "value": string; "label"?: string };
@@ -54,7 +57,7 @@ export interface Schemas {
   "DashboardSeries": { "date": string; "rfqs_created": number; "rfqs_published": number; "suppliers_created": number; "suppliers_verified": number };
   "DashboardStatus": { "status": string; "count": number };
   "DatabaseConnectStatus": { "connected": boolean; "status": "connected" | "disconnected"; "message": string; "error"?: string | null; "checked_at": string };
-  "Decision": { "approve": boolean; "notes": string };
+  "Decision": { "approve": boolean; "notes": string; "assigned_role"?: "owner" | "manager" | "supplier" | "viewer" | null };
   "DeliveryFeedback": { "outcome": string; "evidence": string };
   "DeliveryStatusOut": { "id": string; "outbox_id": string; "event": string; "channel": string; "status": string; "created_at": string; "provider_status": string | null; "provider_message_id": string | null; "provider_response_code": number | null; "last_error": string | null };
   "DestinationRestriction": { "channel": string; "destination": string; "reason": string; "detail": string };
@@ -150,7 +153,7 @@ export interface Schemas {
   "ReportActivity": { "month": string; "rfqs": number; "invitations": number; "quotations_submitted": number };
   "ReportSummary": { "workspace": "buyer" | "supplier" | "admin"; "rfqs_created": number; "invitations": number; "invitations_accepted": number; "quotations_submitted": number; "quotation_drafts": number; "activity": Array<Schemas["ReportActivity"]>; "rfq_statuses"?: Record<string, number>; "invitation_statuses"?: Record<string, number>; "quotation_statuses"?: Record<string, number>; "recent_rfqs"?: Array<Schemas["RFQOut"]>; "awaiting_response"?: number; "closed_rfqs"?: number; "active_rfqs"?: number; "published_rfqs"?: number; "matched_suppliers"?: number; "upcoming_deadlines"?: Array<Schemas["RFQOut"]>; "recent_notifications"?: Array<Schemas["NotificationOut"]>; "recent_enquiries"?: Array<Record<string, unknown>>; "recent_quotations"?: Array<Schemas["QuotationOut"]> };
   "RetryDelivery": { "confirmed_not_accepted"?: boolean };
-  "ReviewQueue": { "verifications": Array<Schemas["VerificationOut"]>; "claims": Array<Schemas["ClaimOut"]> };
+  "ReviewQueue": { "verifications": Array<Schemas["VerificationOut"]>; "claims": Array<Schemas["ClaimDetailsOut"]> };
   "SessionOut": { "id": string; "created_at": string; "expires_at": string; "current"?: boolean };
   "SettingsInput": { "free_launch_mode"?: boolean; "paid_memberships_enabled"?: boolean; "proposed_paid_launch_date"?: string | null; "default_free_plan"?: string | null; "premium_promotion_enabled"?: boolean; "featured_rfqs_enabled"?: boolean };
   "SourceIssue": { "row": number; "reason": string; "sheet"?: string | null };
@@ -233,6 +236,8 @@ export interface Operations {
   "PATCH /api/v1/organizations/{org_id}/public-profile": { body: Schemas["PublicationPreferences"]; response: Schemas["PublicationPreferences"] };
   "POST /api/v1/organizations": { body: Schemas["OrgCreate"]; response: Schemas["OrganizationOut"] };
   "GET /api/v1/organizations": { body: never; response: Array<Schemas["OrganizationOut"]> };
+  "GET /api/v1/organizations/claims/mine": { body: never; response: Array<Schemas["ClaimDetailsOut"]> };
+  "GET /api/v1/organizations/claimable/search": { body: never; response: Array<Schemas["ClaimableSupplierMatch"]> };
   "GET /api/v1/organizations/claimable/suppliers": { body: never; response: Array<Schemas["OrganizationOut"]> };
   "GET /api/v1/organizations/{org_id}": { body: never; response: Schemas["OrganizationOut"] };
   "PATCH /api/v1/organizations/{org_id}": { body: Schemas["OrgUpdate"]; response: Schemas["OrganizationOut"] };
@@ -240,8 +245,13 @@ export interface Operations {
   "GET /api/v1/organizations/{org_id}/verification": { body: never; response: Array<Schemas["VerificationOut"]> };
   "POST /api/v1/organizations/{org_id}/documents": { body: never; response: unknown };
   "GET /api/v1/organizations/admin/review/verification/{verification_id}/document-url": { body: never; response: unknown };
+  "POST /api/v1/organizations/{org_id}/claims/documents": { body: never; response: unknown };
   "POST /api/v1/organizations/{org_id}/claims": { body: Schemas["ClaimCreate"]; response: Schemas["ClaimOut"] };
+  "GET /api/v1/organizations/{org_id}/claims": { body: never; response: Array<Schemas["ClaimDetailsOut"]> };
+  "POST /api/v1/organizations/{org_id}/claims/{claim_id}/decision": { body: Schemas["Decision"]; response: Schemas["ClaimOut"] };
   "GET /api/v1/organizations/admin/review/queue": { body: never; response: Schemas["ReviewQueue"] };
+  "GET /api/v1/organizations/admin/claims": { body: never; response: Array<Schemas["ClaimDetailsOut"]> };
+  "GET /api/v1/organizations/admin/review/claim/{claim_id}/document-url": { body: never; response: unknown };
   "POST /api/v1/organizations/admin/review/verification/{verification_id}": { body: Schemas["Decision"]; response: Schemas["VerificationOut"] };
   "POST /api/v1/organizations/admin/review/claim/{claim_id}": { body: Schemas["Decision"]; response: Schemas["ClaimOut"] };
   "GET /api/v1/organizations/{org_id}/members": { body: never; response: Array<Schemas["MemberOut"]> };

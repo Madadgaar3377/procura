@@ -13,6 +13,11 @@ const en = {
   footerNote: 'Built for business procurement in Saudi Arabia.',
   backToTop: 'Back to top',
   skipContent: 'Skip to content',
+  supportHeading: 'Need assistance?',
+  supportEmailLabel: 'Email:',
+  supportPhoneLabel: 'Phone:',
+  allRightsReserved: 'All rights reserved.',
+  builtBy: 'Built by',
 };
 
 const ar: typeof en = {
@@ -28,6 +33,11 @@ const ar: typeof en = {
   footerNote: 'مصممة لمشتريات الشركات في المملكة العربية السعودية.',
   backToTop: 'العودة إلى الأعلى',
   skipContent: 'انتقل إلى المحتوى',
+  supportHeading: 'هل تحتاج إلى مساعدة؟',
+  supportEmailLabel: 'البريد الإلكتروني:',
+  supportPhoneLabel: 'الهاتف:',
+  allRightsReserved: 'جميع الحقوق محفوظة.',
+  builtBy: 'تطوير',
 };
 
 export const chromeCopy = { en, ar };

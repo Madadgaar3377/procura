@@ -139,6 +139,12 @@
     "POST",
     "GET"
   ],
+  "organizations/claims/mine": [
+    "GET"
+  ],
+  "organizations/claimable/search": [
+    "GET"
+  ],
   "organizations/claimable/suppliers": [
     "GET"
   ],
@@ -156,10 +162,23 @@
   "organizations/admin/review/verification/{verification_id}/document-url": [
     "GET"
   ],
+  "organizations/{org_id}/claims/documents": [
+    "POST"
+  ],
   "organizations/{org_id}/claims": [
+    "POST",
+    "GET"
+  ],
+  "organizations/{org_id}/claims/{claim_id}/decision": [
     "POST"
   ],
   "organizations/admin/review/queue": [
+    "GET"
+  ],
+  "organizations/admin/claims": [
+    "GET"
+  ],
+  "organizations/admin/review/claim/{claim_id}/document-url": [
     "GET"
   ],
   "organizations/admin/review/verification/{verification_id}": [

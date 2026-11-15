@@ -238,11 +238,25 @@ class ContactInquiry(TimeID, Base):
 
 class CompanyClaim(TimeID, Base):
     __tablename__='organization_claims'
+    __table_args__=(
+        Index('ix_org_claims_org_status','org_id','status'),
+        Index('ix_org_claims_claimant_status','claimant_id','status'),
+        Index('uq_org_claims_pending_user_org','org_id','claimant_id',unique=True,
+              postgresql_where=text("status = 'pending'"),
+              sqlite_where=text("status = 'pending'")),
+    )
     org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
     claimant_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
     evidence: Mapped[str] = mapped_column(Text)
+    document_key: Mapped[str | None] = mapped_column(String(400), nullable=True)
+    matched_by: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    requested_cr_number: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    assigned_role: Mapped[str] = mapped_column(String(30), default='owner', server_default='owner')
+    has_existing_owner: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
     status: Mapped[str] = mapped_column(String(30), default='pending')
     reviewer_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    reviewer_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class Verification(TimeID, Base):
     __tablename__='verifications'

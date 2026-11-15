@@ -11,4 +11,4 @@ export function proxy(request:NextRequest){
   return response;
 }
 
-export const config={matcher:['/','/how-it-works','/suppliers/:path*','/industries','/pricing','/about','/contact','/faq','/privacy','/terms']};
+export const config={matcher:['/','/login','/how-it-works','/suppliers/:path*','/industries','/pricing','/about','/contact','/faq','/privacy','/terms']};

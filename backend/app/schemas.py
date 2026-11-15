@@ -215,9 +215,12 @@ class VerifyCreate(Model):
 class Decision(Model):
     approve: bool
     notes: str=Field(min_length=4,max_length=500)
+    assigned_role: Literal['owner','manager','supplier','viewer']|None=None
 
 class ClaimCreate(Model):
     evidence: str=Field(min_length=15,max_length=4000)
+    document_key: str|None=Field(default=None,max_length=400)
+    cr_number: str|None=Field(default=None,max_length=80)
 
 class CategoryIn(Model):
     code:str|None=None

@@ -3,11 +3,11 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const vm=require('node:vm');
 const ts=require('typescript');
-function load(fetch){
+function load(fetch,onEvent=()=>{}){
  const exports={};
  class ApiError extends Error{constructor(status,detail,retryAfter){super(String(detail));Object.assign(this,{status,detail,retryAfter});}}
  const source=ts.transpileModule(fs.readFileSync(require.resolve('../lib/api/client.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
- vm.runInNewContext(source,{exports,require:()=>({ApiError}),process:{env:{NEXT_PUBLIC_API_URL:'http://127.0.0.1:8000/api/v1'}},Headers,AbortSignal,FormData,Event,setTimeout,clearTimeout,fetch,window:{location:{protocol:'http:',hostname:'localhost'},dispatchEvent:()=>{}}});
+ vm.runInNewContext(source,{exports,require:()=>({ApiError}),process:{env:{NEXT_PUBLIC_API_URL:'http://127.0.0.1:8000/api/v1'}},Headers,AbortSignal,FormData,Event,setTimeout,clearTimeout,fetch,window:{location:{protocol:'http:',hostname:'localhost'},dispatchEvent:onEvent}});
  return exports;
 }
 const result=(data,status=200,headers={})=>new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json',...headers}});
@@ -54,4 +54,23 @@ test('cancellation is forwarded and never becomes a successful empty response',a
 test('offline backend produces useful connection guidance',async()=>{
  const {api}=load(async()=>{throw new TypeError('Failed to fetch');});
  await assert.rejects(api('rfqs'),/could not be reached/);
+});
+
+
+test('an aborted session probe cannot expire a newer login after refresh fails',async()=>{
+ let finishRefresh,refreshStarted;
+ const started=new Promise(resolve=>{refreshStarted=resolve;});
+ const events=[];
+ const {api}=load(async(url)=>{
+  if(url.endsWith('/auth/browser/refresh')){refreshStarted();return new Promise(resolve=>{finishRefresh=()=>resolve(result({detail:'Expired'},401));});}
+  if(url.endsWith('/auth/browser/login'))return result({authenticated:true});
+  return result({detail:'Expired'},401);
+ },event=>events.push(event.type));
+ const controller=new AbortController();
+ const probe=api('auth/me',{signal:controller.signal});
+ const rejected=assert.rejects(probe,error=>error.name==='AbortError');
+ await started;controller.abort();
+ await api('auth/login',{method:'POST'});
+ finishRefresh();await rejected;
+ assert.ok(!events.includes('procura:session-expired'));
 });

@@ -144,6 +144,25 @@ PlanOut = contract('PlanOut', models.MembershipPlan)
 SubscriptionOut = contract('SubscriptionOut', models.Subscription)
 VerificationOut = contract('VerificationOut', models.Verification)
 ClaimOut = contract('ClaimOut', models.CompanyClaim)
+
+class ClaimableSupplierMatch(ResponseModel):
+    id: str
+    name: str
+    trading_name: str | None = None
+    city: str | None = None
+    region: str | None = None
+    verified_status: str
+    has_owner: bool
+    match_reasons: list[str] = Field(default_factory=list)
+
+class ClaimDetailsOut(ClaimOut):
+    org_name: str = ''
+    org_city: str | None = None
+    org_cr_number: str | None = None
+    org_verified_status: str = 'unverified'
+    claimant_username: str | None = None
+    claimant_email: str | None = None
+    claimant_phone: str | None = None
 ImportBatchOut = contract('ImportBatchOut', models.ImportBatch, ('source_storage_key', 'source_sha256', 'import_options', 'preview_metadata', 'failure_reason'))
 MeasurementUnitOut = contract('MeasurementUnitOut', models.MeasurementUnit)
 AuditOut = contract('AuditOut', models.AuditEvent)
@@ -253,7 +272,7 @@ class MatchingRerunOut(ResponseModel):
 
 class ReviewQueue(ResponseModel):
     verifications: list[VerificationOut]
-    claims: list[ClaimOut]
+    claims: list[ClaimDetailsOut]
 
 class PublicCategory(ResponseModel):
     id: str

@@ -31,7 +31,9 @@ export default function LiveAuth({ type }: { type: string }) {
   const autoRequested = useRef(false);
   const [accountType,setAccountType]=useState<"buyer"|"supplier">("buyer");
   useEffect(()=>{if(type==="register"){const role=new URLSearchParams(window.location.search).get("role");if(role==="buyer"||role==="supplier")setAccountType(role);}},[type]);
-  const [checkingSession, setCheckingSession] = useState(type === "login");
+  const [checkingSession, setCheckingSession] = useState(false);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
+  const sessionCheck = useRef<AbortController | null>(null);
   const [redirecting, setRedirecting] = useState(false);
   const [verificationReady, setVerificationReady] = useState(!['verify-mobile','verify-email'].includes(type));
   const [busy, setBusy] = useState(false);
@@ -88,34 +90,45 @@ export default function LiveAuth({ type }: { type: string }) {
   const forgot = type === "forgot-password";
   const reset = type === "reset-password";
   const email = type === "verify-email";
+  async function workspaceDestination(user: Schemas["UserOut"], signal?: AbortSignal) {
+    const verification = verificationPath(user);
+    if (verification) return verification;
+    if (user.is_admin) return "/app/admin/dashboard";
+    const organizations = await api<Schemas["OrganizationOut"][]>("organizations", {signal});
+    const buyer = organizations.some(org => org.is_active && org.is_buyer);
+    const supplier = organizations.some(org => org.is_active && org.is_supplier);
+    // Memberships, never a stale registration preference, determine existing workspaces.
+    if (buyer && !supplier) return "/app/buyer/dashboard";
+    if (supplier && !buyer) return "/app/supplier/dashboard";
+    if (!buyer && !supplier) {
+      const claims = await api<Schemas['ClaimOut'][]>('organizations/claims/mine', {signal});
+      if (claims.some(claim=>claim.status==='pending')) return '/app/supplier/company';
+      let preference = "";
+      try { preference = sessionStorage.getItem(ACCOUNT_TYPE) || ""; } catch {}
+      if (preference === "buyer" || preference === "supplier") return `/app/${preference}/company`;
+    }
+    return "/organizations";
+  }
   useEffect(() => {
     if (type !== "login") return;
-    let active = true;
+    const controller = new AbortController();
+    sessionCheck.current = controller;
     setCheckingSession(true);
-    // Persistent cookies restore the session, including refreshing expired access.
     void (async () => {
       try {
-        const user = await api<Schemas["UserOut"]>("auth/me");
-        const destination = verificationPath(user);
-        if (destination) {
-          if (active) router.replace(destination);
-          return;
+        const user = await api<Schemas["UserOut"]>("auth/me", {signal:controller.signal});
+        const destination = await workspaceDestination(user, controller.signal);
+        if (!controller.signal.aborted) router.replace(destination);
+      } catch (cause) {
+        if (!controller.signal.aborted && !(cause instanceof ApiError && cause.status === 401)) {
+          setError("We could not open your workspace. Please try again or sign in below.");
         }
-        if (user.is_admin) {
-          if (active) router.replace("/app/admin/dashboard");
-          return;
-        }
-        const organizations = await api<Schemas["OrganizationOut"][]>("organizations");
-        const buyer = organizations.some(org => org.is_active && org.is_buyer);
-        const supplier = organizations.some(org => org.is_active && org.is_supplier);
-        if (active) router.replace(buyer && !supplier ? "/app/buyer/dashboard" : supplier && !buyer ? "/app/supplier/dashboard" : "/organizations");
-      } catch {
-        // Anonymous users and unavailable sessions can still use the login form.
-        if (active) setCheckingSession(false);
+      } finally {
+        if (!controller.signal.aborted) setCheckingSession(false);
       }
     })();
-    return () => { active = false; };
-  }, [type, router]);
+    return () => controller.abort();
+  }, [type, router, sessionAttempt]);
   const title = register ? "Create your account" : verify ? "Verify your mobile" : forgot ? "Recover your password" : reset ? "Reset your password" : email ? "Verify your email" : "Welcome back";
 
   async function requestCode(recipient?: string) {
@@ -218,6 +231,8 @@ export default function LiveAuth({ type }: { type: string }) {
     if(register||(reset&&resetToken)){const issue=passwordError(value("password"));if(issue)errors.password=issue;}
     if((verify||email||(reset&&!resetToken))&&!/^[0-9]{6}$/.test(value("code")))errors.code="Enter a six-digit verification code.";
     setFieldErrors(errors);if(Object.keys(errors).length){setError("Check the highlighted fields.");return;}
+    sessionCheck.current?.abort();
+    setCheckingSession(false);
     submitting.current = true;
     setBusy(true);
     setError("");
@@ -281,24 +296,11 @@ export default function LiveAuth({ type }: { type: string }) {
       } else {
         await api("auth/login", { method: "POST", body: json({ identifier: value("identifier"), phone_country: value("identifier_country") || null, password: value("password") }) });
         const user = await api<Schemas["UserOut"]>("auth/me");
+        clearApiCache();
+        const destination = await workspaceDestination(user);
         toast.success("Welcome back", "Your secure session is ready.");
         setRedirecting(true);
-        const destination = verificationPath(user);
-        if (destination) {
-          router.replace(destination);
-          return;
-        }
-        if (user.is_admin) {
-          router.replace("/app/admin/dashboard");
-        } else {
-          const organizations = await api<Schemas["OrganizationOut"][]>("organizations");
-          const preference=window.sessionStorage.getItem(ACCOUNT_TYPE);
-          window.sessionStorage.removeItem(ACCOUNT_TYPE);
-          if((preference==="buyer"||preference==="supplier")&&!organizations.some(org=>org.is_active&&(preference==="buyer"?org.is_buyer:org.is_supplier))){router.replace(`/app/${preference}/company`);return;}
-          const buyer = organizations.some((org) => org.is_active && org.is_buyer);
-          const supplier = organizations.some((org) => org.is_active && org.is_supplier);
-          router.replace(buyer && !supplier ? "/app/buyer/dashboard" : supplier && !buyer ? "/app/supplier/dashboard" : "/organizations");
-        }
+        router.replace(destination);
       }
     } catch (cause) {
       setRedirecting(false);
@@ -306,7 +308,11 @@ export default function LiveAuth({ type }: { type: string }) {
         router.replace(verificationPath({phone:cause.detail.phone,email:'email' in cause.detail&&typeof cause.detail.email==='string'?cause.detail.email:null,phone_verified:false,email_verified:false})||'/verify-mobile');
         return;
       }
-      const detail = cause instanceof Error ? cause.message : "Request failed";
+      const detail = type === 'login'
+        ? cause instanceof ApiError && cause.status === 401
+          ? 'The email, phone number or password is incorrect. Please try again.'
+          : 'We could not complete sign in or open your workspace. Please try again.'
+        : cause instanceof Error ? cause.message : "Request failed";
       setError(detail);
       if(cause instanceof ApiError){
         setFieldErrors(cause.fieldErrors);
@@ -334,14 +340,14 @@ export default function LiveAuth({ type }: { type: string }) {
     } finally { submitting.current = false; setBusy(false); }
   }
 
-  if (type === "login" && (checkingSession || redirecting)) return <AppLoadingScreen/>;
+  if (type === "login" && redirecting) return <AppLoadingScreen/>;
 
   if (resetComplete) return <ResetSuccess arabic={arabic}/>;
 
   return <main className="auth-page auth-page-live">
     <section className="auth-story">
       <div className="auth-story-top">
-        <Link href="/" className="brand">Procumaterial<span className="brand-dot">.</span></Link>
+        <Link prefetch={false} href="/" className="brand">Procumaterial<span className="brand-dot">.</span></Link>
         <button className="auth-language" type="button" onClick={() => setArabic(!arabic)}>{arabic ? "English" : "العربية"}</button>
       </div>
       <div className="auth-story-copy">
@@ -365,17 +371,17 @@ export default function LiveAuth({ type }: { type: string }) {
           <div className="auth-flow-step"><i><span/></i><span><b>{t("Review quotations")}</b><small>{t("Compare submitted offers")}</small></span><em>{t("Next")}</em></div>
         </div>
       </div>
-      <div className="auth-story-footer"><span>{t("Saudi Arabia")}</span><span>{t("English · العربية")}</span><Link href="/privacy">{t("Privacy")}</Link></div>
+      <div className="auth-story-footer"><span>{t("Saudi Arabia")}</span><span>{t("English · العربية")}</span><Link prefetch={false} href="/privacy">{t("Privacy")}</Link></div>
     </section>
 
     <section className="auth-form-side">
       <header className="auth-form-top">
         <div className="auth-mobile-header">
-          <Link href="/" className="brand auth-mobile-brand">Procumaterial<span className="brand-dot">.</span></Link>
+          <Link prefetch={false} href="/" className="brand auth-mobile-brand">Procumaterial<span className="brand-dot">.</span></Link>
           <button className="auth-language" type="button" onClick={() => setArabic(!arabic)}>{arabic ? "English" : "العربية"}</button>
         </div>
         <div className="auth-form-top-actions">
-          <Link href="/" className="auth-back"><IconArrowLeft size={15}/>{t("Back to Procumaterial")}</Link>
+          <Link prefetch={false} href="/" className="auth-back"><IconArrowLeft size={15}/>{t("Back to Procumaterial")}</Link>
           <span><IconLock size={14}/>{t("Secure business access")}</span>
         </div>
       </header>
@@ -386,14 +392,16 @@ export default function LiveAuth({ type }: { type: string }) {
           <p className="auth-form-description">{t(register ? "Set up your sign-in details. You will verify your mobile before continuing." : verify ? "Enter the six-digit code sent by SMS to your mobile. Email verification uses a separate code. The SMS code expires in 5 minutes." : forgot ? "Enter the email address or phone number linked to your account. The same recovery code will be sent to your verified phone and email when available." : reset ? (resetToken ? "Choose a new password to complete recovery." : "Enter the recovery code sent to your verified phone and email when available.") : email ? "Confirm your business email to keep account notifications current." : "Sign in to continue to your Procumaterial business workspace.")}</p>
           {verify && phone && <p className="auth-form-description">{t("Verification requested for")}: <strong dir="ltr">{phone}</strong>{emailAddress && <> {t("and")} <strong dir="ltr">{emailAddress}</strong></>}</p>}
           {email && emailAddress && <p className="auth-form-description">{t("Verification requested for")}: <strong dir="ltr">{emailAddress}</strong></p>}
-          {verify&&<p className="auth-form-description">{arabic?"إذا لم تصلك الرسالة، تحقق من إتاحة الرسائل الدولية وتواصل مع الدعم. لا يؤكد البريد الإلكتروني ملكية رقم الهاتف.":"If SMS does not arrive, check international SMS availability and contact support. Email verification does not replace phone ownership verification."} <Link href="/contact">{t("Need help?")}</Link></p>}
-          {(forgot || reset) && <p className="auth-form-description">{t("If you cannot access a verified recovery contact, contact support for identity review.")} <Link href="/contact">{t("Need help?")}</Link>{reset && <> <Link href="/forgot-password">{t("Request new reset link")}</Link></>}</p>}
-          {error && <div className="notice" role="alert">{t(error)}</div>}{register && error.includes("already registered") && <div className="auth-form-links"><Link href="/login">{t("Sign in to your existing account")}</Link><Link href="/verify-mobile">{t("Finish mobile verification using your original signup number")}</Link></div>}
+          {verify&&<p className="auth-form-description">{arabic?"إذا لم تصلك الرسالة، تحقق من إتاحة الرسائل الدولية وتواصل مع الدعم. لا يؤكد البريد الإلكتروني ملكية رقم الهاتف.":"If SMS does not arrive, check international SMS availability and contact support. Email verification does not replace phone ownership verification."} <Link prefetch={false} href="/contact">{t("Need help?")}</Link></p>}
+          {(forgot || reset) && <p className="auth-form-description">{t("If you cannot access a verified recovery contact, contact support for identity review.")} <Link prefetch={false} href="/contact">{t("Need help?")}</Link>{reset && <> <Link prefetch={false} href="/forgot-password">{t("Request new reset link")}</Link></>}</p>}
+          {type === "login" && <div className="auth-session-slot">{checkingSession && <p className="auth-session-status" role="status">{arabic ? "جارٍ التحقق من جلستك…" : "Checking your existing session…"}</p>}</div>}
+          {type === "login" && error && <button className="auth-resend" type="button" disabled={busy || checkingSession} onClick={()=>{setError("");setSessionAttempt(value=>value+1);}}>{t('Try again')}</button>}
+          {error && <div className="notice" role="alert">{t(error)}</div>}{register && error.includes("already registered") && <div className="auth-form-links"><Link prefetch={false} href="/login">{t("Sign in to your existing account")}</Link><Link prefetch={false} href="/verify-mobile">{t("Finish mobile verification using your original signup number")}</Link></div>}
           {(verify||email)&&!verificationReady&&error&&<Button type="button" variant="outline" onClick={()=>window.location.reload()}>{t('Try again')}</Button>}
           {message && <div className="notice success" role="status">{t(message)}</div>}
 
           {register&&<div className="account-type-picker" role="group" aria-label={t('Account type')}><Button type="button" variant={accountType==='buyer'?'quiet':'outline'} aria-pressed={accountType==='buyer'} disabled={busy} onClick={()=>setAccountType('buyer')}><strong>{t('Buyer account')}</strong><small>{t('Create RFQs and compare quotations')}</small></Button><Button type="button" variant={accountType==='supplier'?'quiet':'outline'} aria-pressed={accountType==='supplier'} disabled={busy} onClick={()=>setAccountType('supplier')}><strong>{t('Supplier account')}</strong><small>{t('Receive RFQs and submit quotations')}</small></Button></div>}
-          {!register&&!verify&&!forgot&&!reset&&!email&&<div className="account-create-links"><Link href="/register?role=buyer">{t('Create buyer account')}</Link><Link href="/register?role=supplier">{t('Create supplier account')}</Link></div>}
+          {!register&&!verify&&!forgot&&!reset&&!email&&<div className="account-create-links"><Link prefetch={false} href="/register?role=buyer">{t('Create buyer account')}</Link><Link prefetch={false} href="/register?role=supplier">{t('Create supplier account')}</Link></div>}
           {register && <label className="field">{t("Username")}<input name="username" aria-invalid={Boolean(fieldErrors.username)} aria-describedby={fieldErrors.username?"auth-username-error":undefined} required pattern="[A-Za-z0-9_][A-Za-z0-9_.\-]{2,79}" minLength={3} maxLength={80} autoComplete="username"/><FieldError id="auth-username-error" message={fieldErrors.username}/></label>}
           {(register || verify) && <InternationalPhone value={phone} onChange={setPhone} disabled={busy} error={fieldErrors.phone}/>}
           {register && <label className="field">{t("Email")}<input name="email" aria-invalid={Boolean(fieldErrors.email)} aria-describedby={fieldErrors.email?"auth-email-error":undefined} type="email" required autoComplete="email" value={reset ? emailAddress : undefined} onChange={reset ? (event) => setEmailAddress(event.target.value) : undefined}/><FieldError id="auth-email-error" message={fieldErrors.email}/></label>}
@@ -420,11 +428,11 @@ export default function LiveAuth({ type }: { type: string }) {
           {reset && !resetToken && <button className="auth-resend" type="button" disabled={busy || resendIn>0 || !emailAddress} onClick={()=>void resendRecovery()}>{resendIn>0 ? `${t("Resend available in")} ${resendIn}s` : t("Resend verification code")}</button>}
           <Button type="submit" disabled={busy || !verificationReady}>{t(busy || !verificationReady ? "Please wait..." : register ? "Create account" : verify || email ? "Verify and continue" : forgot ? "Send recovery code" : reset ? (resetToken ? "Reset password" : "Verify code") : "Sign in")}</Button>
 
-          <div className="auth-form-links">{!register && <span>{t("New to Procumaterial?")} <Link href="/register">{t("Create an account")}</Link></span>}{(forgot || reset) && <Link href="/login">{t("Back to Login")}</Link>}{!register && !forgot && <Link href="/forgot-password">{t("Forgot password?")}</Link>}{register && <span>{t("Already have an account?")} <Link href="/login">{t("Sign in")}</Link></span>}{verify && <span>{t("Wrong number?")} <Link href="/register">{t("Start again")}</Link></span>}{reset && <span>{t("Need another code?")} <Link href="/forgot-password">{t("Request a new one")}</Link></span>}</div>
-          {register && <p className="auth-consent">{t("By creating an account, you agree to our")} <Link href="/terms">{t("Terms")}</Link> {t("and")} <Link href="/privacy">{t("Privacy")}</Link>.</p>}
+          <div className="auth-form-links">{!register && <span>{t("New to Procumaterial?")} <Link prefetch={false} href="/register">{t("Create an account")}</Link></span>}{(forgot || reset) && <Link prefetch={false} href="/login">{t("Back to Login")}</Link>}{!register && !forgot && <Link prefetch={false} href="/forgot-password">{t("Forgot password?")}</Link>}{register && <span>{t("Already have an account?")} <Link prefetch={false} href="/login">{t("Sign in")}</Link></span>}{verify && <span>{t("Wrong number?")} <Link prefetch={false} href="/register">{t("Start again")}</Link></span>}{reset && <span>{t("Need another code?")} <Link prefetch={false} href="/forgot-password">{t("Request a new one")}</Link></span>}</div>
+          {register && <p className="auth-consent">{t("By creating an account, you agree to our")} <Link prefetch={false} href="/terms">{t("Terms")}</Link> {t("and")} <Link prefetch={false} href="/privacy">{t("Privacy")}</Link>.</p>}
         </form>
       </div>
-      <footer className="auth-form-footer"><span>{t("© 2026 Procumaterial · Saudi Arabia")}</span><span><Link href="/contact">{t("Need help?")}</Link> · <a href="mailto:support@procumaterial.com">support@procumaterial.com</a> · <a href="tel:0501496516">0501496516</a></span></footer>
+      <footer className="auth-form-footer"><span>{t("© 2026 Procumaterial · Saudi Arabia")}</span><span><Link prefetch={false} href="/contact">{t("Need help?")}</Link> · <a href="mailto:support@procumaterial.com">support@procumaterial.com</a> · <a href="tel:0501496516">0501496516</a></span></footer>
     </section>
   </main>;
 }

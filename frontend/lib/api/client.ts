@@ -41,8 +41,15 @@ async function perform<T>(path:string,init:RequestInit):Promise<T> {
     });
     response=await request();
   }
-  if(response.status===401&&!publicAuth&&await refreshBrowserSession())response=await request();
+  if(response.status===401&&!publicAuth){
+    const refreshed=await refreshBrowserSession();
+    // A superseded login probe must never expire a newer, successful session.
+    init.signal?.throwIfAborted();
+    if(refreshed)response=await request();
+  }
+  init.signal?.throwIfAborted();
   const data:unknown=await response.json().catch(()=>null);
+  init.signal?.throwIfAborted();
   if(!response.ok){
     if(response.status===401&&!publicAuth&&typeof window!=='undefined')window.dispatchEvent(new Event('procura:session-expired'));
     throw new ApiError(response.status,data&&typeof data==='object'&&'detail' in data?data.detail:null,response.headers.get('Retry-After'),response.headers.get('X-Request-ID'));

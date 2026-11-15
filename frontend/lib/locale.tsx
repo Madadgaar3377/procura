@@ -8,6 +8,14 @@ import { profileArabic } from './profile-translations';
 const LOCALE_KEY = "procura.locale";
 
 const arabic: Record<string, string> = Object.fromEntries([
+  ["We could not open your workspace. Please try again or sign in below.", "تعذر فتح مساحة عملك. يرجى المحاولة مرة أخرى أو تسجيل الدخول أدناه."],
+  ["The email, phone number or password is incorrect. Please try again.", "البريد الإلكتروني أو رقم الهاتف أو كلمة المرور غير صحيحة. يرجى المحاولة مرة أخرى."],
+  ["We could not complete sign in or open your workspace. Please try again.", "تعذر إكمال تسجيل الدخول أو فتح مساحة عملك. يرجى المحاولة مرة أخرى."],
+  ["We could not load your workspace. Please try again.", "تعذر تحميل مساحة عملك. يرجى المحاولة مرة أخرى."],
+  ["We could not check your company status.", "تعذر التحقق من حالة شركتك."],
+  ["We could not load your organizations.", "تعذر تحميل مؤسساتك."],
+  ["Your company ownership request is awaiting administrator review. Your existing supplier company will be available after approval.", "طلب ملكية شركتك بانتظار مراجعة المسؤول. ستتمكن من إدارة شركة المورد الحالية بعد الموافقة."],
+  ["Check status", "التحقق من الحالة"],
   ["Memberships & Pricing", "\u0627\u0644\u0639\u0636\u0648\u064a\u0627\u062a \u0648\u0627\u0644\u0623\u0633\u0639\u0627\u0631"],
   ["Membership Plans", "\u062e\u0637\u0637 \u0627\u0644\u0639\u0636\u0648\u064a\u0629"],
   ["Supplier Subscriptions", "\u0627\u0634\u062a\u0631\u0627\u0643\u0627\u062a \u0627\u0644\u0645\u0648\u0631\u062f\u064a\u0646"],

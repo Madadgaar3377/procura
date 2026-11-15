@@ -94,12 +94,73 @@ export function ContactInbox(){
 }
 export function Verification(){
  const {t}=useLocale();
- const q=useApi<Schemas['ReviewQueue']>('organizations/admin/review/queue');const [selected,setSelected]=useState<{id:string;kind:string}>(),[notes,setNotes]=useState(''),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [claimStatus,setClaimStatus]=useState<'pending'|'approved'|'rejected'|'all'>('pending');
+ const q=useApi<Schemas['ReviewQueue']>('organizations/admin/review/queue');
+ const claimsQuery=useApi<Schemas['ClaimDetailsOut'][]>(`organizations/admin/claims?status=${claimStatus}`);
+ const [selected,setSelected]=useState<{id:string;kind:'verification'|'claim';claim?:Schemas['ClaimDetailsOut']}>(),[notes,setNotes]=useState(''),[assignedRole,setAssignedRole]=useState<'owner'|'manager'|'supplier'|'viewer'>('owner'),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const dialog=useRef<HTMLDialogElement>(null);
  useEffect(()=>{if(selected&&!dialog.current?.open)dialog.current?.showModal();},[selected]);
- async function decide(approve:boolean){if(!selected||busy)return;setBusy(true);setError('');try{await api(`organizations/admin/review/${selected.kind}/${selected.id}`,{method:'POST',body:json({approve,notes})});setSelected(undefined);setNotes('');q.reload();}catch(e){setError(e instanceof Error?e.message:'Decision failed');}finally{setBusy(false);}}
- function downloadDocument(id:string){window.location.assign(apiUrl(`organizations/admin/review/verification/${id}/document-url`));}
- return <><Heading title={t("Company verification and claims")} description="Review legal identity and ownership evidence. Imported and admin-added suppliers remain unverified until an explicit review."/><State {...q} retry={q.reload}/><h2>{t("Verification requests")}</h2><DataTable rows={q.data?.verifications||[]} columns={['org_id','cr_number','document_key','status']} action={r=><div className="live-actions">{Boolean(r.document_key)&&<Button variant="outline" disabled={busy} onClick={()=>void downloadDocument(String(r.id))}>{t('Download evidence')}</Button>}<Button onClick={()=>setSelected({id:String(r.id),kind:'verification'})}>{t("Review")}</Button></div>}/><h2>{t("Company claims")}</h2><DataTable rows={q.data?.claims||[]} columns={['org_id','claimant_id','evidence','status']} action={r=><Button onClick={()=>setSelected({id:String(r.id),kind:'claim'})}>{t("Review")}</Button>}/>{selected&&<AdminModal ref={dialog} className="live-dialog" aria-labelledby="decision-title" onCancel={()=>setSelected(undefined)} open={!!selected} busy={busy} onRequestClose={()=>setSelected(undefined)}><h2 id="decision-title">{t("Review")} {selected.kind}</h2><label className="field">{t("Decision reason")}<textarea minLength={4} maxLength={500} value={notes} onChange={e=>setNotes(e.target.value)}/></label>{error&&<p role="alert">{error}</p>}<div className="live-actions"><Button disabled={busy||notes.trim().length<4} onClick={()=>void decide(true)}>{t("Approve")}</Button><Button disabled={busy||notes.trim().length<4} variant="destructive" onClick={()=>void decide(false)}>{t("Reject")}</Button><Button disabled={busy} variant="outline" onClick={()=>setSelected(undefined)}>{t("Cancel")}</Button></div></AdminModal>}</>;
+ async function decide(approve:boolean){
+  if(!selected||busy)return;
+  setBusy(true);setError('');
+  try{
+   const body=selected.kind==='claim'&&approve?{approve,notes,assigned_role:assignedRole}:{approve,notes};
+   await api(`organizations/admin/review/${selected.kind}/${selected.id}`,{method:'POST',body:json(body)});
+   setSelected(undefined);setNotes('');q.reload();claimsQuery.reload();
+  }catch(e){setError(e instanceof Error?e.message:'Decision failed');}finally{setBusy(false);}
+ }
+ function downloadDocument(kind:'verification'|'claim',id:string){window.location.assign(apiUrl(`organizations/admin/review/${kind}/${id}/document-url`));}
+ return <>
+  <Heading title={t("Company verification and claims")} description="Review legal identity and ownership evidence. Imported and admin-added suppliers remain unverified until an explicit review."/>
+  <State {...q} retry={q.reload}/>
+  <h2>{t("Verification requests")}</h2>
+  <DataTable rows={q.data?.verifications||[]} columns={['org_id','cr_number','document_key','status']} action={r=><div className="live-actions">{Boolean(r.document_key)&&<Button variant="outline" disabled={busy} onClick={()=>void downloadDocument('verification',String(r.id))}>{t('Download evidence')}</Button>}<Button onClick={()=>setSelected({id:String(r.id),kind:'verification'})}>{t("Review")}</Button></div>}/>
+  <div className="panel-title" style={{marginTop:24}}>
+   <h2>{t("Company claims")}</h2>
+   <select className="select-control" aria-label={t('Filter claims by status')} value={claimStatus} onChange={e=>setClaimStatus(e.target.value as 'pending'|'approved'|'rejected'|'all')}>
+    <option value="pending">{t('Pending review')}</option>
+    <option value="approved">{t('Approved')}</option>
+    <option value="rejected">{t('Rejected')}</option>
+    <option value="all">{t('All statuses')}</option>
+   </select>
+  </div>
+  <State {...claimsQuery} retry={claimsQuery.reload} empty={!claimsQuery.loading&&!claimsQuery.error&&!claimsQuery.data?.length}/>
+  <DataTable
+   rows={claimsQuery.data||[]}
+   columns={['org_name','claimant_username','matched_by','assigned_role','status','evidence']}
+   labels={{org_name:'Company',claimant_username:'Claimant',matched_by:'Match signals',assigned_role:'Role'}}
+   render={{
+    org_name:row=><><strong>{String(row.org_name||row.org_id)}</strong>{Boolean(row.org_cr_number)&&<small>CR: {String(row.org_cr_number)}</small>}{Boolean(row.has_existing_owner)&&<small>{t('Has existing owner')}</small>}</>,
+    claimant_username:row=><><strong>{String(row.claimant_username||row.claimant_id)}</strong>{Boolean(row.claimant_email)&&<small>{String(row.claimant_email)}</small>}{Boolean(row.claimant_phone)&&<small>{String(row.claimant_phone)}</small>}</>,
+   }}
+   action={r=>{
+    const claim=r as unknown as Schemas['ClaimDetailsOut'];
+    return <div className="live-actions">
+     {Boolean(claim.document_key)&&<Button variant="outline" disabled={busy} onClick={()=>downloadDocument('claim',claim.id)}>{t('Download evidence')}</Button>}
+     {claim.status==='pending'&&<Button onClick={()=>{setAssignedRole(claim.has_existing_owner?'manager':'owner');setSelected({id:claim.id,kind:'claim',claim});}}>{t("Review")}</Button>}
+    </div>;
+   }}
+  />
+  {selected&&<AdminModal ref={dialog} className="live-dialog" aria-labelledby="decision-title" onCancel={()=>setSelected(undefined)} open={!!selected} busy={busy} onRequestClose={()=>setSelected(undefined)}>
+   <h2 id="decision-title">{t("Review")} {selected.kind}</h2>
+   {selected.claim&&<div className="form-grid" style={{marginBottom:12}}>
+    <div><b>{t('Company')}</b><p>{selected.claim.org_name||selected.claim.org_id}</p></div>
+    <div><b>{t('Claimant')}</b><p>{selected.claim.claimant_username||selected.claim.claimant_id} ({selected.claim.claimant_email||selected.claim.claimant_phone||'—'})</p></div>
+    <div><b>{t('Match signals')}</b><p>{selected.claim.matched_by||'manual'}</p></div>
+    <div><b>{t('Requested CR')}</b><p>{selected.claim.requested_cr_number||'—'}</p></div>
+    <div className="field full"><b>{t('Ownership evidence')}</b><p style={{whiteSpace:'pre-wrap'}}>{selected.claim.evidence}</p></div>
+    {selected.claim.document_key&&<div className="field full"><Button type="button" variant="outline" onClick={()=>downloadDocument('claim',selected.claim!.id)}>{t('Download evidence')}</Button></div>}
+   </div>}
+   {selected.kind==='claim'&&<label className="field">{t("Assign role")}<select className="select-control" value={assignedRole} onChange={e=>setAssignedRole(e.target.value as 'owner'|'manager'|'supplier'|'viewer')}><option value="owner">{t('Owner')}</option><option value="manager">{t('Manager')}</option><option value="supplier">{t('Supplier member')}</option><option value="viewer">{t('Viewer')}</option></select></label>}
+   <label className="field">{t("Decision reason")}<textarea minLength={4} maxLength={500} value={notes} onChange={e=>setNotes(e.target.value)}/></label>
+   {error&&<p role="alert">{error}</p>}
+   <div className="live-actions">
+    <Button disabled={busy||notes.trim().length<4} onClick={()=>void decide(true)}>{t("Approve")}</Button>
+    <Button disabled={busy||notes.trim().length<4} variant="destructive" onClick={()=>void decide(false)}>{t("Reject")}</Button>
+    <Button disabled={busy} variant="outline" onClick={()=>setSelected(undefined)}>{t("Cancel")}</Button>
+   </div>
+  </AdminModal>}
+ </>;
 }
 type MaterialRow = Schemas['MaterialOut'] & { main_category_id?: string|null; subcategory_id?: string|null; main_category?:string|null; subcategory?:string|null; source_sn?: string|null; arabic_description?: string|null; updated_at?:string };
 type MaterialPage = {items:MaterialRow[];total:number;limit:number;offset:number};

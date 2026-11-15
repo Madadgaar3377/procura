@@ -1,5 +1,5 @@
 from app.search import ListSearch
-from app.response_contracts import ClaimOut, MemberOut, OrganizationOut, ReviewQueue, VerificationOut
+from app.response_contracts import ClaimDetailsOut, ClaimOut, ClaimableSupplierMatch, MemberOut, OrganizationOut, ReviewQueue, VerificationOut
 import os, uuid
 from types import SimpleNamespace
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, or_, func, literal
 from sqlalchemy.exc import IntegrityError
 from app.database import get_db
-from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Contact,ContactChannel,ContactImportSource,ContactCapability,ContactSupplierTrade,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent,utcnow
+from app.models import Organization,User,Member,Verification,CompanyClaim,Outbox,Notification,Contact,ContactChannel,ContactImportSource,ContactCapability,ContactSupplierTrade,StoredFile,Capability,Category,Material,ImportedSupplierTrade,AuditEvent,utcnow
 from app.modules.auth.router import norm_phone, norm_email
 from app.identity import normalize_phone as normalize_business_phone
 from app.security import current_user,admin_user,org_member,audit
@@ -22,6 +22,12 @@ import re
 
 from app.modules.organizations.public_profile import router as public_profile_router
 from app.modules.organizations.contact_import import parse_emails, parse_phones, norm_name, _add_channel, import_contact_row
+from app.modules.organizations.claims import (
+    decide_claim,
+    detect_claim_match_signals,
+    search_claimable_suppliers,
+    serialize_claim_details,
+)
 
 router=APIRouter(prefix='/organizations',tags=['Organizations & Verification'])
 
@@ -597,6 +603,10 @@ def create(payload:OrgCreate,user:User=Depends(current_user),db:Session=Depends(
         raise HTTPException(503,'Company creation requires the pending supplier profile database migration. Existing accounts can still sign in.')
     if payload.cr_number and db.scalar(select(Organization.id).where(Organization.cr_number==payload.cr_number,Organization.verified_status=='verified')):
         raise HTTPException(409,'A verified company already uses this CR')
+    if payload.is_supplier and payload.cr_number:
+        clean_cr=re.sub(r'[\s\-_]+','',payload.cr_number).strip()
+        if db.scalar(select(Organization.id).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),or_(Organization.cr_number==payload.cr_number,Organization.cr_number==clean_cr))):
+            raise HTTPException(409,'A supplier organization with this Commercial Registration already exists. Please search and claim it instead.')
     org=Organization(**payload.model_dump(),name_normalized=payload.name.strip().casefold(),source='registered')
     db.add(org);db.flush()
     db.add(Member(user_id=user.id,organization_id=org.id,role='owner'))
@@ -665,16 +675,55 @@ def create_supplier(payload:AdminSupplierCreate,admin:User=Depends(admin_user),d
     db.commit();db.refresh(org)
     return record(org)
 
-@router.get('/claimable/suppliers',response_model=list[OrganizationOut])
-def claimable_suppliers(user:User=Depends(current_user),db:Session=Depends(get_db)):
+@router.get('/claims/mine',response_model=list[ClaimDetailsOut])
+def my_claims(user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Return only the authenticated claimant's records; grants no organization access."""
+    items=db.scalars(select(CompanyClaim).where(CompanyClaim.claimant_id==user.id).order_by(CompanyClaim.created_at.desc())).all()
+    return serialize_claim_details(db,items,include_claimant=False,include_org_cr=False)
+
+@router.get('/claimable/search',response_model=list[ClaimableSupplierMatch])
+def search_claimable(
+    q:str=Query(default='',max_length=200),
+    cr_number:str=Query(default='',max_length=80),
+    limit:int=Query(default=20,ge=1,le=50),
+    user:User=Depends(current_user),
+    db:Session=Depends(get_db),
+):
+    """Search existing supplier organizations using safe public company details only."""
+    return search_claimable_suppliers(db,user,q=q,cr_number=cr_number,limit=limit)
+
+@router.get('/claimable/suppliers',response_model=list[ClaimableSupplierMatch])
+def claimable_suppliers(
+    q:str=Query(default='',max_length=200),
+    cr_number:str=Query(default='',max_length=80),
+    user:User=Depends(current_user),
+    db:Session=Depends(get_db),
+):
     claimed=select(Member.id).where(Member.organization_id==Organization.id)
     query=select(Organization).where(
         Organization.is_supplier.is_(True),
         Organization.is_active.is_(True),
         Organization.source.in_(['admin_created','imported']),
         ~claimed.exists(),
-    ).order_by(Organization.name).limit(200)
-    return [record(org) for org in db.scalars(query).all()]
+    )
+    if q.strip():
+        term='%'+q.strip()[:100]+'%'
+        query=query.where(or_(Organization.name.ilike(term),Organization.trading_name.ilike(term)))
+    if cr_number.strip():
+        query=query.where(Organization.cr_number==cr_number.strip())
+    return [
+        {
+            'id': org.id,
+            'name': org.name,
+            'trading_name': org.trading_name,
+            'city': org.city,
+            'region': org.region,
+            'verified_status': org.verified_status,
+            'has_owner': False,
+            'match_reasons': [],
+        }
+        for org in db.scalars(query.order_by(Organization.name).limit(200)).all()
+    ]
 
 @router.get('/{org_id}',response_model=OrganizationOut)
 def details(org_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -797,21 +846,185 @@ def verification_document_url(verification_id:str,admin:User=Depends(admin_user)
     return FileResponse(target,filename=target.name,media_type='application/octet-stream',
         headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
 
+@router.post('/{org_id}/claims/documents')
+def upload_claim_document(org_id:str,file:UploadFile=File(...),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    if not user.phone_verified:
+        raise HTTPException(403,'Mobile verification is required before uploading claim documents')
+    org=db.get(Organization,org_id)
+    if not org or not org.is_active or not org.is_supplier:
+        raise HTTPException(404,'Claimable supplier organization not found')
+    if db.scalar(select(Member.id).where(Member.organization_id==org_id,Member.user_id==user.id)):
+        raise HTTPException(409,'Already a member of this organization')
+    if file.content_type not in {'application/pdf','image/jpeg','image/png'}:
+        raise HTTPException(415,'Unsupported document type')
+    content=file.file.read(get_settings().max_upload_bytes+1)
+    if len(content)>get_settings().max_upload_bytes:raise HTTPException(413,'Document too large')
+    signatures={'application/pdf':content.startswith(b'%PDF'), 'image/jpeg':content.startswith(b'\xff\xd8\xff'), 'image/png':content.startswith(b'\x89PNG\r\n\x1a\n')}
+    if not signatures[file.content_type]:raise HTTPException(422,'File content does not match declared type')
+    settings=get_settings()
+    if settings.r2_enabled:
+        from hashlib import sha256
+        from pathlib import PurePath
+        from app.storage import StorageUnavailable,upload_file as r2_upload
+        suffix=PurePath((file.filename or '').replace('\\','/')).suffix.lower()
+        if suffix not in {'.pdf','.png','.jpg','.jpeg'}:raise HTTPException(415,'Unsupported document type')
+        stored=StoredFile(bucket_type='private',object_key=f'private/claims/{org_id}/{user.id}/{uuid.uuid4()}',
+            original_filename=PurePath((file.filename or 'document').replace('\\','/')).name[:200],
+            safe_filename=PurePath((file.filename or 'document').replace('\\','/')).name[:200],
+            content_type=file.content_type,file_extension=suffix,size_bytes=len(content),visibility='private',
+            purpose='claim_document',status='available',owner_user_id=user.id,uploaded_by_user_id=user.id,
+            organization_id=org_id,entity_type='organization_claim',entity_id=org_id,checksum_sha256=sha256(content).hexdigest())
+        db.add(stored)
+        try:
+            meta=r2_upload('private',stored.object_key,__import__('io').BytesIO(content),file.content_type,
+                max_bytes=settings.r2_max_document_bytes)
+            stored.size_bytes=meta['size_bytes'];stored.etag=meta['etag']
+            audit(db,user,'organization.claim_document_uploaded',org_id,file_id=stored.id)
+            db.commit()
+        except StorageUnavailable as exc:
+            db.rollback();raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        return {'document_key':stored.id,'scan_status':'not_scanned'}
+    if settings.is_production: raise HTTPException(503,'Production document storage is not configured')
+    key=f'claims/{org_id}/{user.id}/{uuid.uuid4().hex}'
+    target_dir=os.path.join(settings.upload_dir,'claims',org_id,user.id)
+    os.makedirs(target_dir,exist_ok=True)
+    with open(os.path.join(settings.upload_dir,key),'xb') as f:f.write(content)
+    audit(db,user,'organization.claim_document_uploaded',org_id,document_key=key)
+    db.commit()
+    return {'document_key':key,'scan_status':'not_scanned_development_only'}
+
 @router.post('/{org_id}/claims',response_model=ClaimOut)
 def claim(org_id:str,payload:ClaimCreate,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    if not user.phone_verified:
+        raise HTTPException(403,'Mobile verification is required before claiming a supplier')
     org=db.get(Organization,org_id)
-    if not org or org.source not in {'imported','admin_created'} or not org.is_supplier:raise HTTPException(404,'Claimable organization not found')
-    if db.scalar(select(Member.id).where(Member.organization_id==org_id)):
-        raise HTTPException(409,'This supplier already has an owner')
+    if not org or not org.is_active or not org.is_supplier:
+        raise HTTPException(404,'Claimable organization not found')
+    if db.scalar(select(Member.id).where(Member.organization_id==org_id,Member.user_id==user.id)):
+        raise HTTPException(409,'Already a member of this organization')
     existing=db.scalar(select(CompanyClaim).where(CompanyClaim.org_id==org_id,CompanyClaim.claimant_id==user.id,CompanyClaim.status=='pending'))
     if existing:raise HTTPException(409,'Claim already pending')
-    c=CompanyClaim(org_id=org_id,claimant_id=user.id,evidence=payload.evidence)
-    db.add(c);audit(db,user,'organization.claim_requested',org_id)
-    db.commit();return record(c)
+
+    if payload.document_key:
+        if get_settings().r2_enabled:
+            stored=db.scalar(select(StoredFile).where(
+                StoredFile.id==payload.document_key,
+                StoredFile.purpose=='claim_document',
+                StoredFile.organization_id==org_id,
+                StoredFile.owner_user_id==user.id,
+                StoredFile.status=='available',
+                StoredFile.deleted_at.is_(None),
+            ))
+            if not stored:raise HTTPException(422,'Claim document must be uploaded for this organization')
+        else:
+            expected_prefix=f'claims/{org_id}/{user.id}/'
+            if not payload.document_key.startswith(expected_prefix) or '/' in payload.document_key[len(expected_prefix):] or not os.path.isfile(os.path.join(get_settings().upload_dir,payload.document_key)):
+                raise HTTPException(422,'Claim document must be uploaded for this organization')
+
+    owner_ids=db.scalars(select(Member.user_id).where(Member.organization_id==org_id,Member.role=='owner')).all()
+    has_existing_owner=len(owner_ids)>0
+    signals=detect_claim_match_signals(db,user,org,cr_number=payload.cr_number)
+    matched_by=','.join(signals) if signals else 'manual'
+
+    c=CompanyClaim(
+        org_id=org_id,
+        claimant_id=user.id,
+        evidence=payload.evidence.strip(),
+        document_key=payload.document_key,
+        matched_by=matched_by,
+        requested_cr_number=payload.cr_number.strip() if payload.cr_number else None,
+        assigned_role='manager' if has_existing_owner else 'owner',
+        has_existing_owner=has_existing_owner,
+    )
+    db.add(c)
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(409,'Claim already pending') from exc
+
+    if has_existing_owner:
+        for owner_id in owner_ids:
+            db.add(Notification(
+                recipient_user_id=owner_id,
+                event='organization.competing_claim_received',
+                message=f'A new ownership/access claim was submitted for {org.name} and requires owner or administrator review.'[:500],
+                channel='in_app',
+                status='sent',
+            ))
+
+    audit(db,user,'organization.claim_requested',org_id,c.id,matched_by=matched_by,has_existing_owner=has_existing_owner)
+    db.commit();db.refresh(c)
+    return record(c)
+
+@router.get('/admin/claims',response_model=list[ClaimDetailsOut])
+def admin_list_claims(status:str=Query(default='pending',pattern='^(pending|approved|rejected|all)$'),admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    query=select(CompanyClaim).order_by(CompanyClaim.created_at.desc())
+    if status!='all':
+        query=query.where(CompanyClaim.status==status)
+    items=db.scalars(query.limit(200)).all()
+    return serialize_claim_details(db,items,include_claimant=True,include_org_cr=True)
+
+@router.get('/{org_id}/claims',response_model=list[ClaimDetailsOut])
+def org_claims(org_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Allow an existing organization owner to view claims submitted for their company."""
+    org_member(db,user,org_id,{'owner'})
+    items=db.scalars(select(CompanyClaim).where(CompanyClaim.org_id==org_id).order_by(CompanyClaim.created_at.desc())).all()
+    return serialize_claim_details(db,items,include_claimant=True,include_org_cr=True)
+
+@router.post('/{org_id}/claims/{claim_id}/decision',response_model=ClaimOut)
+def owner_claim_decision(org_id:str,claim_id:str,payload:Decision,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Allow an existing organization owner to approve or reject a claim for their own company."""
+    org_member(db,user,org_id,{'owner'})
+    item=decide_claim(
+        db,
+        user,
+        claim_id,
+        approve=payload.approve,
+        notes=payload.notes,
+        assigned_role=payload.assigned_role,
+        require_org_id=org_id,
+    )
+    return record(item)
 
 @router.get('/admin/review/queue',response_model=ReviewQueue)
 def review_queue(admin:User=Depends(admin_user),db:Session=Depends(get_db)):
-    return {'verifications':[record(x) for x in db.scalars(select(Verification).where(Verification.status=='pending')).all()], 'claims':[record(x) for x in db.scalars(select(CompanyClaim).where(CompanyClaim.status=='pending')).all()]}
+    verifications=[record(x) for x in db.scalars(select(Verification).where(Verification.status=='pending')).all()]
+    pending_claims=db.scalars(select(CompanyClaim).where(CompanyClaim.status=='pending').order_by(CompanyClaim.created_at.desc())).all()
+    return {'verifications':verifications,'claims':serialize_claim_details(db,pending_claims,include_claimant=True,include_org_cr=True)}
+
+@router.get('/admin/review/claim/{claim_id}/document-url')
+def claim_document_url(claim_id:str,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    item=db.get(CompanyClaim,claim_id)
+    if not item or not item.document_key:raise HTTPException(404,'Claim document not found')
+    settings=get_settings()
+    if settings.r2_enabled:
+        stored=db.scalar(select(StoredFile).where(
+            StoredFile.id==item.document_key,
+            StoredFile.purpose=='claim_document',
+            StoredFile.organization_id==item.org_id,
+            StoredFile.status=='available',
+            StoredFile.deleted_at.is_(None),
+        ))
+        if stored:
+            from app.storage import StorageUnavailable,generate_download_url
+            try:url=generate_download_url('private',stored.object_key,stored.safe_filename,stored.content_type)
+            except StorageUnavailable as exc:raise HTTPException(503,'File storage is temporarily unavailable') from exc
+            audit(db,admin,'organization.claim_document_download_authorized',item.org_id,item.id)
+            db.commit()
+            return RedirectResponse(url,status_code=307,headers={'Cache-Control':'private, no-store'})
+    key=item.document_key
+    expected_prefix=f'claims/{item.org_id}/{item.claimant_id}/'
+    if not key.startswith(expected_prefix) or '/' in key[len(expected_prefix):]:
+        raise HTTPException(404,'Claim document not found')
+    root=Path(settings.upload_dir).resolve()
+    target=(root/key).resolve()
+    if root not in target.parents or not target.is_file():
+        raise HTTPException(404,'Claim document not found')
+    audit(db,admin,'organization.claim_document_download_authorized',item.org_id,item.id)
+    db.commit()
+    return FileResponse(target,filename=target.name,media_type='application/octet-stream',
+        headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
 
 @router.post('/admin/review/verification/{verification_id}',response_model=VerificationOut)
 def verification_decision(verification_id:str,payload:Decision,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
@@ -845,21 +1058,15 @@ def verification_decision(verification_id:str,payload:Decision,admin:User=Depend
 
 @router.post('/admin/review/claim/{claim_id}',response_model=ClaimOut)
 def claim_decision(claim_id:str,payload:Decision,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
-    item=db.get(CompanyClaim,claim_id)
-    if not item:raise HTTPException(404,'Claim not found')
-    # Different pending claims share one ownership boundary. Locking only the
-    # selected claim would not serialize approvals for the same organization.
-    org=db.scalar(select(Organization).where(Organization.id==item.org_id).with_for_update())
-    if not org:raise HTTPException(404,'Organization not found')
-    db.refresh(item,with_for_update=True)
-    if item.status!='pending':raise HTTPException(404,'Claim not found')
-    item.status='approved' if payload.approve else 'rejected';item.reviewer_id=admin.id
-    if payload.approve:
-        if db.scalar(select(Member.id).where(Member.organization_id==item.org_id)):
-            raise HTTPException(409,'This supplier already has an owner')
-        db.add(Member(organization_id=item.org_id,user_id=item.claimant_id,role='owner'))
-    audit(db,admin,'organization.claim_decision',item.org_id,item.id,approved=payload.approve)
-    db.commit();return record(item)
+    item=decide_claim(
+        db,
+        admin,
+        claim_id,
+        approve=payload.approve,
+        notes=payload.notes,
+        assigned_role=payload.assigned_role,
+    )
+    return record(item)
 
 from pydantic import BaseModel
 class MemberAdd(BaseModel):
