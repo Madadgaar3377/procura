@@ -130,3 +130,19 @@ Migration `zb18e437c569` revokes every legacy recovery credential and extends th
 Added authenticated GET /api/v1/organizations/claims/mine filtered by claimant ID; it creates no companies or memberships. OpenAPI and frontend contracts regenerated. Existing memberships take precedence over signup preferences; pending claims open supplier verification.
 
 Validation: full disposable-database backend suite: 189 passed, 12 skipped (187.64 s). New claims test verifies anonymous denial, cross-user privacy, and unchanged company/membership counts. No production database or external delivery was used. Frontend details: docs/LOGIN_LOADING_FIX.md.
+
+# Buyer RFQ material combobox (2026-11-18)
+
+Step 2 preserves the existing taxonomy, RFQ line schema and draft/review/publish workflows. Exact-subcategory browsing now works with empty search, bounded server pages and Previous/Next or PageUp/PageDown navigation. Searches debounce for 250 ms and use the existing abortable scoped API hook. Selection fills ID, description, unit and taxonomy; master/source codes are displayed and restored for saved drafts. Description edits retain material ID and never update master records. Parent changes reset dependent fields and pagination. Arabic material labels, RTL, keyboard selection and wrapping mobile results are supported.
+
+GET /taxonomy/materials preserves its array contract, limit (1..100) and offset. Autocomplete no longer silently caps valid limits at 20 or discards tokens after word 12. Every partial word may match English/Arabic descriptions, sizes, specification text stored in description, master/source/expenditure codes. Exact category filters and stable relevance/code/ID ordering precede SQL pagination. Existing supplier matching policy is preserved; regression coverage verifies material-ID matching after customization and exclusion of unrelated main-category capabilities.
+
+Migration ze43d982ba14 adds an active main/subcategory/code/ID B-tree index and missing code/Arabic pg_trgm indexes, reusing existing description indexes. Offline PostgreSQL migration SQL generation passed. The migration has NOT been applied live.
+
+Validation: full isolated backend suite with DATABASE_URL=sqlite:///:memory: 234 passed, 12 skipped. Frontend typecheck passed; picker regressions 3 passed. Fixtures model the required 18/8/2 distribution and verify complete duplicate-free pagination, exact category isolation, code/specification/size searches, wildcard escaping, RFQ-only edits and supplier matching. Broader frontend tests returned 65 passed, 13 failed in untouched directory/profile module-alias harnesses and sitemap configuration.
+
+The configured backend run returned 233 passed, 11 skipped and one network-blocked PostgreSQL smoke test. Escalated read-only catalog verification failed TLS certificate validation (certificate IP address has invalid length). Do not disable TLS verification. After certificate/connectivity repair, run python scripts/verify_rfq_material_catalog.py to check the ACTUAL imported 18/8/2 counts, duplicates and category mappings. No master repair, live migration or supplier notification was performed.
+
+Production compilation, TypeScript and static generation passed; Next.js stopped the final build with an installed-version security advisory. A retry is underway. Dependency upgrades are outside this RFQ fix.
+
+Final validation: the production build retry completed successfully (exit 0), including compilation, TypeScript, static generation and build traces. The Next.js installed-version security advisory remains applicable.

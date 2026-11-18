@@ -1,4 +1,6 @@
 export const workflowArabic:Record<string,string>={
+ 'Previous':'\u0627\u0644\u0633\u0627\u0628\u0642',
+ 'Next':'\u0627\u0644\u062a\u0627\u0644\u064a',
  'The same six-digit signup code is sent to your mobile and email when available. Enter the code from either message to continue. The code expires in 5 minutes.':'يتم إرسال رمز التسجيل نفسه المكوّن من ستة أرقام إلى هاتفك وبريدك الإلكتروني عند توفرهما. أدخل الرمز من أيٍّ من الرسالتين للمتابعة. تنتهي صلاحية الرمز خلال ٥ دقائق.',
  'Your session has expired':'انتهت صلاحية جلستك',
  "For your security, you've been signed out. Sign in again to continue using Procurement.":'لحماية حسابك، تم تسجيل خروجك. سجّل الدخول مجددًا لمواصلة استخدام بروكيورا.',

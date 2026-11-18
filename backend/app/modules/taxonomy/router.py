@@ -409,12 +409,17 @@ def create_unit(payload:MeasurementUnitIn,user:User=Depends(admin_user),db:Sessi
 @router.get('/materials',response_model=list[MaterialOut])
 def materials(q:str='',category_id:str|None=None,main_category_id:str|None=None,subcategory_id:str|None=None,
               discipline:str|None=None,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),autocomplete:bool=False,db:Session=Depends(get_db)):
+    """Active master materials; exact category IDs, stable limit/offset pagination.
+
+    Autocomplete requires every partial word across descriptions, sizes,
+    specifications and material codes. Empty q browses the selected scope.
+    Fetch subsequent offsets until a page has fewer than limit records.
+    """
     if len(q) > 100:
         raise HTTPException(422, 'Search text must be 100 characters or fewer')
     normalized = ' '.join(q.casefold().split())
-    if autocomplete:limit=min(limit,20)
     params = {'q': normalized, 'category_id': category_id, 'main_category_id':main_category_id,'subcategory_id':subcategory_id,'discipline': discipline.casefold() if discipline else None,
-              'limit': limit, 'offset': offset, 'autocomplete':autocomplete,'sort': 'relevance-or-code-v1'}
+              'limit': limit, 'offset': offset, 'autocomplete':autocomplete,'sort': 'relevance-or-code-v2'}
     cache_epoch = catalog_cache.version()
     cached = catalog_cache.get('taxonomy-materials', params, cache_epoch)
     if cached is not None:
@@ -442,8 +447,14 @@ def materials(q:str='',category_id:str|None=None,main_category_id:str|None=None,
             if db.bind is not None and db.bind.dialect.name=='postgresql':
                 predicates.extend([Material.normalized_description.op('%')(normalized),Material.description.op('%')(normalized)])
         if autocomplete:
-            tokens=normalized.split()[:12]
-            query=query.where(and_(*[Material.normalized_description.ilike('%'+token.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%',escape='\\') | Material.name_en.ilike('%'+token.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%',escape='\\') for token in tokens]))
+            # Every word may match a different field (e.g. size plus source code).
+            fields=(Material.name_en, Material.normalized_description, Material.name_ar,
+                    Material.arabic_description, Material.description, Material.code,
+                    Material.source_material_code, Material.expenditure_code)
+            tokens=normalized.split()
+            query=query.where(and_(*[
+                or_(*[field.ilike('%'+token.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%',escape='\\')
+                      for field in fields]) for token in tokens]))
         else:query=query.where(or_(*predicates))
         rank=case((func.lower(Material.code)==normalized,0),(func.lower(Material.name_en)==normalized,1),
                   (func.lower(Material.code).like(f'{escaped}%',escape='\\'),2),
