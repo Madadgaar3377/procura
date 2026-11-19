@@ -407,6 +407,12 @@ def decide_claim(
             role=role_to_assign,
         )
         db.add(member)
+        claimant_user = db.get(User, item.claimant_id)
+        if claimant_user:
+            claimant_user.onboarding_completed = True
+            claimant_user.last_org_id = item.org_id
+            if not claimant_user.last_workspace_role:
+                claimant_user.last_workspace_role = 'supplier'
         try:
             db.flush()
         except IntegrityError as exc:

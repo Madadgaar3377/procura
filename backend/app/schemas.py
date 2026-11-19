@@ -101,6 +101,7 @@ class UserRegister(Model):
     phone: str = Field(min_length=1,max_length=80)
     password: str = Field(min_length=6,max_length=128)
     email: str|None = Field(default=None,max_length=200)
+    preferred_role: Literal['buyer', 'supplier'] | None = None
 
     _username = field_validator('username')(normalize_username)
     @model_validator(mode='after')
@@ -338,6 +339,15 @@ class MaterialImportPreview(Model):
     parse_duration_ms: int = 0
     apply_duration_ms: int = 0
     updated_at: datetime | None = None
+    errors: int = 0
+    conflicts: int = 0
+    existing_categories_reused: int = 0
+    job_size: int = 300
+    batch_size: int = 30
+    jobs_total: int = 0
+    current_job: int = 0
+    current_batch: int = 0
+    batches_in_job: int = 0
     sample: list[dict[str,Any]] = Field(default_factory=list)
     issues: list[dict[str,Any]] = Field(default_factory=list)
     warnings: list[dict[str,Any]] = Field(default_factory=list)

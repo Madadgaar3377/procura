@@ -26,11 +26,16 @@ export function MarketingCTA({role='buyer',children,className='',arrow=true}:{ro
         const user=await response.json();
         if(user.is_admin)target='/app/admin/dashboard';
         else{
-          const organizations=await fetch('/api/backend/organizations',options);
-          if(organizations.ok){
-            const records=await organizations.json() as {is_active:boolean;is_buyer:boolean;is_supplier:boolean}[];
-            target=role==='auto'?'/organizations':records.some(org=>org.is_active&&(role==='buyer'?org.is_buyer:org.is_supplier))
-              ?role==='buyer'?'/app/buyer/rfqs/new':'/app/supplier/company':'/organizations';
+          const workspace=await fetch('/api/backend/auth/workspace',options);
+          if(workspace.ok){
+            const info=await workspace.json() as {destination?:string;workspaces?:{role:string}[]};
+            if(role==='auto'){
+              target=info.destination||'/organizations';
+            }else if(info.workspaces?.some(w=>w.role===role)){
+              target=role==='buyer'?'/app/buyer/rfqs/new':'/app/supplier/company';
+            }else{
+              target=info.destination||'/organizations';
+            }
           }else target='/organizations';
         }
       }

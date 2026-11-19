@@ -41,10 +41,12 @@ def _setup():
     app.dependency_overrides[get_db] = database
     settings = get_settings()
     old_upload_dir = settings.upload_dir
+    old_r2_enabled = settings.r2_enabled
     tmp_dir = Path('.test-runtime') / f'claim-test-{uuid.uuid4().hex}'
     tmp_dir.mkdir(parents=True, exist_ok=True)
     settings.upload_dir = str(tmp_dir)
-    return engine, sessions, app, settings, old_upload_dir, tmp_dir
+    settings.r2_enabled = False
+    return engine, sessions, app, settings, (old_upload_dir, old_r2_enabled), tmp_dir
 
 
 def test_supplier_search_claim_document_approval_and_data_preservation():
@@ -245,7 +247,7 @@ def test_supplier_search_claim_document_approval_and_data_preservation():
             assert 'organization.claim_approved' in actions
             assert 'organization.member_added' in actions
     finally:
-        settings.upload_dir = old_upload_dir
+        settings.upload_dir, settings.r2_enabled = old_upload_dir
         engine.dispose()
         shutil.rmtree(tmp_dir, ignore_errors=True)
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -314,7 +316,7 @@ def test_competing_claims_and_existing_owner_approval():
             owner_notifs = db.scalars(select(Notification).where(Notification.recipient_user_id == owner_id, Notification.event == 'organization.competing_claim_received')).all()
             assert len(owner_notifs) == 1
     finally:
-        settings.upload_dir = old_upload_dir
+        settings.upload_dir, settings.r2_enabled = old_upload_dir
         engine.dispose()
         shutil.rmtree(tmp_dir, ignore_errors=True)
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -337,7 +339,7 @@ def test_unverified_phone_cannot_claim_and_buyer_org_not_claimable():
             app.dependency_overrides[current_user] = lambda: User(id=uid, phone_verified=True)
             assert client.post(f'/organizations/{buyer_id}/claims', json={'evidence': 'Attempting to claim a buyer-only org.'}).status_code == 404
     finally:
-        settings.upload_dir = old_upload_dir
+        settings.upload_dir, settings.r2_enabled = old_upload_dir
         engine.dispose()
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -411,6 +413,6 @@ def test_duplicate_supplier_cr_blocked_and_claim_rejection_flow():
             assert 'CR certificate' in mine.json()[0]['reviewer_notes']
             assert client.get('/organizations').json() == []
     finally:
-        settings.upload_dir = old_upload_dir
+        settings.upload_dir, settings.r2_enabled = old_upload_dir
         engine.dispose()
         shutil.rmtree(tmp_dir, ignore_errors=True)

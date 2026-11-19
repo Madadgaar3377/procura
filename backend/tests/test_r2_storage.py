@@ -11,10 +11,10 @@ from app.storage import StorageUnavailable, bucket_for, upload_file
 
 
 def test_r2_config_is_optional_but_strict_when_enabled():
-    Settings(r2_enabled=False).validate_r2()
+    Settings(_env_file=None, r2_enabled=False).validate_r2()
     with pytest.raises(RuntimeError, match='incomplete'):
-        Settings(r2_enabled=True).validate_r2()
-    settings = Settings(r2_enabled=True, r2_account_id='acct', r2_access_key_id='key',
+        Settings(_env_file=None, r2_enabled=True).validate_r2()
+    settings = Settings(_env_file=None, r2_enabled=True, r2_account_id='acct', r2_access_key_id='key',
         r2_secret_access_key='secret', r2_endpoint_url='https://acct.r2.cloudflarestorage.com')
     settings.validate_r2()
 

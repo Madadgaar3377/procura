@@ -7,6 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { IconArrowLeft, IconCheck, IconEye, IconEyeOff, IconLock, IconShieldCheck } from "@tabler/icons-react";
 import { verificationPath } from "./verification";
+import { resolveWorkspaceDestination } from "./workspace";
 import { ApiError } from "@/lib/api/errors";
 import { AppLoadingScreen } from "@/features/shared/loading";
 import { FieldError } from "@/features/shared/field-error";
@@ -101,23 +102,7 @@ export default function LiveAuth({ type }: { type: string }) {
   const reset = type === "reset-password";
   const email = type === "verify-email";
   async function workspaceDestination(user: Schemas["UserOut"], signal?: AbortSignal) {
-    const verification = verificationPath(user);
-    if (verification) return verification;
-    if (user.is_admin) return "/app/admin/dashboard";
-    const organizations = await api<Schemas["OrganizationOut"][]>("organizations", {signal});
-    const buyer = organizations.some(org => org.is_active && org.is_buyer);
-    const supplier = organizations.some(org => org.is_active && org.is_supplier);
-    // Memberships, never a stale registration preference, determine existing workspaces.
-    if (buyer && !supplier) return "/app/buyer/dashboard";
-    if (supplier && !buyer) return "/app/supplier/dashboard";
-    if (!buyer && !supplier) {
-      const claims = await api<Schemas['ClaimOut'][]>('organizations/claims/mine', {signal});
-      if (claims.some(claim=>claim.status==='pending')) return '/app/supplier/company';
-      let preference = "";
-      try { preference = sessionStorage.getItem(ACCOUNT_TYPE) || ""; } catch {}
-      if (preference === "buyer" || preference === "supplier") return `/app/${preference}/company`;
-    }
-    return "/organizations";
+    return resolveWorkspaceDestination(user, signal);
   }
   useEffect(() => {
     if (type !== "login") return;
@@ -266,6 +251,7 @@ export default function LiveAuth({ type }: { type: string }) {
           phone_country: value("phone_country") || null,
           email: value("email") || null,
           password: value("password"),
+          preferred_role: accountType,
         };
         await api("auth/register", { method: "POST", body: json(payload) });
         window.sessionStorage.setItem(PENDING_PHONE, pendingPhone);
@@ -312,7 +298,8 @@ export default function LiveAuth({ type }: { type: string }) {
         toast.success("Email verified", "Your business email is confirmed.");
         const user = await api<Schemas["UserOut"]>("auth/me");
         clearApiCache();
-        router.replace(verificationPath(user)||(user.is_admin ? "/app/admin/dashboard" : "/organizations"));
+        const destination = await workspaceDestination(user);
+        router.replace(destination);
       } else {
         await api("auth/login", { method: "POST", body: json({ identifier: value("identifier"), phone_country: value("identifier_country") || null, password: value("password") }) });
         const user = await api<Schemas["UserOut"]>("auth/me");

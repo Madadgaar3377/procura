@@ -114,7 +114,7 @@ def _match_batch(
     )
     exact_material_ids = {item.material_id for item, _ in requested if item.material_id}
 
-    batch_size = max(1, min(limit if limit is not None else 100, 100))
+    batch_size = max(1, min(limit if limit is not None else 500, 500))
     sub_ids = {sub for _, sub in item_scope.values() if sub}
     relevant = capability_scope(db, exact_material_ids, sub_ids)
 
@@ -198,6 +198,16 @@ def _match_batch(
                 'org': org,
                 'status': 'inactive',
                 'reasons': ['Supplier organization is inactive or not marked as supplier.'],
+                'covered': set(),
+            }
+            continue
+
+        # Check B: Exclude rejected or suspended supplier organizations
+        if org.verified_status in {'rejected', 'suspended'}:
+            ineligible_diagnostics[org_id] = {
+                'org': org,
+                'status': org.verified_status,
+                'reasons': [f'Supplier organization is {org.verified_status} and excluded from RFQ matching.'],
                 'covered': set(),
             }
             continue

@@ -18,14 +18,17 @@ from zipfile import BadZipFile, ZipFile
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from openpyxl import load_workbook
-from sqlalchemy import case, delete, func, insert, or_, select
+from openpyxl import load_workbook, Workbook
+from sqlalchemy import case, delete, func, insert, or_, select, text
 from sqlalchemy.orm import Session, aliased
+from sqlalchemy.exc import DBAPIError, IntegrityError
+from fastapi.responses import StreamingResponse
+from math import ceil
 
 from app import catalog_cache
 from app.database import get_db
 from app.import_storage import get_import_storage
-from app.models import Category, ImportBatch, ImportedRow, Material, Member, Organization, User
+from app.models import Category, ImportBatch, ImportedRow, Material, MaterialRevision, MeasurementUnit, Member, Organization, User
 from app.schemas import MaterialImportPreview, MaterialImportResult, MaterialSearchPage
 from app.security import admin_user, audit, current_user
 from app.serializers import record
@@ -35,6 +38,9 @@ from app.modules.materials.service import (
 )
 
 router = APIRouter(prefix='/materials', tags=['Material Master Imports'])
+JOB_ROWS = 300
+BATCH_ROWS = 30
+MATERIAL_WORKER_LOCK = 717341393
 MAX_BYTES = 8_000_000
 MAX_ROWS = 30_000
 MAX_COLUMNS = 120
@@ -51,7 +57,7 @@ FIELD_ALIASES: dict[str, set[str]] = {
     'specifications': {'technical specifications', 'technical specification', 'specifications', 'specification', 'technical description'},
     'discipline': {'discipline', 'trade', 'material discipline'},
 }
-REFERENCE_SHEET = re.compile(r'(^|[^a-z])(reference|suggested|proposal|lookup|legend|classification map|expenditures?)([^a-z]|$)', re.IGNORECASE)
+REFERENCE_SHEET = re.compile(r'(^|[^a-z])(example|instructions|reference|suggested|proposal|lookup|legend|classification map|expenditures?)([^a-z]|$)', re.IGNORECASE)
 
 
 def _clean(value: object) -> str:
@@ -301,17 +307,23 @@ def _materials_by_identity(db: Session, identities: list[str], descriptions: lis
         candidates = db.scalars(select(Material).where(or_(
             Material.normalized_description.in_(chunk), func.lower(Material.name_en).in_(chunk)
         ))).all()
-        category_ids = {key for m in candidates for key in (m.main_category_id, m.subcategory_id) if key}
+        category_ids = {key for m in candidates for key in (m.category_id, m.main_category_id, m.subcategory_id) if key}
         categories = {c.id: c for c in db.scalars(select(Category).where(Category.id.in_(category_ids))).all()}
+        parent_ids={c.parent_id for c in categories.values() if c.parent_id}
+        categories.update({c.id:c for c in db.scalars(select(Category).where(Category.id.in_(parent_ids)))})
         for material in candidates:
-            main = categories.get(material.main_category_id)
-            sub = categories.get(material.subcategory_id)
+            leaf=categories.get(material.category_id)
+            main = categories.get(material.main_category_id) or (categories.get(leaf.parent_id) if leaf and leaf.parent_id else leaf)
+            sub = categories.get(material.subcategory_id) or (leaf if leaf and leaf.parent_id else None)
             if not main:
                 continue
             identity = material_identity(main_category=main.name_en, subcategory=sub.name_en if sub else '',
                                          description=material.name_en, unit=normalize_unit(material.unit), specifications='')
             if identity in wanted:
-                found.setdefault(identity, material)
+                if identity in found and found[identity] is not None and found[identity].id != material.id:
+                    found[identity] = None
+                elif identity not in found:
+                    found[identity] = material
     return found
 
 
@@ -401,8 +413,13 @@ def _preview_view(batch: ImportBatch, rows: Sequence[ImportedRow], status_counts
     for item in rows:
         if item.status in {'unchanged', 'skip'} and len(warnings) < 500:
             warnings.append({'row': item.row_number, 'reason': 'This material matches an existing imported record and will be skipped.'})
-    completed = sum(status_counts[k] for k in ('created', 'updated', 'unchanged', 'invalid', 'duplicate'))
     metadata=batch.preview_metadata or {}
+    completed=batch.completed_rows if batch.stage in {'apply','complete','parse'} else 0
+    total_jobs=ceil(batch.rows/JOB_ROWS) if batch.rows else 0
+    current_job=min(completed//JOB_ROWS+1,total_jobs) if total_jobs else 0
+    job_start=max(0,current_job-1)*JOB_ROWS
+    batches_in_job=ceil(min(JOB_ROWS,max(0,batch.rows-job_start))/BATCH_ROWS)
+    current_batch=min((completed-job_start)//BATCH_ROWS+1,batches_in_job) if batches_in_job else 0
     return {'batch_id': batch.id, 'status': batch.status, 'stage': batch.stage, 'failure_reason': batch.failure_reason,
             'discipline': batch_kind_discipline(rows) or metadata.get('discipline'),
             'sheets':metadata.get('sheets',[]),'headers':metadata.get('headers',[]),
@@ -414,6 +431,10 @@ def _preview_view(batch: ImportBatch, rows: Sequence[ImportedRow], status_counts
             'unchanged': status_counts['unchanged'] + status_counts['skip'], 'duplicate_rows': status_counts['duplicate'],
             'created': batch.created, 'updated_count': batch.updated_count, 'unchanged_count': batch.unchanged_count,
             'categories_created': batch.categories_created, 'completed_rows': completed,
+            'errors':batch.errors,'conflicts':status_counts['conflict'],
+            'existing_categories_reused':metadata.get('existing_categories_reused',0),
+            'jobs_total':total_jobs,'current_job':current_job,'current_batch':current_batch,
+            'batches_in_job':batches_in_job,'job_size':JOB_ROWS,'batch_size':BATCH_ROWS,
             'progress_percent': int(completed * 100 / batch.rows) if batch.rows else (100 if batch.status in {'preview','completed','completed_with_errors'} else 0),
             'updated_at': batch.updated_at, 'sample': sample, 'issues': issues, 'warnings': warnings}
 
@@ -430,6 +451,27 @@ def _apply_row(db: Session, item: ImportedRow, identity_map: dict[str, Material]
         item.status, item.issue = 'invalid', 'Import identity could not be resolved'
         return 'invalid', 0
     if identity in identity_map:
+        material = identity_map[identity]
+        if material is None or not material.active:
+            raise HTTPException(409, 'Ambiguous or archived material identity; review the master records')
+        changes = {}
+        for field, incoming in (('expenditure_code', raw.get('_expenditure_code')),
+                                ('source_sn', raw.get('_source_code')),
+                                ('source_material_code', raw.get('_source_code'))):
+            current = getattr(material, field)
+            if current and incoming and current != incoming:
+                raise HTTPException(409, 'Existing material metadata conflicts; review before updating')
+            if incoming and not current:
+                changes[field] = incoming
+        if changes:
+            from app.modules.materials.service import material_snapshot
+            for field, value in changes.items():
+                setattr(material, field, value)
+            material.version += 1
+            db.add(MaterialRevision(material_id=material.id, version=material.version,
+                action='import_enriched', snapshot=material_snapshot(material)))
+            item.status, item.issue = 'updated', None
+            return 'updated', 0
         item.status, item.issue = 'unchanged', None
         return 'unchanged', 0
     discipline = str(raw['_discipline'])
@@ -512,17 +554,40 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
     seen:set[str]=set()
     existing_materials=_materials_by_identity(db,[item['identity'] for item in prepared if item.get('identity')],
                                                 [item['name'] for item in prepared if item.get('name')])
+    source_codes = {item['source_code'] for item in prepared if item.get('source_code')}
+    source_owners = {}
+    for start in range(0, len(source_codes), 500):
+        codes = list(source_codes)[start:start+500]
+        for material in db.scalars(select(Material).where(or_(Material.source_sn.in_(codes), Material.source_material_code.in_(codes)))):
+            for code in (material.source_sn, material.source_material_code):
+                if code: source_owners.setdefault(code, set()).add(material.id)
+    source_seen={}
     for item in prepared:
-        if item['status']!='valid':continue
-        identity=item['identity']
+        if item['status'] != 'valid': continue
+        identity = item['identity']
         if identity in seen:
-            item['status']='duplicate';item['issue']='Duplicate material row in this workbook; remove or correct the duplicate before importing.'
+            item['status'], item['issue'] = 'duplicate', 'Duplicate material identity in this workbook; first valid row retained.'
             continue
         seen.add(identity)
-        if identity in existing_materials:
-            item['status']='skip'
+        source=item.get('source_code')
+        if source and source in source_seen and source_seen[source]!=identity:
+            item['status'],item['issue']='conflict','Source code is reused for different materials in this workbook.'
+            continue
+        if source:source_seen[source]=identity
+        existing = existing_materials.get(identity)
+        owners = source_owners.get(item.get('source_code'), set())
+        if identity in existing_materials and (existing is None or not existing.active):
+            item['status'], item['issue'] = 'conflict', 'Ambiguous or archived material identity; master records require review.'
+        elif owners and (not existing or owners != {existing.id}):
+            item['status'], item['issue'] = 'conflict', 'Source code already identifies a different material; description/classification will not be overwritten.'
+        elif existing:
+            incoming = (('expenditure_code', item.get('expenditure_code')), ('source_sn', item.get('source_code')))
+            if any(getattr(existing, field) and value and getattr(existing, field) != value for field, value in incoming):
+                item['status'], item['issue'] = 'conflict', 'Existing material metadata conflicts; review required.'
+            else:
+                item['status'] = 'update' if any(value and not getattr(existing, field) for field, value in incoming) else 'skip'
         else:
-            item['status']='create'
+            item['status'] = 'create'
     categories=db.scalars(select(Category).where(Category.active.is_(True))).all()
     category_by_id={item.id:item for item in categories}
     existing_paths=set()
@@ -531,14 +596,21 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
         while parent_id and parent_id in category_by_id and parent_id not in seen_parent:
             parent=category_by_id[parent_id];seen_parent.add(parent_id);parts.append(parent.name_en);parent_id=parent.parent_id
         existing_paths.add(tuple(normalize_category_name(part) for part in reversed(parts)))
-    planned=set(existing_paths);new_categories=[]
+    planned=set(existing_paths);new_categories=[];reused_paths=set()
+    path_counts=Counter()
+    for category in categories:
+        parent=category_by_id.get(category.parent_id)
+        path_counts[((normalize_category_name(parent.name_en),) if parent else ())+ (normalize_category_name(category.name_en),)] += 1
     for item in prepared:
-        if item['status'] not in {'create','skip'}:continue
+        if item['status'] not in {'create','skip','update'}:continue
         raw=item['raw'];main=_row_value(raw,mapping,'main_category');sub=_row_value(raw,mapping,'subcategory')
         path=[main]
         if sub and normalize_category_name(sub)!=normalize_category_name(path[-1]):path.append(sub)
         for depth in range(1,len(path)+1):
             prefix=tuple(normalize_category_name(value) for value in path[:depth])
+            if path_counts[prefix]>1:
+                item['status'],item['issue']='conflict','Duplicate category identity requires review before this row can be imported.'
+            if prefix in existing_paths:reused_paths.add(prefix)
             if prefix not in planned:
                 planned.add(prefix);new_categories.append({'path':' / '.join(path[:depth]),'depth':depth})
     row_values=[]
@@ -552,7 +624,7 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
                     '_expenditure_code':item.get('expenditure_code')})
         row_values.append({'batch_id':batch.id,'row_number':item['row'],'raw':raw,
                            'status':item['status'],'issue':item['issue'] or None})
-    errors=sum(row['status'] in {'invalid','duplicate'} for row in row_values)
+    errors=sum(row['status'] in {'invalid','duplicate','conflict'} for row in row_values)
     batch.rows=len(row_values);batch.errors=errors;batch.completed_rows=0;batch.updated_at=datetime.now(UTC)
     db.commit()
     # Keep each JSONB/JSON executemany small for hosted PostgreSQL connections.
@@ -563,7 +635,7 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
         batch.completed_rows=offset+len(chunk)
         batch.updated_at=datetime.now(UTC)
         db.commit()
-    batch.status='preview';batch.stage='preview';batch.preview_metadata={**metadata,'new_categories':new_categories}
+    batch.status='preview';batch.stage='preview';batch.preview_metadata={**metadata,'new_categories':new_categories,'existing_categories_reused':len(reused_paths)}
     batch.parse_duration_ms=int((perf_counter()-started)*1000);batch.updated_at=datetime.now(UTC)
     audit(db,db.get(User,batch.initiated_by),'material_import.previewed',entity_id=batch.id,rows=batch.rows,errors=errors)
     db.commit()
@@ -581,66 +653,134 @@ def _fail_material_batch(db:Session,batch_id:str,exc:Exception,stage:str)->None:
     db.commit()
 
 
-def process_queued_material_imports(db: Session, batch_limit: int = 1, chunk_size: int = 500) -> list[str]:
-    """Resume uploaded previews and apply confirmed material batches in bounded commits."""
-    log=logging.getLogger(__name__);completed=[];now=datetime.now(UTC)
-    for _ in range(max(1,batch_limit)):
-        stale=now-timedelta(minutes=10)
-        batch=db.scalar(select(ImportBatch).where(
-            ImportBatch.kind=='materials',
-            (ImportBatch.status.in_({'uploaded','queued'}))|((ImportBatch.status=='processing')&(ImportBatch.updated_at<stale)),
-        ).order_by(ImportBatch.created_at).limit(1).with_for_update(skip_locked=True))
-        if not batch:break
-        if batch.status=='uploaded':batch.stage='parse'
-        elif batch.status=='queued':batch.stage='apply'
-        stage=batch.stage
-        batch.status='processing';batch.updated_at=now;db.commit()
+def _material_lock(db):
+    # Transaction-scoped: compatible with transaction poolers, released on crash.
+    if db.bind.dialect.name == 'postgresql':
+        return db.scalar(text('SELECT pg_try_advisory_xact_lock(:key)'), {'key': MATERIAL_WORKER_LOCK})
+    if db.bind.dialect.name=='sqlite':
+        connection=db.connection()
+        if not connection.connection.driver_connection.in_transaction:
+            connection.exec_driver_sql('BEGIN')
+    return True
+
+
+def _preload_maps(db):
+    grouped = {}
+    for category in db.scalars(select(Category).where(Category.active.is_(True))):
+        grouped.setdefault((category.parent_id, normalize_category_name(category.name_en)), []).append(category)
+    categories = {key: values[0] for key, values in grouped.items() if len(values) == 1}
+    units = {code: code for code in db.scalars(select(MeasurementUnit.code).where(MeasurementUnit.active.is_(True)))}
+    return categories, units
+
+
+def process_queued_material_imports(db: Session, batch_limit: int = 1, chunk_size: int = BATCH_ROWS) -> list[str]:
+    """Each invocation runs at most 300 rows/job, committing every <=30 rows.
+
+    The durable cursor, row outcomes, business changes and counters commit together.
+    Another worker can safely continue after ANY commit or rollback without replaying
+    completed rows. No HTTP request runs this application loop.
+    """
+    completed = []
+    size = max(1, min(chunk_size, BATCH_ROWS))
+    for _ in range(max(1, batch_limit)):
+        batch_id = None
+        stage = 'parse'
         try:
-            if stage=='parse':
+            if not _material_lock(db):
+                db.rollback(); break
+            stale = datetime.now(UTC)-timedelta(minutes=10)
+            batch = db.scalar(select(ImportBatch).where(ImportBatch.kind=='materials',
+                (ImportBatch.status.in_({'uploaded','queued'})) |
+                ((ImportBatch.status=='processing') & (ImportBatch.updated_at<stale)))
+                .order_by(ImportBatch.created_at,ImportBatch.id).limit(1).with_for_update(skip_locked=True))
+            if not batch:
+                db.rollback(); break
+            batch_id = batch.id
+            stage = 'parse' if batch.status=='uploaded' else batch.stage
+            if stage == 'parse':
+                batch.status='processing';batch.stage='parse';batch.updated_at=datetime.now(UTC);db.commit()
                 _stage_material_preview(db,batch)
                 continue
-            if stage!='apply':raise ValueError('Unknown material import worker stage')
-            chunk_size=max(1,min(chunk_size,1000))
-            pending=db.scalars(select(ImportedRow).where(
-                ImportedRow.batch_id==batch.id,ImportedRow.status.in_({'create','skip','valid','update'}),
-            ).order_by(ImportedRow.row_number).limit(chunk_size)).all()
-            identity_map=_materials_by_identity(db,_row_identities(pending),[row.raw.get('_name','') for row in pending])
-            category_cache:dict[tuple[str|None,str],Category]={}
-            unit_cache:dict[str,str]={}
-            created=updated=unchanged=categories_created=0
-            apply_started=perf_counter()
-            for row in pending:
-                result,made=_apply_row(db,row,identity_map,category_cache,unit_cache,batch.id)
-                categories_created+=made;created+=result=='created';updated+=result=='updated';unchanged+=result=='unchanged'
-            batch.created+=created;batch.updated_count+=updated;batch.unchanged_count+=unchanged
-            batch.categories_created+=categories_created;batch.completed_rows+=len(pending)
-            batch.apply_duration_ms+=int((perf_counter()-apply_started)*1000)
-            batch.updated_at=datetime.now(UTC)
-            remaining=db.scalar(select(func.count()).select_from(ImportedRow).where(
-                ImportedRow.batch_id==batch.id,ImportedRow.status.in_({'create','skip','valid','update'}))) or 0
-            if remaining==0:
-                batch.status='completed_with_errors' if batch.errors else 'completed';batch.stage='complete'
-                batch.completed_rows=batch.rows;batch.updated_at=datetime.now(UTC)
-                audit(db,db.get(User,batch.initiated_by),'material_import.confirmed',entity_id=batch.id,
-                      rows=batch.rows,created=batch.created,unchanged=batch.unchanged_count,errors=batch.errors)
-                db.commit();completed.append(batch.id)
-                if created or updated:catalog_cache.invalidate()
-                if batch.source_storage_key:
-                    get_import_storage().delete(batch.source_storage_key);batch.source_storage_key=None;db.commit()
-                log.info('Material import applied batch=%s rows=%s apply_ms=%s',batch.id,batch.rows,batch.apply_duration_ms)
-            else:
-                batch.status='queued';db.commit()
-                if created or updated:catalog_cache.invalidate()
+            if stage != 'apply': raise ValueError('Unknown material import stage')
+            if (batch.import_options or {}).get('cursor_version')!=2:
+                # Old workers counted successes rather than source-order positions.
+                # Revisit terminal rows without applying them; preserve all IDs/counters.
+                batch.completed_rows=0
+                batch.import_options={**(batch.import_options or {}),'cursor_version':2}
+            # Cursor-derived jobs persist without a second queue/table or row copy.
+            job_end = min(batch.rows, ((batch.completed_rows//JOB_ROWS)+1)*JOB_ROWS)
+            while True:
+                if not _material_lock(db):
+                    db.rollback(); break
+                batch=db.scalar(select(ImportBatch).where(ImportBatch.id==batch_id).with_for_update())
+                db.refresh(batch)
+                if batch.status not in {'queued','processing'} or batch.stage!='apply':
+                    db.rollback(); break
+                if batch.completed_rows >= job_end:
+                    db.rollback(); break
+                pending=list(db.scalars(select(ImportedRow).where(ImportedRow.batch_id==batch.id)
+                    .order_by(ImportedRow.row_number,ImportedRow.id).offset(batch.completed_rows)
+                    .limit(min(size,job_end-batch.completed_rows))))
+                identity_map=_materials_by_identity(db,_row_identities(pending),[row.raw.get('_name','') for row in pending])
+                codes={r.raw.get('_source_code') for r in pending if r.raw.get('_source_code')}
+                owners={}
+                for m in db.scalars(select(Material).where(or_(Material.source_sn.in_(codes),Material.source_material_code.in_(codes)))):
+                    for code in (m.source_sn,m.source_material_code):
+                        if code:owners.setdefault(code,set()).add(m.id)
+                category_cache,unit_cache=_preload_maps(db)
+                apply_started=perf_counter()
+                for row in pending:
+                    if row.status in {'invalid','duplicate','conflict','created','updated','unchanged'}:continue
+                    try:
+                        with db.begin_nested():
+                            expected=identity_map.get(row.raw.get('_identity'))
+                            owned=owners.get(row.raw.get('_source_code'),set())
+                            if owned and (not expected or owned!={expected.id}):
+                                raise HTTPException(409,'Source code changed since preview; review required')
+                            result,made=_apply_row(db,row,identity_map,category_cache,unit_cache,batch.id)
+                            db.flush()
+                        if row.raw.get('_source_code') and identity_map.get(row.raw.get('_identity')):
+                            owners.setdefault(row.raw['_source_code'],set()).add(identity_map[row.raw['_identity']].id)
+                        batch.created+=result=='created';batch.updated_count+=result=='updated'
+                        batch.unchanged_count+=result=='unchanged';batch.categories_created+=made
+                    except (HTTPException,IntegrityError) as exc:
+                        row.status='conflict' if isinstance(exc,IntegrityError) or exc.status_code==409 else 'invalid'
+                        row.issue=(str(exc.detail) if isinstance(exc,HTTPException) else 'Concurrent identity conflict; review or retry this row.')[:300]
+                        batch.errors+=1
+                        identity_map=_materials_by_identity(db,_row_identities(pending),[r.raw.get('_name','') for r in pending])
+                        category_cache,unit_cache=_preload_maps(db)
+                batch.completed_rows+=len(pending)
+                batch.apply_duration_ms+=int((perf_counter()-apply_started)*1000)
+                batch.updated_at=datetime.now(UTC);batch.retry_count=0;batch.failure_reason=None
+                if batch.completed_rows>=batch.rows or not pending:
+                    batch.status='completed_with_errors' if batch.errors else 'completed';batch.stage='complete'
+                    audit(db,db.get(User,batch.initiated_by),'material_import.confirmed',entity_id=batch.id,
+                          rows=batch.rows,created=batch.created,updated=batch.updated_count,errors=batch.errors)
+                else: batch.status='queued'
+                db.commit()
+                # Each committed page becomes searchable immediately.
+                catalog_cache.invalidate()
+                if batch.stage=='complete':
+                    completed.append(batch.id)
+                    break
         except Exception as exc:
-            log.exception('Material import worker failed batch=%s stage=%s error=%s',batch.id,stage,type(exc).__name__)
-            _fail_material_batch(db,batch.id,exc,stage)
+            db.rollback()
+            if batch_id:
+                batch=db.scalar(select(ImportBatch).where(ImportBatch.id==batch_id).with_for_update())
+                if batch and batch.status not in {'completed','completed_with_errors'}:
+                    batch.retry_count+=1
+                    transient=isinstance(exc,(DBAPIError,OSError))
+                    batch.status=('queued' if stage=='apply' else 'uploaded') if transient and batch.retry_count<3 else 'failed'
+                    batch.stage=stage;batch.failure_reason=str(exc.detail)[:500] if isinstance(exc,HTTPException) else f'Material import {stage} failed ({type(exc).__name__}). Saved batches are preserved.'
+                    batch.updated_at=datetime.now(UTC);db.commit()
+            logging.getLogger(__name__).warning('Material import failed batch=%s stage=%s type=%s',batch_id,stage,type(exc).__name__)
     cleanup_material_import_sources(db)
     return completed
 
 
 def cleanup_material_import_sources(db:Session,retention_days:int=7)->int:
     cutoff=datetime.now(UTC)-timedelta(days=max(1,retention_days))
-    old=db.scalars(select(ImportBatch).where(ImportBatch.kind=='materials',ImportBatch.source_storage_key.is_not(None),ImportBatch.updated_at<cutoff)).all()
+    old=db.scalars(select(ImportBatch).where(ImportBatch.kind=='materials',ImportBatch.source_storage_key.is_not(None),ImportBatch.updated_at<cutoff,ImportBatch.status.not_in({'queued','processing','uploaded'}))).all()
     storage=get_import_storage();deleted=0
     for batch in old:
         try:storage.delete(batch.source_storage_key)
@@ -651,6 +791,51 @@ def cleanup_material_import_sources(db:Session,retention_days:int=7)->int:
         deleted+=1
     if deleted:db.commit()
     return deleted
+
+
+TEMPLATE_HEADERS = ['SN','Main Category','Sub Category','Description/Pacification','UNIT','Expenditures']
+
+
+def _xlsx_download(book, filename):
+    output=BytesIO();book.save(output);output.seek(0)
+    return StreamingResponse(output,media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={'Content-Disposition':f'attachment; filename="{filename}"'})
+
+
+@router.get('/template')
+def material_category_template(user:User=Depends(admin_user)):
+    """Civil Coding-compatible six-column workbook; examples are never imported."""
+    book=Workbook();sheet=book.active;sheet.title='Civil Coding';sheet.append(TEMPLATE_HEADERS)
+    sheet.freeze_panes='A2';sheet.auto_filter.ref='A1:F1'
+    example=book.create_sheet('Example (reference)');example.append(TEMPLATE_HEADERS)
+    for number,size in enumerate((10,12,14),1):
+        example.append([number,'Reinforcement & Prestressing','Reinforcing Steel',f'Rebar Deformed ASTM A615 Gr60 diameter {size}mm 12m','KG','03-20'])
+    instructions=book.create_sheet('Instructions')
+    for message in [
+        'Fill the Civil Coding worksheet, one material per row. Keep the six column headers unchanged.',
+        'SN is an optional source material identifier. Use a stable unique code or leave blank; do not reuse it for another material.',
+        'Main Category, Description/Pacification and UNIT are required. Sub Category belongs to its main category.',
+        'Description/Pacification must include size/specification. Different sizes are distinct materials.',
+        'Expenditures is an optional code, preserved as text (including leading zeroes). Format codes as Text in Excel.',
+        'The Example and Instructions sheets are reference only; they are excluded from import.',
+        'Upload once, preview, then confirm. Jobs contain at most 300 rows; each 30-row batch commits progress.',
+        'Duplicate rows are reported. Ambiguous identities or conflicting classifications require review and are never overwritten.',
+        'Existing IDs and RFQ/supplier references are preserved. Closing or refreshing does not cancel confirmed work.'
+    ]:instructions.append([message])
+    for page in (sheet,example):
+        for column,width in zip('ABCDEF',(22,42,42,90,16,25)):page.column_dimensions[column].width=width
+        for row in page.iter_rows(min_row=2):
+            row[0].number_format='@';row[5].number_format='@'
+    instructions.column_dimensions['A'].width=120
+    return _xlsx_download(book,'civil-materials-template.xlsx')
+
+
+@router.get('/recent',response_model=list[MaterialImportPreview])
+def recent_material_imports(user:User=Depends(admin_user),db:Session=Depends(get_db)):
+    """Recover the current admin's latest imports after refresh, with no storage paths."""
+    batches=db.scalars(select(ImportBatch).where(ImportBatch.kind=='materials',ImportBatch.initiated_by==user.id)
+        .order_by(ImportBatch.created_at.desc(),ImportBatch.id).limit(10)).all()
+    return [_preview_view(batch,[]) for batch in batches]
 
 
 @router.post('/preview', response_model=MaterialImportPreview, status_code=202)
@@ -702,6 +887,17 @@ def preview(
         except UnicodeDecodeError as exc:
             storage.delete(key)
             raise HTTPException(422, 'CSV must use UTF-8 encoding') from exc
+    # Serialize identical-file recovery across concurrent upload requests.
+    if db.bind.dialect.name=='postgresql':
+        db.execute(text('SELECT pg_advisory_xact_lock(:key)'),{'key':717341394})
+    existing=db.scalar(select(ImportBatch).where(ImportBatch.kind=='materials',ImportBatch.initiated_by==user.id,
+        ImportBatch.source_sha256==digest.hex(),ImportBatch.status.in_({'uploaded','processing','preview','queued'}))
+        .order_by(ImportBatch.created_at.desc()).limit(1))
+    if existing:
+        storage.delete(key)
+        result=_preview_view(existing,[])
+        db.commit()
+        return result
     batch = ImportBatch(id=job_id, kind='materials', filename=filename[:200], status='uploaded', stage='parse',
         rows=0, completed_rows=0, initiated_by=user.id, source_storage_key=key, source_bytes=size,
         source_sha256=digest.hex(), import_options={'discipline': discipline, 'sheet_name': sheet_name, 'column_mapping': explicit},
@@ -726,6 +922,8 @@ def update_preview_options(batch_id: str, discipline: str | None = Form(default=
         raise HTTPException(403, 'Only the administrator who uploaded this workbook may change its preview')
     if batch.status not in {'needs_review', 'needs_discipline', 'needs_sheet_selection', 'failed', 'preview'} or not batch.source_storage_key:
         raise HTTPException(409, 'This workbook is not waiting for preview changes')
+    if batch.stage=='apply' or batch.created or batch.updated_count or batch.unchanged_count:
+        raise HTTPException(409, 'Confirmed imports must be resumed with retry, never reparsed')
     explicit: dict[str, str] = {}
     if column_mapping:
         try:
@@ -752,11 +950,47 @@ def confirm(batch_id: str, user: User = Depends(admin_user), db: Session = Depen
         raise HTTPException(403, 'Only the administrator who created this preview may confirm it')
     if batch.status != 'preview':
         raise HTTPException(409, 'This import preview is not ready to confirm')
-    batch.status = 'queued'; batch.stage = 'apply'; batch.completed_rows = 0; batch.updated_at = datetime.now(UTC)
+    batch.import_options={**(batch.import_options or {}),'cursor_version':2}
+    batch.status = 'queued'; batch.stage = 'apply'; batch.completed_rows = 0; batch.retry_count=0; batch.failure_reason=None; batch.updated_at = datetime.now(UTC)
     audit(db, user, 'material_import.queued', entity_id=batch.id, rows=batch.rows)
     db.commit()
     return {'batch_id': batch.id, 'status': 'queued', 'rows': batch.rows, 'created': 0,
             'updated': 0, 'unchanged': 0, 'errors': batch.errors, 'categories_created': 0}
+
+
+@router.post('/{batch_id}/retry',response_model=MaterialImportPreview,status_code=202)
+def retry_material_import(batch_id:str,user:User=Depends(admin_user),db:Session=Depends(get_db)):
+    """Resume a failed job from its last committed cursor, without reupload/reparse."""
+    batch=db.scalar(select(ImportBatch).where(ImportBatch.id==batch_id,ImportBatch.kind=='materials').with_for_update())
+    if not batch:raise HTTPException(404,'Material import not found')
+    if batch.initiated_by!=user.id:raise HTTPException(403,'Only the uploading administrator may retry this import')
+    if batch.status!='failed':raise HTTPException(409,'Only failed imports can be retried')
+    batch.status='queued' if batch.stage=='apply' else 'uploaded'
+    batch.retry_count=0;batch.failure_reason=None;batch.updated_at=datetime.now(UTC)
+    audit(db,user,'material_import.retry',entity_id=batch.id,completed_rows=batch.completed_rows)
+    db.commit()
+    return _preview_view(batch,[])
+
+
+@router.get('/{batch_id}/errors.xlsx')
+def material_failed_rows(batch_id:str,user:User=Depends(admin_user),db:Session=Depends(get_db)):
+    """All invalid, duplicate and conflict rows, escaped against Excel formula execution."""
+    batch=db.scalar(select(ImportBatch).where(ImportBatch.id==batch_id,ImportBatch.kind=='materials'))
+    if not batch:raise HTTPException(404,'Material import not found')
+    book=Workbook(write_only=True);page=book.create_sheet('Failed Materials')
+    page.append([*TEMPLATE_HEADERS,'Source Sheet','Source Row','Reason'])
+    def safe(value):
+        value=str(value or '')
+        return "'"+value if value.lstrip().startswith(('=','+','-','@')) else value
+    rows=db.scalars(select(ImportedRow).where(ImportedRow.batch_id==batch.id,
+        ImportedRow.status.in_({'invalid','duplicate','conflict'})).order_by(ImportedRow.row_number,ImportedRow.id))
+    for item in rows:
+        raw=item.raw;mapping=raw.get('_mapping',{})
+        fields=(('_source_code','source_code'),('_category','main_category'),('_subcategory','subcategory'),
+                ('_name','material_name'),('_source_unit','unit'),('_expenditure_code','expenditure_code'))
+        page.append([*[safe(raw.get(key) or _row_value(raw,mapping,field)) for key,field in fields],
+                     safe(raw.get('_sheet')),item.row_number,safe(item.issue)])
+    return _xlsx_download(book,f'material-import-{batch.id}-failed.xlsx')
 
 
 @router.get('/{batch_id}', response_model=MaterialImportPreview)

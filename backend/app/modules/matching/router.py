@@ -52,7 +52,7 @@ def admin_diagnostics(rfq_id:str,user:User=Depends(current_user),db:Session=Depe
         if org.id not in recorded:
             reasons.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':'no_capability','reasons':['No supplier capability found for the RFQ category or subcategory.']})
     jobs=[{**record(job)} for job in db.scalars(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc())).all()]
-    return {'rfq_id':rfq.id,'rfq_items':len(items),'active_suppliers_checked':active_checked,'category_candidate_organizations':candidate_count,'approved_matching_capabilities':capabilities,'rejected_by_location':statuses.get('location_mismatch',0),'rejected_by_verification_or_eligibility':sum(statuses.get(k,0) for k in ('inactive','unverified','pending_approval','ineligible')),'matches_created':statuses.get('eligible',0)+statuses.get('partial',0),'invitations_created':int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0),'job_status':jobs,'supplier_reasons':reasons}
+    return {'rfq_id':rfq.id,'rfq_items':len(items),'active_suppliers_checked':active_checked,'category_candidate_organizations':candidate_count,'approved_matching_capabilities':capabilities,'rejected_by_location':statuses.get('location_mismatch',0),'rejected_by_verification_or_eligibility':sum(statuses.get(k,0) for k in ('inactive','unverified','pending_approval','ineligible','rejected','suspended')),'matches_created':statuses.get('eligible',0)+statuses.get('partial',0),'invitations_created':int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0),'job_status':jobs,'supplier_reasons':reasons}
 
 @router.post('/admin/rfqs/{rfq_id}/rerun',response_model=MatchingRerunOut)
 def admin_rerun(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -165,6 +165,9 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         explanation=f"{status_counts['pending_approval']} supplier(s) have a matching category pending approval."
     elif status_counts.get('inactive'):
         explanation=f"{status_counts['inactive']} supplier(s) have matching capabilities but are inactive or not marked as suppliers."
+    elif status_counts.get('rejected') or status_counts.get('suspended'):
+        excluded_count = status_counts.get('rejected', 0) + status_counts.get('suspended', 0)
+        explanation=f"{excluded_count} supplier(s) have matching capabilities but are rejected or suspended."
     elif status_counts.get('unverified'):
         explanation=f"{status_counts['unverified']} historical supplier result(s) require matching refresh; company verification is not required for RFQ invitations."
     elif status_counts.get('ineligible'):
@@ -208,5 +211,10 @@ def respond(invitation_id:str,action:str,user:User=Depends(current_user),db:Sess
         if rfq.status not in {'published','collecting_quotes'} or deadline<=datetime.now(UTC):
             raise HTTPException(409,'RFQ is closed or past its response deadline')
     inv.status='accepted' if action=='accept' else 'declined'
+    db.add(Outbox(
+        event='rfq.invitation.responded',
+        payload={'invitation_id':inv.id,'rfq_id':inv.rfq_id,'supplier_org_id':inv.supplier_org_id,'action':action},
+        dedupe_key=f'rfq-invitation-responded:{inv.id}:{action}',
+    ))
     audit(db,user,'rfq.invitation_'+action,inv.supplier_org_id,inv.id);db.commit()
     return record(inv)

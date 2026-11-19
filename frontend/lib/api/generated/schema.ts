@@ -1,7 +1,9 @@
 // Generated from docs/openapi.json. Run npm run api:generate; do not edit.
 export interface Schemas {
   "AccountPreferencesIn": { "events"?: Record<string, boolean> | null; "in_app_enabled"?: boolean | null };
+  "AdminApprovalDecision": { "reason"?: string | null };
   "AdminPlanOut": { "name": string; "slug": string; "publication_status": string; "visible_on_website": boolean; "available_for_subscription": boolean; "billing_intervals": Array<string>; "feature_details": Array<Record<string, unknown>>; "available_from": string | null; "available_until": string | null; "archived_at": string | null; "updated_at": string; "version": number; "description": string; "monthly_price": string; "yearly_price": string; "currency": string; "features": Array<string>; "active": boolean; "archived": boolean; "recommended": boolean; "premium": boolean; "display_order": number; "quote_limit": number; "auto_drafts": boolean; "team_limit": number; "id": string; "created_at": string; "subscribers"?: number };
+  "AdminReviewFlagUpdate": { "manual_review_required": boolean; "reason"?: string | null };
   "AdminSupplierContactCreate": { "name"?: string | null; "designation"?: string | null; "email"?: string | null; "phone"?: string | null; "category_ids"?: Array<string>; "material_ids"?: Array<string>; "is_primary"?: boolean };
   "AdminSupplierCreate": { "name": string; "country"?: string | null; "address"?: string | null; "description"?: string | null; "contacts"?: Array<Schemas["AdminSupplierContactCreate"]>; "contact_name"?: string | null; "phone"?: string | null; "email"?: string | null; "cr_number"?: string | null; "vat_number"?: string | null; "city"?: string | null; "website"?: string | null };
   "AdminUserCreate": { "username": string; "phone_country"?: string | null; "phone": string; "email"?: string | null; "password": string; "is_admin"?: boolean; "phone_verified"?: boolean; "email_verified"?: boolean };
@@ -18,8 +20,12 @@ export interface Schemas {
   "Body_upload_attachment_api_v1_rfqs__rfq_id__attachments_post": { "file": string };
   "Body_upload_claim_document_api_v1_organizations__org_id__claims_documents_post": { "file": string };
   "Body_upload_document_api_v1_organizations__org_id__documents_post": { "file": string };
+  "Body_upload_logo_api_v1_organizations__org_id__logo_post": { "file": string };
   "Body_upload_materials_api_v1_imports_bulk_materials_post": { "file": string };
+  "Body_upload_my_avatar_api_v1_auth_me_avatar_post": { "file": string };
+  "Body_upload_quote_attachment_api_v1_quotations__quotation_id__attachments_post": { "file": string };
   "Body_upload_suppliers_api_v1_imports_bulk_suppliers_post": { "file": string };
+  "Body_upload_user_avatar_api_v1_auth_users__user_id__avatar_post": { "file": string };
   "BrowserSessionOut": { "authenticated": boolean };
   "BuyerInvitation": { "rfq_id": string; "supplier_org_id": string; "status": string; "invited_at": string; "id": string; "created_at": string; "supplier_name": string; "quotation_status"?: string | null; "reminder_eligible"?: boolean };
   "CapabilityEligibilityIn": { "eligibility_status": "enabled" | "suspended" | "revoked" | "rejected" };
@@ -61,6 +67,10 @@ export interface Schemas {
   "DeliveryFeedback": { "outcome": string; "evidence": string };
   "DeliveryStatusOut": { "id": string; "outbox_id": string; "event": string; "channel": string; "status": string; "created_at": string; "provider_status": string | null; "provider_message_id": string | null; "provider_response_code": number | null; "last_error": string | null };
   "DestinationRestriction": { "channel": string; "destination": string; "reason": string; "detail": string };
+  "DuplicateGroup": { "canonical_id": string; "parent_id": string | null; "parent_name": string | null; "normalized_name": string; "preview_token": string; "safe_to_merge": boolean; "reasons": Array<string>; "categories": Array<Schemas["DuplicateMember"]> };
+  "DuplicateMember": { "id": string; "name_en": string; "name_ar": string; "code": string; "references": Record<string, number> };
+  "DuplicateMergeIn": { "category_ids": Array<string>; "preview_token": string };
+  "DuplicateMergeOut": { "canonical_id": string; "archived_ids": Array<string>; "references_moved": number };
   "EmailOTPVerify": { "code": string };
   "FavoriteStateOut": { "supplier_org_id": string; "favorite": boolean };
   "FavoriteSupplierOut": { "supplier_org_id": string; "name": string };
@@ -81,7 +91,7 @@ export interface Schemas {
   "MatchingRerunOut": { "rfq_id": string; "job_id": string; "job_status": "pending" | "retry" | "processing"; "deduplicated": boolean };
   "MatchingSupplierDiagnostic": { "supplier_org_id": string; "supplier_name": string; "status": string; "reasons": Array<string> };
   "MaterialFilterPage": { "items": Array<Record<string, unknown>>; "total": number; "limit": number; "offset": number; "filters"?: Record<string, unknown> };
-  "MaterialImportPreview": { "batch_id"?: string | null; "status": string; "discipline"?: string | null; "sheets"?: Array<Schemas["MaterialImportSheet"]>; "selected_sheet"?: string | null; "headers"?: Array<string>; "mapping"?: Record<string, string>; "rows"?: number; "valid"?: number; "invalid"?: number; "create"?: number; "update"?: number; "unchanged"?: number; "duplicate_rows"?: number; "created"?: number; "updated_count"?: number; "unchanged_count"?: number; "categories_created"?: number; "completed_rows"?: number; "progress_percent"?: number; "stage"?: string | null; "failure_reason"?: string | null; "new_categories"?: Array<Record<string, unknown>>; "upload_duration_ms"?: number; "parse_duration_ms"?: number; "apply_duration_ms"?: number; "updated_at"?: string | null; "sample"?: Array<Record<string, unknown>>; "issues"?: Array<Record<string, unknown>>; "warnings"?: Array<Record<string, unknown>> };
+  "MaterialImportPreview": { "batch_id"?: string | null; "status": string; "discipline"?: string | null; "sheets"?: Array<Schemas["MaterialImportSheet"]>; "selected_sheet"?: string | null; "headers"?: Array<string>; "mapping"?: Record<string, string>; "rows"?: number; "valid"?: number; "invalid"?: number; "create"?: number; "update"?: number; "unchanged"?: number; "duplicate_rows"?: number; "created"?: number; "updated_count"?: number; "unchanged_count"?: number; "categories_created"?: number; "completed_rows"?: number; "progress_percent"?: number; "stage"?: string | null; "failure_reason"?: string | null; "new_categories"?: Array<Record<string, unknown>>; "upload_duration_ms"?: number; "parse_duration_ms"?: number; "apply_duration_ms"?: number; "updated_at"?: string | null; "errors"?: number; "conflicts"?: number; "existing_categories_reused"?: number; "job_size"?: number; "batch_size"?: number; "jobs_total"?: number; "current_job"?: number; "current_batch"?: number; "batches_in_job"?: number; "sample"?: Array<Record<string, unknown>>; "issues"?: Array<Record<string, unknown>>; "warnings"?: Array<Record<string, unknown>> };
   "MaterialImportResult": { "batch_id": string; "status": string; "rows": number; "created": number; "updated": number; "unchanged": number; "errors": number; "categories_created": number };
   "MaterialImportSheet": { "name": string; "eligible": boolean; "header_row"?: number | null; "row_count"?: number; "headers"?: Array<string>; "reason"?: string | null };
   "MaterialIn": { "code": string; "category_id": string; "name_en": string; "name_ar"?: string; "description"?: string; "unit"?: string; "specs_template"?: Record<string, unknown> };
@@ -97,7 +107,7 @@ export interface Schemas {
   "OrderEntry": { "id": string; "expected_version": number; "display_order": number };
   "OrgCreate": { "website"?: string | null; "trading_name"?: string | null; "company_type"?: "supplier" | "contractor" | "both" | null; "description"?: string | null; "contact_name"?: string | null; "designation"?: string | null; "business_email"?: string | null; "business_phone"?: string | null; "country"?: string | null; "region"?: string | null; "address"?: string | null; "vat_number"?: string | null; "name": string; "cr_number"?: string | null; "city"?: string | null; "is_buyer"?: boolean; "is_supplier"?: boolean };
   "OrgUpdate": { "website"?: string | null; "trading_name"?: string | null; "company_type"?: "supplier" | "contractor" | "both" | null; "description"?: string | null; "contact_name"?: string | null; "designation"?: string | null; "business_email"?: string | null; "business_phone"?: string | null; "country"?: string | null; "region"?: string | null; "address"?: string | null; "vat_number"?: string | null; "name"?: string | null; "city"?: string | null; "is_buyer"?: boolean | null; "is_supplier"?: boolean | null };
-  "OrganizationOut": { "name": string; "name_normalized": string; "cr_number": string | null; "vat_number": string | null; "city": string | null; "address": string | null; "website": string | null; "trading_name": string | null; "company_type": string | null; "description": string | null; "contact_name": string | null; "designation": string | null; "business_email": string | null; "business_phone": string | null; "country": string | null; "region": string | null; "source": string; "verified_status": string; "profile_status": string; "is_buyer": boolean; "is_supplier": boolean; "is_active": boolean; "logo_file_id"?: string | null; "logo_url"?: string | null; "id": string; "created_at": string };
+  "OrganizationOut": { "name": string; "name_normalized": string; "cr_number": string | null; "vat_number": string | null; "city": string | null; "address": string | null; "website": string | null; "trading_name": string | null; "company_type": string | null; "description": string | null; "contact_name": string | null; "designation": string | null; "business_email": string | null; "business_phone": string | null; "country": string | null; "region": string | null; "source": string; "verified_status": string; "profile_status": string; "is_buyer": boolean; "is_supplier": boolean; "is_active": boolean; "logo_file_id": string | null; "pending_approval_since": string | null; "approved_at": string | null; "approval_method": string | null; "manual_review_required": boolean; "manual_review_reason": string | null; "id": string; "created_at": string; "logo_url"?: string | null };
   "OutboxOut": { "event": string; "payload": Record<string, unknown>; "status": string; "attempts": number; "dedupe_key": string | null; "next_attempt_at": string | null; "lock_until": string | null; "last_error": string | null; "provider_message_id": string | null; "delivery_status": string | null; "status_checks": number; "id": string; "created_at": string };
   "PasswordChange": { "current_password": string; "new_password": string; "confirm_password": string };
   "PasswordRecoveryRequest": { "identifier"?: string | null; "email"?: string | null; "phone"?: string | null; "phone_country"?: string | null };
@@ -111,6 +121,7 @@ export interface Schemas {
   "PlanInput": { "name": string; "slug"?: string | null; "description"?: string; "monthly_price"?: number | string; "yearly_price"?: number | string; "currency"?: "SAR"; "features"?: Array<string>; "feature_details"?: Array<Schemas["Feature"]>; "billing_intervals"?: Array<"monthly" | "yearly">; "quote_limit"?: number; "team_limit"?: number; "auto_drafts"?: boolean; "active"?: boolean; "recommended"?: boolean; "premium"?: boolean; "display_order"?: number; "publication_status"?: "draft" | "published" | "unpublished"; "visible_on_website"?: boolean; "available_for_subscription"?: boolean; "available_from"?: string | null; "available_until"?: string | null; "expected_version"?: number | null };
   "PlanOut": { "name": string; "slug": string; "publication_status": string; "visible_on_website": boolean; "available_for_subscription": boolean; "billing_intervals": Array<string>; "feature_details": Array<Record<string, unknown>>; "available_from": string | null; "available_until": string | null; "archived_at": string | null; "updated_at": string; "version": number; "description": string; "monthly_price": string; "yearly_price": string; "currency": string; "features": Array<string>; "active": boolean; "archived": boolean; "recommended": boolean; "premium": boolean; "display_order": number; "quote_limit": number; "auto_drafts": boolean; "team_limit": number; "id": string; "created_at": string };
   "PlanPage": { "items": Array<Schemas["AdminPlanOut"]>; "total": number; "limit": number; "offset": number };
+  "PlatformSettingsUpdate": { "auto_approval_enabled"?: boolean | null; "auto_approval_hours"?: number | null };
   "PriceIn": { "org_id": string; "material_id"?: string | null; "main_category_id"?: string | null; "subcategory_id"?: string | null; "supplier_description"?: string; "unit"?: string | null; "brand"?: string; "model"?: string; "offered_specs"?: string; "offered_description"?: string; "remarks"?: string; "unit_price": number | string; "currency"?: "SAR"; "price_basis"?: "supply" | "supply_install"; "lead_days"?: number; "valid_until"?: string | null; "technical_confirmed"?: boolean; "active"?: boolean; "expected_version"?: number | null };
   "PriceOut": { "org_id": string; "material_id": string | null; "main_category_id"?: string | null; "subcategory_id"?: string | null; "supplier_description": string; "brand": string; "model": string; "offered_specs": string; "unit_price": string; "lead_days": number; "valid_until": string | null; "version": number; "unit": string; "currency": string; "price_basis": string; "active": boolean; "offered_description": string; "remarks": string; "technical_confirmed": boolean; "material_version": number; "updated_at": string; "id": string; "created_at": string; "capability_status"?: string; "main_category_name"?: string; "subcategory_name"?: string; "material_description"?: string; "status"?: string };
   "PricePage": { "items": Array<Schemas["PriceOut"]>; "total": number; "limit": number; "offset": number };
@@ -175,13 +186,14 @@ export interface Schemas {
   "Totals": { "subtotal": string; "vat": string; "total": string; "currency": string };
   "UnitOptionOut": { "code": string; "name_en": string; "sort_order": number };
   "UploadRequest": { "purpose": string; "entity_id": string; "filename": string; "content_type": string; "size_bytes": number };
-  "UserOut": { "notification_language": string; "username": string; "phone": string; "phone_e164": string; "phone_country": string | null; "email": string | null; "email_verified": boolean; "sms_notifications_enabled": boolean; "email_notifications_enabled": boolean; "phone_verified": boolean; "is_admin": boolean; "is_active": boolean; "avatar_file_id"?: string | null; "avatar_url"?: string | null; "id": string; "created_at": string };
+  "UserOut": { "notification_language": string; "username": string; "phone": string; "phone_e164": string; "phone_country": string | null; "email": string | null; "email_verified": boolean; "sms_notifications_enabled": boolean; "email_notifications_enabled": boolean; "phone_verified": boolean; "is_admin": boolean; "is_active": boolean; "avatar_file_id": string | null; "approval_status": string; "pending_approval_since": string | null; "approved_at": string | null; "approval_method": string | null; "approval_reason": string | null; "manual_review_required": boolean; "manual_review_reason": string | null; "preferred_role": string | null; "last_workspace_role": string | null; "last_org_id": string | null; "onboarding_completed": boolean; "id": string; "created_at": string; "avatar_url"?: string | null };
   "UserPage": { "items": Array<Schemas["UserOut"]>; "total": number; "limit": number; "offset": number };
-  "UserRegister": { "username": string; "phone_country"?: string | null; "phone": string; "password": string; "email"?: string | null };
+  "UserRegister": { "username": string; "phone_country"?: string | null; "phone": string; "password": string; "email"?: string | null; "preferred_role"?: "buyer" | "supplier" | null };
   "ValidationError": { "loc": Array<string | number>; "msg": string; "type": string; "input"?: unknown; "ctx"?: Record<string, unknown> };
   "VerificationOut": { "org_id": string; "cr_number": string | null; "document_key": string | null; "status": string; "reviewer_id": string | null; "reviewer_notes": string | null; "reviewed_at": string | null; "id": string; "created_at": string };
   "VerifyCreate": { "cr_number": string; "document_key"?: string | null };
   "VerifyOTP": { "phone_country"?: string | null; "phone": string; "code": string };
+  "WorkspaceSelectionIn": { "role": "buyer" | "supplier"; "org_id": string };
 }
 export interface Operations {
   "POST /api/v1/auth/register": { body: Schemas["UserRegister"]; response: unknown };
@@ -191,6 +203,11 @@ export interface Operations {
   "POST /api/v1/auth/refresh": { body: Schemas["RefreshRequest"]; response: Schemas["TokenPair"] };
   "POST /api/v1/auth/logout": { body: Schemas["RefreshRequest"]; response: unknown };
   "GET /api/v1/auth/me": { body: never; response: Schemas["UserOut"] };
+  "GET /api/v1/auth/workspace": { body: never; response: unknown };
+  "PUT /api/v1/auth/workspace": { body: Schemas["WorkspaceSelectionIn"]; response: unknown };
+  "POST /api/v1/auth/me/avatar": { body: never; response: Schemas["UserOut"] };
+  "DELETE /api/v1/auth/me/avatar": { body: never; response: Schemas["UserOut"] };
+  "POST /api/v1/auth/users/{user_id}/avatar": { body: never; response: Schemas["UserOut"] };
   "POST /api/v1/auth/email/verification/request": { body: never; response: unknown };
   "POST /api/v1/auth/email/verification/confirm": { body: Schemas["EmailOTPVerify"]; response: unknown };
   "POST /api/v1/auth/password/forgot": { body: Schemas["PasswordRecoveryRequest"]; response: unknown };
@@ -238,19 +255,23 @@ export interface Operations {
   "GET /api/v1/organizations": { body: never; response: Array<Schemas["OrganizationOut"]> };
   "GET /api/v1/organizations/claims/mine": { body: never; response: Array<Schemas["ClaimDetailsOut"]> };
   "GET /api/v1/organizations/claimable/search": { body: never; response: Array<Schemas["ClaimableSupplierMatch"]> };
-  "GET /api/v1/organizations/claimable/suppliers": { body: never; response: Array<Schemas["OrganizationOut"]> };
+  "GET /api/v1/organizations/claimable/suppliers": { body: never; response: Array<Schemas["ClaimableSupplierMatch"]> };
   "GET /api/v1/organizations/{org_id}": { body: never; response: Schemas["OrganizationOut"] };
   "PATCH /api/v1/organizations/{org_id}": { body: Schemas["OrgUpdate"]; response: Schemas["OrganizationOut"] };
+  "POST /api/v1/organizations/{org_id}/logo": { body: never; response: Schemas["OrganizationOut"] };
+  "DELETE /api/v1/organizations/{org_id}/logo": { body: never; response: Schemas["OrganizationOut"] };
   "POST /api/v1/organizations/{org_id}/verification": { body: Schemas["VerifyCreate"]; response: Schemas["VerificationOut"] };
   "GET /api/v1/organizations/{org_id}/verification": { body: never; response: Array<Schemas["VerificationOut"]> };
   "POST /api/v1/organizations/{org_id}/documents": { body: never; response: unknown };
+  "GET /api/v1/organizations/{org_id}/documents": { body: never; response: unknown };
+  "GET /api/v1/organizations/{org_id}/documents/{file_id}": { body: never; response: unknown };
   "GET /api/v1/organizations/admin/review/verification/{verification_id}/document-url": { body: never; response: unknown };
   "POST /api/v1/organizations/{org_id}/claims/documents": { body: never; response: unknown };
   "POST /api/v1/organizations/{org_id}/claims": { body: Schemas["ClaimCreate"]; response: Schemas["ClaimOut"] };
   "GET /api/v1/organizations/{org_id}/claims": { body: never; response: Array<Schemas["ClaimDetailsOut"]> };
+  "GET /api/v1/organizations/admin/claims": { body: never; response: Array<Schemas["ClaimDetailsOut"]> };
   "POST /api/v1/organizations/{org_id}/claims/{claim_id}/decision": { body: Schemas["Decision"]; response: Schemas["ClaimOut"] };
   "GET /api/v1/organizations/admin/review/queue": { body: never; response: Schemas["ReviewQueue"] };
-  "GET /api/v1/organizations/admin/claims": { body: never; response: Array<Schemas["ClaimDetailsOut"]> };
   "GET /api/v1/organizations/admin/review/claim/{claim_id}/document-url": { body: never; response: unknown };
   "POST /api/v1/organizations/admin/review/verification/{verification_id}": { body: Schemas["Decision"]; response: Schemas["VerificationOut"] };
   "POST /api/v1/organizations/admin/review/claim/{claim_id}": { body: Schemas["Decision"]; response: Schemas["ClaimOut"] };
@@ -262,6 +283,8 @@ export interface Operations {
   "DELETE /api/v1/organizations/{org_id}/favorites/{supplier_id}": { body: never; response: Schemas["FavoriteStateOut"] };
   "POST /api/v1/taxonomy/categories/import/preview": { body: never; response: Schemas["CategoryImportPreview"] };
   "POST /api/v1/taxonomy/categories/import/{batch_id}/confirm": { body: never; response: Schemas["CategoryImportResult"] };
+  "GET /api/v1/taxonomy/categories/duplicates": { body: never; response: Array<Schemas["DuplicateGroup"]> };
+  "POST /api/v1/taxonomy/categories/duplicates/merge": { body: Schemas["DuplicateMergeIn"]; response: Schemas["DuplicateMergeOut"] };
   "GET /api/v1/taxonomy/industry-review-candidates": { body: never; response: Array<Schemas["IndustryTaxonomyReviewCandidate"]> };
   "GET /api/v1/taxonomy/industry-catalog": { body: never; response: Schemas["IndustryCatalogPage"] };
   "GET /api/v1/taxonomy/categories": { body: never; response: Array<Schemas["CategoryOut"]> };
@@ -284,9 +307,13 @@ export interface Operations {
   "GET /api/v1/taxonomy/materials/{material_id}/revisions": { body: never; response: Array<Schemas["MaterialRevisionOut"]> };
   "PATCH /api/v1/taxonomy/materials/{material_id}/archive": { body: never; response: Schemas["MaterialOut"] };
   "PATCH /api/v1/taxonomy/materials/{material_id}/restore": { body: never; response: Schemas["MaterialOut"] };
+  "GET /api/v1/imports/materials/template": { body: never; response: unknown };
+  "GET /api/v1/imports/materials/recent": { body: never; response: Array<Schemas["MaterialImportPreview"]> };
   "POST /api/v1/imports/materials/preview": { body: never; response: Schemas["MaterialImportPreview"] };
   "POST /api/v1/imports/materials/{batch_id}/preview-options": { body: never; response: Schemas["MaterialImportPreview"] };
   "POST /api/v1/imports/materials/{batch_id}/confirm": { body: never; response: Schemas["MaterialImportResult"] };
+  "POST /api/v1/imports/materials/{batch_id}/retry": { body: never; response: Schemas["MaterialImportPreview"] };
+  "GET /api/v1/imports/materials/{batch_id}/errors.xlsx": { body: never; response: unknown };
   "GET /api/v1/imports/materials/{batch_id}": { body: never; response: Schemas["MaterialImportPreview"] };
   "GET /api/v1/imports/materials": { body: never; response: Schemas["MaterialSearchPage"] };
   "GET /api/v1/imports/bulk/materials/template": { body: never; response: unknown };
@@ -358,6 +385,9 @@ export interface Operations {
   "GET /api/v1/quotations/rfqs/{rfq_id}/comparison": { body: never; response: Schemas["Comparison"] };
   "POST /api/v1/quotations/{quotation_id}/decision/{decision}": { body: never; response: Schemas["QuoteDetail"] };
   "GET /api/v1/quotations/{quotation_id}/history": { body: never; response: unknown };
+  "POST /api/v1/quotations/{quotation_id}/attachments": { body: never; response: unknown };
+  "GET /api/v1/quotations/{quotation_id}/attachments/{attachment_id}": { body: never; response: unknown };
+  "DELETE /api/v1/quotations/{quotation_id}/attachments/{attachment_id}": { body: never; response: unknown };
   "GET /api/v1/notifications": { body: never; response: Array<Schemas["NotificationOut"]> };
   "GET /api/v1/notifications/deliveries": { body: never; response: Array<Schemas["DeliveryStatusOut"]> };
   "POST /api/v1/notifications/admin/outbox/{event_id}/feedback": { body: Schemas["DeliveryFeedback"]; response: Schemas["OutboxOut"] };
@@ -393,11 +423,15 @@ export interface Operations {
   "GET /api/v1/admin/dashboard": { body: never; response: unknown };
   "GET /api/v1/admin/audit": { body: never; response: Array<Schemas["AuditOut"]> };
   "GET /api/v1/admin/settings": { body: never; response: unknown };
+  "PATCH /api/v1/admin/settings": { body: Schemas["PlatformSettingsUpdate"]; response: unknown };
   "GET /api/v1/admin/users": { body: never; response: Schemas["UserPage"] };
   "POST /api/v1/admin/users": { body: Schemas["AdminUserCreate"]; response: Schemas["UserOut"] };
   "GET /api/v1/admin/users/{user_id}": { body: never; response: Schemas["UserOut"] };
   "PATCH /api/v1/admin/users/{user_id}": { body: Schemas["AdminUserUpdate"]; response: Schemas["UserOut"] };
   "DELETE /api/v1/admin/users/{user_id}": { body: never; response: unknown };
+  "POST /api/v1/admin/users/{user_id}/approve": { body: Schemas["AdminApprovalDecision"] | null; response: Schemas["UserOut"] };
+  "POST /api/v1/admin/users/{user_id}/reject": { body: Schemas["AdminApprovalDecision"] | null; response: Schemas["UserOut"] };
+  "PATCH /api/v1/admin/users/{user_id}/review-flag": { body: Schemas["AdminReviewFlagUpdate"]; response: Schemas["UserOut"] };
   "GET /api/v1/admin/dashboard/analytics": { body: never; response: Schemas["DashboardAnalytics"] };
   "GET /api/v1/db/connect/status": { body: never; response: Schemas["DatabaseConnectStatus"] };
   "GET /api/v1/db/performance": { body: never; response: unknown };
@@ -409,6 +443,8 @@ export interface Operations {
   "POST /api/v1/contact/admin/inquiries/{inquiry_id}/notes": { body: Schemas["ContactInquiryNote"]; response: Schemas["ContactInquiryOut"] };
   "POST /api/v1/files/upload-url": { body: Schemas["UploadRequest"]; response: unknown };
   "POST /api/v1/files/{file_id}/complete": { body: never; response: unknown };
+  "GET /api/v1/files/public/{file_id}": { body: never; response: unknown };
+  "GET /api/v1/files/{file_id}/download": { body: never; response: unknown };
   "GET /api/v1/files/{file_id}/download-url": { body: never; response: unknown };
   "DELETE /api/v1/files/{file_id}": { body: never; response: unknown };
   "GET /api/v1/files/admin/summary": { body: never; response: unknown };

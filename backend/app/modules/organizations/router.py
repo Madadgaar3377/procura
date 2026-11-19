@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from app.search import ListSearch
 from app.response_contracts import ClaimDetailsOut, ClaimOut, ClaimableSupplierMatch, MemberOut, OrganizationOut, ReviewQueue, VerificationOut
 import os, uuid
@@ -607,9 +608,30 @@ def create(payload:OrgCreate,user:User=Depends(current_user),db:Session=Depends(
         clean_cr=re.sub(r'[\s\-_]+','',payload.cr_number).strip()
         if db.scalar(select(Organization.id).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),or_(Organization.cr_number==payload.cr_number,Organization.cr_number==clean_cr))):
             raise HTTPException(409,'A supplier organization with this Commercial Registration already exists. Please search and claim it instead.')
-    org=Organization(**payload.model_dump(),name_normalized=payload.name.strip().casefold(),source='registered')
+    org=Organization(**payload.model_dump(),name_normalized=payload.name.strip().casefold(),source='registered',pending_approval_since=datetime.now(UTC))
     db.add(org);db.flush()
     db.add(Member(user_id=user.id,organization_id=org.id,role='owner'))
+    user.onboarding_completed=True
+    user.last_org_id=org.id
+    if org.is_supplier and not org.is_buyer:
+        user.last_workspace_role='supplier'
+        if not user.preferred_role:user.preferred_role='supplier'
+    elif org.is_buyer and not org.is_supplier:
+        user.last_workspace_role='buyer'
+        if not user.preferred_role:user.preferred_role='buyer'
+    elif not user.last_workspace_role:
+        user.last_workspace_role=user.preferred_role or 'buyer'
+    from sqlalchemy import update as sql_update
+    db.execute(
+        sql_update(User)
+        .where(User.id==user.id)
+        .values(
+            onboarding_completed=True,
+            last_org_id=org.id,
+            last_workspace_role=user.last_workspace_role,
+            preferred_role=user.preferred_role,
+        )
+    )
     audit(db,user,'organization.created',org.id,org.id)
     db.commit();db.refresh(org)
     return record(org)

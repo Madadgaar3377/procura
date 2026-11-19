@@ -124,7 +124,7 @@ def register(payload:UserRegister,request:Request,db:Session=Depends(get_db)):
     duplicate=db.scalar(select(User).where(conditions).order_by(case((User.phone==phone,0),else_=1)).limit(1))
     if duplicate:
         raise HTTPException(409,registration_conflict(duplicate,username,phone,email))
-    user=User(username=username,phone=phone,email=email,password_hash=password_hash(payload.password))
+    user=User(username=username,phone=phone,email=email,password_hash=password_hash(payload.password),approval_status='pending',pending_approval_since=datetime.now(UTC),preferred_role=payload.preferred_role,last_workspace_role=payload.preferred_role)
     db.add(user)
     try:
         db.commit()
@@ -132,7 +132,7 @@ def register(payload:UserRegister,request:Request,db:Session=Depends(get_db)):
         db.rollback()
         duplicate=db.scalar(select(User).where(conditions).order_by(case((User.phone==phone,0),else_=1)).limit(1))
         raise HTTPException(409,registration_conflict(duplicate,username,phone,email)) from exc
-    return {'id':user.id,'username':user.username,'phone_verified':False,'message':'Verify phone before login'}
+    return {'id':user.id,'username':user.username,'phone_verified':False,'approval_status':user.approval_status,'message':'Verify phone before login'}
 
 @router.post('/otp/request')
 def otp_request(phone:str, request:Request, background_tasks:BackgroundTasks, db:Session=Depends(get_db), phone_country:str|None=None):
@@ -254,6 +254,135 @@ def me(user:User=Depends(current_user)):
     data=record(user)
     data.pop('password_hash',None)
     return data
+
+
+def resolve_user_workspace(db: Session, user: User) -> dict:
+    from app.models import CompanyClaim, Member, Organization
+
+    if user.is_admin:
+        return {
+            'role': 'admin',
+            'org_id': None,
+            'destination': '/app/admin/dashboard',
+            'workspaces': [{'role': 'admin', 'org_id': None, 'org_name': 'Procumaterial Operations', 'verified_status': 'verified'}],
+            'needs_onboarding': False,
+        }
+
+    orgs = db.scalars(
+        select(Organization)
+        .join(Member, Member.organization_id == Organization.id)
+        .where(Member.user_id == user.id, Organization.is_active.is_(True))
+        .order_by(Organization.created_at.asc(), Organization.id.asc())
+    ).all()
+
+    workspaces: list[dict] = []
+    for org in orgs:
+        if org.is_buyer:
+            workspaces.append({'role': 'buyer', 'org_id': org.id, 'org_name': org.name, 'verified_status': org.verified_status})
+        if org.is_supplier:
+            workspaces.append({'role': 'supplier', 'org_id': org.id, 'org_name': org.name, 'verified_status': org.verified_status})
+
+    if workspaces:
+        if not user.onboarding_completed:
+            user.onboarding_completed = True
+            db.execute(update(User).where(User.id == user.id).values(onboarding_completed=True))
+            db.commit()
+
+        active = None
+        if user.last_workspace_role and user.last_org_id:
+            active = next((w for w in workspaces if w['role'] == user.last_workspace_role and w['org_id'] == user.last_org_id), None)
+        if not active and user.last_org_id:
+            active = next((w for w in workspaces if w['org_id'] == user.last_org_id and w['role'] == user.preferred_role), None) or next((w for w in workspaces if w['org_id'] == user.last_org_id), None)
+        if not active and user.last_workspace_role:
+            active = next((w for w in workspaces if w['role'] == user.last_workspace_role), None)
+        if not active and user.preferred_role:
+            active = next((w for w in workspaces if w['role'] == user.preferred_role), None)
+        if not active:
+            active = workspaces[0]
+
+        return {
+            'role': active['role'],
+            'org_id': active['org_id'],
+            'destination': f"/app/{active['role']}/dashboard",
+            'workspaces': workspaces,
+            'needs_onboarding': False,
+        }
+
+    has_pending_claim = bool(
+        db.scalar(
+            select(CompanyClaim.id).where(
+                CompanyClaim.claimant_id == user.id,
+                CompanyClaim.status == 'pending',
+            ).limit(1)
+        )
+    )
+    if has_pending_claim:
+        return {
+            'role': 'supplier',
+            'org_id': None,
+            'destination': '/app/supplier/company',
+            'workspaces': [],
+            'needs_onboarding': True,
+        }
+    if user.preferred_role in {'buyer', 'supplier'}:
+        return {
+            'role': user.preferred_role,
+            'org_id': None,
+            'destination': f'/app/{user.preferred_role}/company',
+            'workspaces': [],
+            'needs_onboarding': True,
+        }
+    return {
+        'role': None,
+        'org_id': None,
+        'destination': '/organizations',
+        'workspaces': [],
+        'needs_onboarding': True,
+    }
+
+
+class WorkspaceSelectionIn(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    role: Literal['buyer', 'supplier']
+    org_id: str = Field(min_length=1, max_length=36)
+
+
+@router.get('/workspace')
+def get_workspace(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return resolve_user_workspace(db, user)
+
+
+@router.put('/workspace')
+def select_workspace(payload: WorkspaceSelectionIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    from app.models import Member, Organization
+
+    if user.is_admin:
+        raise HTTPException(403, 'Admin accounts use the platform workspace')
+    member = db.scalar(
+        select(Member).where(
+            Member.user_id == user.id,
+            Member.organization_id == payload.org_id,
+        )
+    )
+    org = db.get(Organization, payload.org_id)
+    if not member or not org or not org.is_active:
+        raise HTTPException(403, 'Not authorized for this organization')
+    if payload.role == 'buyer' and not org.is_buyer:
+        raise HTTPException(403, 'Organization does not have a buyer workspace')
+    if payload.role == 'supplier' and not org.is_supplier:
+        raise HTTPException(403, 'Organization does not have a supplier workspace')
+
+    user.last_workspace_role = payload.role
+    user.last_org_id = org.id
+    user.onboarding_completed = True
+    db.execute(
+        update(User)
+        .where(User.id == user.id)
+        .values(last_workspace_role=payload.role, last_org_id=org.id, onboarding_completed=True)
+    )
+    audit(db, user, 'auth.workspace_switched', org.id, org.id, role=payload.role)
+    db.commit()
+    return resolve_user_workspace(db, user)
 
 
 def _update_user_avatar(target_user: User, actor: User, file: UploadFile, request: Request, db: Session) -> dict:

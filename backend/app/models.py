@@ -56,6 +56,17 @@ class User(TimeID, Base):
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     avatar_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    approval_status: Mapped[str] = mapped_column(String(30), default='pending', server_default='approved', index=True)
+    pending_approval_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approval_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    approval_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    manual_review_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
+    manual_review_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    preferred_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_workspace_role: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_org_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
 
 class AccountPreference(Base):
     __tablename__ = 'account_preferences'
@@ -110,7 +121,7 @@ class Organization(TimeID, Base):
         unique=True,
         sqlite_where=text("verified_status = 'verified' AND cr_number IS NOT NULL AND (is_active = true OR is_supplier = false)"),
         postgresql_where=text("verified_status = 'verified' AND cr_number IS NOT NULL AND (is_active = true OR is_supplier = false)"),
-    ),)
+    ),Index('ix_organizations_supplier_active_verified','is_supplier','is_active','verified_status'),)
     name: Mapped[str] = mapped_column(String(220), index=True)
     name_normalized: Mapped[str] = mapped_column(String(220), index=True)
     cr_number: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
@@ -135,6 +146,11 @@ class Organization(TimeID, Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     logo_file_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     quote_automation: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    pending_approval_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    approval_method: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    manual_review_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
+    manual_review_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 class PublicProfileConsent(Base):
     __tablename__ = 'organization_public_consent'
@@ -484,7 +500,7 @@ class RFQItem(TimeID, Base):
 
 class RFQMatch(TimeID, Base):
     __tablename__='rfq_matches'
-    __table_args__=(UniqueConstraint('rfq_id','supplier_org_id',name='uq_match'),)
+    __table_args__=(UniqueConstraint('rfq_id','supplier_org_id',name='uq_match'),Index('ix_rfq_matches_rfq_status','rfq_id','status'),)
     rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id'), index=True)
     supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
     score: Mapped[int] = mapped_column(Integer)
@@ -623,6 +639,14 @@ class MembershipSettings(Base):
     __tablename__='membership_settings'
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     config: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class PlatformSettings(Base):
+    __tablename__='platform_settings'
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default='default')
+    auto_approval_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
+    auto_approval_hours: Mapped[int] = mapped_column(Integer, default=24, server_default='24')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
 
 class Promotion(TimeID, Base):
     __tablename__='promotions'

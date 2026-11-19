@@ -292,6 +292,199 @@
         ]
       }
     },
+    "/api/v1/auth/workspace": {
+      "get": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Get Workspace",
+        "operationId": "get_workspace_api_v1_auth_workspace_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Select Workspace",
+        "operationId": "select_workspace_api_v1_auth_workspace_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkspaceSelectionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/me/avatar": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Upload My Avatar",
+        "operationId": "upload_my_avatar_api_v1_auth_me_avatar_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_my_avatar_api_v1_auth_me_avatar_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Delete My Avatar",
+        "operationId": "delete_my_avatar_api_v1_auth_me_avatar_delete",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/users/{user_id}/avatar": {
+      "post": {
+        "tags": [
+          "Authentication"
+        ],
+        "summary": "Upload User Avatar",
+        "operationId": "upload_user_avatar_api_v1_auth_users__user_id__avatar_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_user_avatar_api_v1_auth_users__user_id__avatar_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/email/verification/request": {
       "post": {
         "tags": [
@@ -2710,7 +2903,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/OrganizationOut"
+                    "$ref": "#/components/schemas/ClaimableSupplierMatch"
                   },
                   "title": "Response Claimable Suppliers Api V1 Organizations Claimable Suppliers Get"
                 }
@@ -2808,6 +3001,108 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/{org_id}/logo": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Upload Logo",
+        "operationId": "upload_logo_api_v1_organizations__org_id__logo_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_logo_api_v1_organizations__org_id__logo_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OrganizationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Delete Logo",
+        "operationId": "delete_logo_api_v1_organizations__org_id__logo_delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2971,6 +3266,103 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "List Documents",
+        "operationId": "list_documents_api_v1_organizations__org_id__documents_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/{org_id}/documents/{file_id}": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Download Org Document",
+        "operationId": "download_org_document_api_v1_organizations__org_id__documents__file_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -3200,6 +3592,59 @@
         }
       }
     },
+    "/api/v1/organizations/admin/claims": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin List Claims",
+        "operationId": "admin_list_claims_api_v1_organizations_admin_claims_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(pending|approved|rejected|all)$",
+              "default": "pending",
+              "title": "Status"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ClaimDetailsOut"
+                  },
+                  "title": "Response Admin List Claims Api V1 Organizations Admin Claims Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/organizations/{org_id}/claims/{claim_id}/decision": {
       "post": {
         "tags": [
@@ -3291,59 +3736,6 @@
             "HTTPBearer": []
           }
         ]
-      }
-    },
-    "/api/v1/organizations/admin/claims": {
-      "get": {
-        "tags": [
-          "Organizations & Verification"
-        ],
-        "summary": "Admin List Claims",
-        "operationId": "admin_list_claims_api_v1_organizations_admin_claims_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "status",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "pattern": "^(pending|approved|rejected|all)$",
-              "default": "pending",
-              "title": "Status"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ClaimDetailsOut"
-                  },
-                  "title": "Response Admin List Claims Api V1 Organizations Admin Claims Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/v1/organizations/admin/review/claim/{claim_id}/document-url": {
@@ -3940,6 +4332,86 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/taxonomy/categories/duplicates": {
+      "get": {
+        "tags": [
+          "Material Master",
+          "Material Master"
+        ],
+        "summary": "Preview Duplicates",
+        "description": "Actual active IDs grouped by normalized name AND exact parent; read-only.",
+        "operationId": "preview_duplicates_api_v1_taxonomy_categories_duplicates_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DuplicateGroup"
+                  },
+                  "type": "array",
+                  "title": "Response Preview Duplicates Api V1 Taxonomy Categories Duplicates Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/taxonomy/categories/duplicates/merge": {
+      "post": {
+        "tags": [
+          "Material Master",
+          "Material Master"
+        ],
+        "summary": "Merge Duplicates",
+        "description": "Recheck a preview, move all relational references and archive aliases atomically.\n\nCapability/material collisions or hierarchy/translation ambiguity block merging.\nArchived IDs and historical JSON revision snapshots remain available for audit.",
+        "operationId": "merge_duplicates_api_v1_taxonomy_categories_duplicates_merge_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DuplicateMergeIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DuplicateMergeOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/api/v1/taxonomy/industry-review-candidates": {
@@ -4620,6 +5092,7 @@
           "Material Master"
         ],
         "summary": "Materials",
+        "description": "Active master materials; exact category IDs, stable limit/offset pagination.\n\nAutocomplete requires every partial word across descriptions, sizes,\nspecifications and material codes. Empty q browses the selected scope.\nFetch subsequent offsets until a page has fewer than limit records.",
         "operationId": "materials_api_v1_taxonomy_materials_get",
         "parameters": [
           {
@@ -5241,6 +5714,64 @@
         }
       }
     },
+    "/api/v1/imports/materials/template": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Material Master Imports"
+        ],
+        "summary": "Material Category Template",
+        "description": "Civil Coding-compatible six-column workbook; examples are never imported.",
+        "operationId": "material_category_template_api_v1_imports_materials_template_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/imports/materials/recent": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Material Master Imports"
+        ],
+        "summary": "Recent Material Imports",
+        "description": "Recover the current admin's latest imports after refresh, with no storage paths.",
+        "operationId": "recent_material_imports_api_v1_imports_materials_recent_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MaterialImportPreview"
+                  },
+                  "type": "array",
+                  "title": "Response Recent Material Imports Api V1 Imports Materials Recent Get"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/imports/materials/preview": {
       "post": {
         "tags": [
@@ -5378,6 +5909,102 @@
                 "schema": {
                   "$ref": "#/components/schemas/MaterialImportResult"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/materials/{batch_id}/retry": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Material Master Imports"
+        ],
+        "summary": "Retry Material Import",
+        "description": "Resume a failed job from its last committed cursor, without reupload/reparse.",
+        "operationId": "retry_material_import_api_v1_imports_materials__batch_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialImportPreview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/materials/{batch_id}/errors.xlsx": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Material Master Imports"
+        ],
+        "summary": "Material Failed Rows",
+        "description": "All invalid, duplicate and conflict rows, escaped against Excel formula execution.",
+        "operationId": "material_failed_rows_api_v1_imports_materials__batch_id__errors_xlsx_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -9654,6 +10281,167 @@
         }
       }
     },
+    "/api/v1/quotations/{quotation_id}/attachments": {
+      "post": {
+        "tags": [
+          "Supplier Quotations & Buyer Comparison"
+        ],
+        "summary": "Upload Quote Attachment",
+        "operationId": "upload_quote_attachment_api_v1_quotations__quotation_id__attachments_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "quotation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quotation Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_quote_attachment_api_v1_quotations__quotation_id__attachments_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/quotations/{quotation_id}/attachments/{attachment_id}": {
+      "get": {
+        "tags": [
+          "Supplier Quotations & Buyer Comparison"
+        ],
+        "summary": "Download Quote Attachment",
+        "operationId": "download_quote_attachment_api_v1_quotations__quotation_id__attachments__attachment_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "quotation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quotation Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Supplier Quotations & Buyer Comparison"
+        ],
+        "summary": "Remove Quote Attachment",
+        "operationId": "remove_quote_attachment_api_v1_quotations__quotation_id__attachments__attachment_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "quotation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quotation Id"
+            }
+          },
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/notifications": {
       "get": {
         "tags": [
@@ -11429,6 +12217,48 @@
             "HTTPBearer": []
           }
         ]
+      },
+      "patch": {
+        "tags": [
+          "Administration & Reporting"
+        ],
+        "summary": "Update Platform Settings",
+        "operationId": "update_platform_settings_api_v1_admin_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/api/v1/admin/users": {
@@ -11677,6 +12507,191 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}/approve": {
+      "post": {
+        "tags": [
+          "Administration & Reporting"
+        ],
+        "summary": "Approve User",
+        "operationId": "approve_user_api_v1_admin_users__user_id__approve_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AdminApprovalDecision"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}/reject": {
+      "post": {
+        "tags": [
+          "Administration & Reporting"
+        ],
+        "summary": "Reject User",
+        "operationId": "reject_user_api_v1_admin_users__user_id__reject_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/AdminApprovalDecision"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Payload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}/review-flag": {
+      "patch": {
+        "tags": [
+          "Administration & Reporting"
+        ],
+        "summary": "Set Review Flag",
+        "operationId": "set_review_flag_api_v1_admin_users__user_id__review_flag_patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReviewFlagUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserOut"
+                }
               }
             }
           },
@@ -12319,6 +13334,91 @@
         }
       }
     },
+    "/api/v1/files/public/{file_id}": {
+      "get": {
+        "tags": [
+          "File storage"
+        ],
+        "summary": "Public Asset",
+        "operationId": "public_asset_api_v1_files_public__file_id__get",
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/files/{file_id}/download": {
+      "get": {
+        "tags": [
+          "File storage"
+        ],
+        "summary": "Download Stream",
+        "operationId": "download_stream_api_v1_files__file_id__download_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "file_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "File Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/files/{file_id}/download-url": {
       "get": {
         "tags": [
@@ -12500,6 +13600,25 @@
         "additionalProperties": false,
         "type": "object",
         "title": "AccountPreferencesIn"
+      },
+      "AdminApprovalDecision": {
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "AdminApprovalDecision"
       },
       "AdminPlanOut": {
         "properties": {
@@ -12684,6 +13803,32 @@
           "created_at"
         ],
         "title": "AdminPlanOut"
+      },
+      "AdminReviewFlagUpdate": {
+        "properties": {
+          "manual_review_required": {
+            "type": "boolean",
+            "title": "Manual Review Required"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "manual_review_required"
+        ],
+        "title": "AdminReviewFlagUpdate"
       },
       "AdminSupplierContactCreate": {
         "properties": {
@@ -13432,6 +14577,20 @@
         ],
         "title": "Body_upload_document_api_v1_organizations__org_id__documents_post"
       },
+      "Body_upload_logo_api_v1_organizations__org_id__logo_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_logo_api_v1_organizations__org_id__logo_post"
+      },
       "Body_upload_materials_api_v1_imports_bulk_materials_post": {
         "properties": {
           "file": {
@@ -13446,6 +14605,34 @@
         ],
         "title": "Body_upload_materials_api_v1_imports_bulk_materials_post"
       },
+      "Body_upload_my_avatar_api_v1_auth_me_avatar_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_my_avatar_api_v1_auth_me_avatar_post"
+      },
+      "Body_upload_quote_attachment_api_v1_quotations__quotation_id__attachments_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_quote_attachment_api_v1_quotations__quotation_id__attachments_post"
+      },
       "Body_upload_suppliers_api_v1_imports_bulk_suppliers_post": {
         "properties": {
           "file": {
@@ -13459,6 +14646,20 @@
           "file"
         ],
         "title": "Body_upload_suppliers_api_v1_imports_bulk_suppliers_post"
+      },
+      "Body_upload_user_avatar_api_v1_auth_users__user_id__avatar_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_user_avatar_api_v1_auth_users__user_id__avatar_post"
       },
       "BrowserSessionOut": {
         "properties": {
@@ -15727,6 +16928,159 @@
         ],
         "title": "DestinationRestriction"
       },
+      "DuplicateGroup": {
+        "properties": {
+          "canonical_id": {
+            "type": "string",
+            "title": "Canonical Id"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "parent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Name"
+          },
+          "normalized_name": {
+            "type": "string",
+            "title": "Normalized Name"
+          },
+          "preview_token": {
+            "type": "string",
+            "title": "Preview Token"
+          },
+          "safe_to_merge": {
+            "type": "boolean",
+            "title": "Safe To Merge"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          },
+          "categories": {
+            "items": {
+              "$ref": "#/components/schemas/DuplicateMember"
+            },
+            "type": "array",
+            "title": "Categories"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canonical_id",
+          "parent_id",
+          "parent_name",
+          "normalized_name",
+          "preview_token",
+          "safe_to_merge",
+          "reasons",
+          "categories"
+        ],
+        "title": "DuplicateGroup"
+      },
+      "DuplicateMember": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "references": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "References"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name_en",
+          "name_ar",
+          "code",
+          "references"
+        ],
+        "title": "DuplicateMember"
+      },
+      "DuplicateMergeIn": {
+        "properties": {
+          "category_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "minItems": 2,
+            "title": "Category Ids"
+          },
+          "preview_token": {
+            "type": "string",
+            "title": "Preview Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_ids",
+          "preview_token"
+        ],
+        "title": "DuplicateMergeIn"
+      },
+      "DuplicateMergeOut": {
+        "properties": {
+          "canonical_id": {
+            "type": "string",
+            "title": "Canonical Id"
+          },
+          "archived_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Archived Ids"
+          },
+          "references_moved": {
+            "type": "integer",
+            "title": "References Moved"
+          }
+        },
+        "type": "object",
+        "required": [
+          "canonical_id",
+          "archived_ids",
+          "references_moved"
+        ],
+        "title": "DuplicateMergeOut"
+      },
       "EmailOTPVerify": {
         "properties": {
           "code": {
@@ -16949,6 +18303,51 @@
               }
             ],
             "title": "Updated At"
+          },
+          "errors": {
+            "type": "integer",
+            "title": "Errors",
+            "default": 0
+          },
+          "conflicts": {
+            "type": "integer",
+            "title": "Conflicts",
+            "default": 0
+          },
+          "existing_categories_reused": {
+            "type": "integer",
+            "title": "Existing Categories Reused",
+            "default": 0
+          },
+          "job_size": {
+            "type": "integer",
+            "title": "Job Size",
+            "default": 300
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size",
+            "default": 30
+          },
+          "jobs_total": {
+            "type": "integer",
+            "title": "Jobs Total",
+            "default": 0
+          },
+          "current_job": {
+            "type": "integer",
+            "title": "Current Job",
+            "default": 0
+          },
+          "current_batch": {
+            "type": "integer",
+            "title": "Current Batch",
+            "default": 0
+          },
+          "batches_in_job": {
+            "type": "integer",
+            "title": "Batches In Job",
+            "default": 0
           },
           "sample": {
             "items": {
@@ -18290,6 +19689,67 @@
             "type": "boolean",
             "title": "Is Active"
           },
+          "logo_file_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo File Id"
+          },
+          "pending_approval_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Approval Since"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approval_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Method"
+          },
+          "manual_review_required": {
+            "type": "boolean",
+            "title": "Manual Review Required"
+          },
+          "manual_review_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Review Reason"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -18298,6 +19758,17 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Url"
           }
         },
         "type": "object",
@@ -18324,6 +19795,12 @@
           "is_buyer",
           "is_supplier",
           "is_active",
+          "logo_file_id",
+          "pending_approval_since",
+          "approved_at",
+          "approval_method",
+          "manual_review_required",
+          "manual_review_reason",
           "id",
           "created_at"
         ],
@@ -19197,6 +20674,37 @@
         ],
         "title": "PlanPage"
       },
+      "PlatformSettingsUpdate": {
+        "properties": {
+          "auto_approval_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Approval Enabled"
+          },
+          "auto_approval_hours": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 720.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auto Approval Hours"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "PlatformSettingsUpdate"
+      },
       "PriceIn": {
         "properties": {
           "org_id": {
@@ -19932,6 +21440,17 @@
             "type": "boolean",
             "title": "Verified"
           },
+          "logo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Logo Url"
+          },
           "main_categories": {
             "items": {
               "type": "string"
@@ -20632,6 +22151,13 @@
             "type": "boolean",
             "title": "Favorite",
             "default": false
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/RFQAttachmentOut"
+            },
+            "type": "array",
+            "title": "Attachments"
           }
         },
         "type": "object",
@@ -22929,7 +24455,7 @@
         "properties": {
           "purpose": {
             "type": "string",
-            "pattern": "^rfq_attachment$",
+            "pattern": "^(rfq_attachment|quotation_attachment|verification_document)$",
             "title": "Purpose"
           },
           "entity_id": {
@@ -23029,6 +24555,119 @@
             "type": "boolean",
             "title": "Is Active"
           },
+          "avatar_file_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar File Id"
+          },
+          "approval_status": {
+            "type": "string",
+            "title": "Approval Status"
+          },
+          "pending_approval_since": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Approval Since"
+          },
+          "approved_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approval_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Method"
+          },
+          "approval_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Reason"
+          },
+          "manual_review_required": {
+            "type": "boolean",
+            "title": "Manual Review Required"
+          },
+          "manual_review_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manual Review Reason"
+          },
+          "preferred_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Role"
+          },
+          "last_workspace_role": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Workspace Role"
+          },
+          "last_org_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Org Id"
+          },
+          "onboarding_completed": {
+            "type": "boolean",
+            "title": "Onboarding Completed"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -23037,6 +24676,17 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "avatar_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avatar Url"
           }
         },
         "type": "object",
@@ -23053,6 +24703,18 @@
           "phone_verified",
           "is_admin",
           "is_active",
+          "avatar_file_id",
+          "approval_status",
+          "pending_approval_since",
+          "approved_at",
+          "approval_method",
+          "approval_reason",
+          "manual_review_required",
+          "manual_review_reason",
+          "preferred_role",
+          "last_workspace_role",
+          "last_org_id",
+          "onboarding_completed",
           "id",
           "created_at"
         ],
@@ -23133,6 +24795,21 @@
               }
             ],
             "title": "Email"
+          },
+          "preferred_role": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "buyer",
+                  "supplier"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preferred Role"
           }
         },
         "additionalProperties": false,
@@ -23333,6 +25010,31 @@
           "code"
         ],
         "title": "VerifyOTP"
+      },
+      "WorkspaceSelectionIn": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "buyer",
+              "supplier"
+            ],
+            "title": "Role"
+          },
+          "org_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Org Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "role",
+          "org_id"
+        ],
+        "title": "WorkspaceSelectionIn"
       }
     },
     "securitySchemes": {

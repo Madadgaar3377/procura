@@ -13,16 +13,17 @@ import {useSession,signOut} from './session';
 import {Heading,State} from '@/features/shared/ui';
 import {Button} from '@/components/ui/button';
 import {FileUpload} from '@/components/ui/file-upload';
+import {UserAvatar,initialsFor} from '@/components/ui/user-avatar';
+import type {Schemas} from '@/lib/api/generated/schema';
 
 type SessionRow={id:string;created_at:string;expires_at:string;current:boolean};
 type Preferences={events:Record<string,boolean>;in_app_enabled:boolean;email_available:boolean;sms_available:boolean};
 export default function Settings(){
- const {user,reload}=useSession();const {arabic,t}=useLocale();
+ const {user,reload,syncUser}=useSession();const {arabic,t}=useLocale();
  const tr=(en:string,ar:string)=>arabic?ar:en;
  const sessions=useApi<SessionRow[]>('auth/sessions');const prefs=useApi<Preferences>('auth/account-preferences');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [avatarProgress,setAvatarProgress]=useState<number|null>(null);
- const [avatarError,setAvatarError]=useState(false);
  const [channel,setChannel]=useState<'email'|'phone'|null>(null),[code,setCode]=useState('');
  const [cooldowns,setCooldowns]=useState({email:0,phone:0});const [now,setNow]=useState(0);
  const [visible,setVisible]=useState<Record<string,boolean>>({});
@@ -40,7 +41,6 @@ export default function Settings(){
  function switchTab(id:string){if(id===tab)return;setTab(id);setError('');setNotice('');setNewPassword('');setConfirmation('');setVisible({});}
 
  useEffect(()=>{setNow(Date.now());const timer=setInterval(()=>setNow(Date.now()),1000);return()=>clearInterval(timer);},[]);
- useEffect(()=>{setAvatarError(false);},[user?.avatar_url]);
  async function run(action:()=>Promise<void>){if(busy)return;setBusy(true);setError('');setNotice('');try{await action();}catch(e){setError(e instanceof Error?e.message:'Request failed');}finally{setBusy(false);}}
  async function request(which:'email'|'phone'){await run(async()=>{
   try{await api(which==='email'?'auth/email/verification/request':`auth/otp/request?phone=${encodeURIComponent(user.phone)}`,{method:'POST'});}
@@ -70,9 +70,7 @@ export default function Settings(){
  <section key={tab} id={`settings-${tab}`} role="tabpanel" aria-labelledby={`tab-${tab}`} tabIndex={0} className="settings-content">
  {tab==='account'&&<>
  <div className="settings-profile">
-   <span className="settings-avatar" aria-hidden="true" style={{borderRadius:'999px',overflow:'hidden'}}>
-     {user.avatar_url && !avatarError ? <img src={assetUrl(user.avatar_url)} alt={user.username} onError={()=>setAvatarError(true)} style={{width:'100%',height:'100%',objectFit:'cover'}}/> : user.username.trim().split(/\s+/).map(word=>word[0]).slice(0,2).join('').toUpperCase()}
-   </span>
+   <UserAvatar src={user.avatar_url} name={user.username} className="settings-avatar"/>
    <div><h2>{user.username}</h2><p>{tr('Personal account','الحساب الشخصي')}</p></div>
    <span className="settings-profile-label"><IconShieldCheck size={17} aria-hidden="true"/>Procurement</span>
  </div>
@@ -82,7 +80,7 @@ export default function Settings(){
    allowedTypes={['image/jpeg','image/png','image/webp']}
    maxBytes={5 * 1024 * 1024}
    previewUrl={assetUrl(user.avatar_url)}
-   fallbackText={user.username.trim().split(/\s+/).map(word=>word[0]).slice(0,2).join('').toUpperCase()}
+   fallbackText={initialsFor(user.username)}
    title={tr('Profile picture','الصورة الشخصية')}
    hint={tr('JPEG, PNG or WebP. Maximum 5 MB.','JPEG أو PNG أو WebP. الحد الأقصى 5 ميجابايت.')}
    busy={busy}
@@ -92,7 +90,8 @@ export default function Settings(){
      await run(async()=>{
        const body=new FormData();
        body.set('file',file);
-       await upload('auth/me/avatar',body,p=>setAvatarProgress(p));
+       const updated=await upload<Schemas['UserOut']>('auth/me/avatar',body,p=>setAvatarProgress(p));
+       syncUser(updated);
        setAvatarProgress(null);
        await reload();
        setNotice(tr('Profile picture updated.','تم تحديث الصورة الشخصية.'));
@@ -101,7 +100,8 @@ export default function Settings(){
    }}
    onRemove={user.avatar_url ? async()=>{
      await run(async()=>{
-       await api('auth/me/avatar',{method:'DELETE'});
+       const updated=await api<Schemas['UserOut']>('auth/me/avatar',{method:'DELETE'});
+       syncUser(updated);
        await reload();
        setNotice(tr('Profile picture removed.','تمت إزالة الصورة الشخصية.'));
      });

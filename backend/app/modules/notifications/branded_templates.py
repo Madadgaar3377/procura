@@ -94,6 +94,30 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
                 f"Your company verification status is now {context.get('status', 'updated')}. Review your company profile for details.",
                 "تم تحديث حالة التحقق من شركتك. راجع ملف الشركة للاطلاع على التفاصيل.",
             ),
+            "account_approved": (
+                "Account approved",
+                "تمت الموافقة على الحساب",
+                "Your Procumaterial account has been approved and is now active. Sign in to access your procurement workspace.",
+                "تمت الموافقة على حسابك في Procumaterial وأصبح نشطاً الآن. سجل الدخول للوصول إلى مساحة العمل.",
+            ),
+            "rfq_invitation_accepted": (
+                "Supplier accepted RFQ invitation",
+                "قبل المورد دعوة طلب عرض السعر",
+                f"{context.get('supplier_name', 'A supplier')} accepted the invitation for RFQ {ref}: {title}.",
+                f"قبل المورد {context.get('supplier_name', '')} الدعوة لطلب عرض السعر {ref}: {title}.",
+            ),
+            "rfq_invitation_declined": (
+                "Supplier declined RFQ invitation",
+                "رفض المورد دعوة طلب عرض السعر",
+                f"{context.get('supplier_name', 'A supplier')} declined the invitation for RFQ {ref}: {title}.",
+                f"اعتذر المورد {context.get('supplier_name', '')} عن الدعوة لطلب عرض السعر {ref}: {title}.",
+            ),
+            "rfq_status_updated": (
+                "RFQ status updated",
+                "تحديث حالة طلب عرض السعر",
+                f"RFQ {ref}: {title} is now {context.get('status', 'updated')}. Open your dashboard for details.",
+                f"تم تحديث حالة طلب عرض السعر {ref}: {title} إلى {context.get('status', 'محدث')}. افتح لوحة التحكم للتفاصيل.",
+            ),
         }
         en, ar, english, translated = messages.get(
             template,

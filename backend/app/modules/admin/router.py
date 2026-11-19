@@ -1,6 +1,9 @@
+from datetime import UTC, datetime
+
+from fastapi import APIRouter,Depends,HTTPException,Query
+from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 from app.search import ListSearch
 from app.response_contracts import AuditOut, UserOut
-from fastapi import APIRouter,Depends,HTTPException,Query
 from sqlalchemy.orm import Session
 from sqlalchemy import select,func,update,delete
 from app.database import get_db
@@ -20,13 +23,34 @@ def logs(search:ListSearch=Depends(),admin:User=Depends(admin_user),db:Session=D
     return [record(a) for a in db.scalars(search.apply(select(AuditEvent),AuditEvent.action,AuditEvent.org_id,AuditEvent.actor_user_id,AuditEvent.entity_id,order=(AuditEvent.created_at.desc(),AuditEvent.id))).all()]
 
 @router.get('/settings')
-def platform_settings(admin:User=Depends(admin_user)):
+def platform_settings(admin:User=Depends(admin_user),db:Session=Depends(get_db)):
     from app.config import get_settings
+    from app.modules.organizations.auto_approval import get_platform_settings
     settings=get_settings()
-    return {'environment':settings.app_env,'mock_notifications':settings.mock_notifications,'private_storage':'local_development_only','production_enabled':False,'matching_batch_size':settings.matching_batch_size,'max_document_bytes':settings.max_upload_bytes}
+    ps=get_platform_settings(db)
+    db.commit()
+    return {'environment':settings.app_env,'mock_notifications':settings.mock_notifications,'private_storage':'r2' if settings.r2_enabled else 'local_development_only','production_enabled':settings.is_production,'matching_batch_size':settings.matching_batch_size,'max_document_bytes':settings.max_upload_bytes,'auto_approval_enabled':ps.auto_approval_enabled,'auto_approval_hours':ps.auto_approval_hours}
 
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
+class PlatformSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    auto_approval_enabled: bool | None = None
+    auto_approval_hours: int | None = Field(default=None, ge=1, le=720)
+
+
+@router.patch('/settings')
+def update_platform_settings(payload:PlatformSettingsUpdate,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
+    from app.modules.organizations.auto_approval import get_platform_settings
+    ps=get_platform_settings(db)
+    if payload.auto_approval_enabled is not None:
+        ps.auto_approval_enabled=payload.auto_approval_enabled
+    if payload.auto_approval_hours is not None:
+        ps.auto_approval_hours=payload.auto_approval_hours
+    audit(db,admin,'admin.settings_updated',auto_approval_enabled=ps.auto_approval_enabled,auto_approval_hours=ps.auto_approval_hours)
+    db.commit()
+    return {'auto_approval_enabled':ps.auto_approval_enabled,'auto_approval_hours':ps.auto_approval_hours}
+
+
 from sqlalchemy.exc import IntegrityError
 from app.modules.auth.router import norm_phone, norm_email
 from app.identity import normalize_username, normalize_saudi_phone, normalize_email, validate_password
@@ -150,7 +174,7 @@ def get_user(user_id:str,admin:User=Depends(admin_user),db:Session=Depends(get_d
 def create_user(payload:AdminUserCreate,admin:User=Depends(admin_user),db:Session=Depends(get_db)):
     username=payload.username.strip().casefold()
     if len(username)<3:raise HTTPException(422,'Username must contain at least 3 characters')
-    user=User(username=username,phone=norm_phone(payload.phone),email=norm_email(payload.email) if payload.email else None,password_hash=password_hash(payload.password),is_admin=payload.is_admin,phone_verified=False)
+    user=User(username=username,phone=norm_phone(payload.phone),email=norm_email(payload.email) if payload.email else None,password_hash=password_hash(payload.password),is_admin=payload.is_admin,phone_verified=False,approval_status='approved',approved_at=datetime.now(UTC),approval_method='manual_admin',approval_reason='ADMIN_CREATED')
     ensure_identity_available(db,'',user.username,user.phone,user.email)
     db.add(user)
     db.flush()
@@ -220,3 +244,62 @@ def delete_user(user_id:str,admin:User=Depends(admin_user),db:Session=Depends(ge
         db.rollback()
         raise HTTPException(409,'This user has a linked record that could not be removed; no changes were saved') from exc
     return {'deleted':True}
+
+
+class AdminApprovalDecision(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    reason: str | None = Field(default=None, max_length=300)
+
+
+class AdminReviewFlagUpdate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    manual_review_required: bool
+    reason: str | None = Field(default=None, max_length=300)
+
+
+@router.post('/users/{user_id}/approve', response_model=UserOut)
+def approve_user(user_id:str, payload:AdminApprovalDecision | None = None, admin:User=Depends(admin_user), db:Session=Depends(get_db)):
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not user:
+        raise HTTPException(404, 'User not found')
+    if user.approval_status == 'approved':
+        return user
+    now = datetime.now(UTC)
+    user.approval_status = 'approved'
+    user.approved_at = now
+    user.approval_method = 'manual_admin'
+    user.approval_reason = (payload.reason if payload and payload.reason else 'MANUAL_ADMIN_APPROVAL')
+    user.manual_review_required = False
+    user.manual_review_reason = None
+    dedupe_key = f'account-approved:{user.id}'
+    if not db.scalar(select(Outbox.id).where(Outbox.dedupe_key == dedupe_key).limit(1)):
+        db.add(Outbox(event='account.approved', payload={'user_id': user.id, 'approval_method': 'manual_admin'}, dedupe_key=dedupe_key))
+    audit(db, admin, 'admin.user_approved', entity_id=user.id, approval_method='manual_admin', reason=user.approval_reason)
+    return save_admin_user(db, user)
+
+
+@router.post('/users/{user_id}/reject', response_model=UserOut)
+def reject_user(user_id:str, payload:AdminApprovalDecision | None = None, admin:User=Depends(admin_user), db:Session=Depends(get_db)):
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not user:
+        raise HTTPException(404, 'User not found')
+    if user.id == admin.id:
+        raise HTTPException(409, 'You cannot reject your own administrator account')
+    user.approval_status = 'rejected'
+    user.approval_method = 'manual_admin'
+    user.approval_reason = (payload.reason if payload and payload.reason else 'MANUAL_ADMIN_REJECTION')
+    user.is_active = False
+    db.execute(update(RefreshSession).where(RefreshSession.user_id == user.id).values(revoked=True))
+    audit(db, admin, 'admin.user_rejected', entity_id=user.id, reason=user.approval_reason)
+    return save_admin_user(db, user)
+
+
+@router.patch('/users/{user_id}/review-flag', response_model=UserOut)
+def set_review_flag(user_id:str, payload:AdminReviewFlagUpdate, admin:User=Depends(admin_user), db:Session=Depends(get_db)):
+    user = db.scalar(select(User).where(User.id == user_id).with_for_update())
+    if not user:
+        raise HTTPException(404, 'User not found')
+    user.manual_review_required = payload.manual_review_required
+    user.manual_review_reason = payload.reason if payload.manual_review_required else None
+    audit(db, admin, 'admin.user_review_flag_updated', entity_id=user.id, manual_review_required=user.manual_review_required, reason=user.manual_review_reason)
+    return save_admin_user(db, user)

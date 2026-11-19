@@ -147,7 +147,9 @@ def close(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db))
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status not in {'published','collecting_quotes','review'}:raise HTTPException(409,'Cannot close RFQ')
-    rfq.status='closed';audit(db,user,'rfq.closed',rfq.buyer_org_id,rfq.id);db.commit();return record(rfq)
+    rfq.status='closed'
+    db.add(Outbox(event='rfq.status_updated',payload={'rfq_id':rfq.id,'status':'closed'},dedupe_key=f'rfq-status:{rfq.id}:closed'))
+    audit(db,user,'rfq.closed',rfq.buyer_org_id,rfq.id);db.commit();return record(rfq)
 
 @router.put('/{rfq_id}', response_model=RFQDetail)
 def update_draft(rfq_id:str,payload:RFQIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -174,7 +176,9 @@ def cancel(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status in {'closed','cancelled'}:raise HTTPException(409,'RFQ already finished')
-    rfq.status='cancelled';audit(db,user,'rfq.cancelled',rfq.buyer_org_id,rfq.id);db.commit()
+    rfq.status='cancelled'
+    db.add(Outbox(event='rfq.status_updated',payload={'rfq_id':rfq.id,'status':'cancelled'},dedupe_key=f'rfq-status:{rfq.id}:cancelled'))
+    audit(db,user,'rfq.cancelled',rfq.buyer_org_id,rfq.id);db.commit()
     return record(rfq)
 
 

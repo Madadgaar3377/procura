@@ -188,3 +188,108 @@ def company_notice(db, event):
         raise PermanentOutboxError('Organization notification target no longer exists')
     enqueue_org_notice(db,org_id=org.id,template='verification_updated',context={'org_id':org.id,'status':str(event.payload.get('status','updated'))},source_key=f'verification-update:{event.id}')
     queue_in_app(db,event,org.id,'verification_updated','Your company verification status was updated.')
+
+
+def invitation_response_notice(db, event):
+    from app.worker import PermanentOutboxError
+    rfq = db.get(RFQ, event.payload.get('rfq_id'))
+    inv = db.get(Invitation, event.payload.get('invitation_id'))
+    supplier = db.get(Organization, event.payload.get('supplier_org_id'))
+    action = str(event.payload.get('action') or '')
+    if not rfq or not inv or not supplier or action not in {'accept', 'decline'}:
+        raise PermanentOutboxError('Invalid invitation response notification target')
+    template = 'rfq_invitation_accepted' if action == 'accept' else 'rfq_invitation_declined'
+    base = get_settings().frontend_url.rstrip('/')
+    queue_in_app(
+        db, event, rfq.buyer_org_id, template,
+        f'Procumaterial: {supplier.name} {action}ed invitation for {rfq.reference}.',
+    )
+    enqueue_org_notice(
+        db,
+        org_id=rfq.buyer_org_id,
+        template=template,
+        context={
+            'reference': rfq.reference,
+            'title': rfq.project_name or rfq.title,
+            'supplier_name': supplier.name,
+            'org_id': rfq.buyer_org_id,
+            'url': f'{base}/app/buyer/rfqs/{rfq.id}',
+        },
+        source_key=f'rfq-invitation-responded:{inv.id}:{action}',
+    )
+
+
+def rfq_status_notice(db, event):
+    from app.worker import PermanentOutboxError
+    rfq = db.get(RFQ, event.payload.get('rfq_id'))
+    if not rfq:
+        raise PermanentOutboxError('RFQ no longer exists')
+    status = str(event.payload.get('status') or rfq.status)
+    base = get_settings().frontend_url.rstrip('/')
+    supplier_org_ids = db.scalars(
+        select(Invitation.supplier_org_id).where(
+            Invitation.rfq_id == rfq.id,
+            Invitation.status != 'declined',
+        )
+    ).all()
+    for org_id in supplier_org_ids:
+        queue_in_app(
+            db, event, org_id, 'rfq_status_updated',
+            f'Procumaterial: RFQ {rfq.reference} status is now {status}.',
+        )
+        enqueue_org_notice(
+            db,
+            org_id=org_id,
+            template='rfq_status_updated',
+            context={
+                'reference': rfq.reference,
+                'title': rfq.project_name or rfq.title,
+                'status': status,
+                'org_id': org_id,
+                'url': f'{base}/app/supplier/rfqs/{rfq.id}',
+            },
+            source_key=f'rfq-status:{rfq.id}:{status}:{org_id}',
+        )
+
+
+def account_approved_notice(db, event):
+    from app.models import AccountPreference, Notification, User
+    from app.modules.notifications.service import queue_delivery
+    from app.worker import PermanentOutboxError
+    user = db.get(User, event.payload.get('user_id'))
+    if not user or not user.is_active:
+        raise PermanentOutboxError('Approved account target no longer exists')
+    base = get_settings().frontend_url.rstrip('/')
+    prefs = db.get(AccountPreference, user.id)
+    if not prefs or (prefs.in_app_enabled and prefs.events.get('account_approved', True)):
+        existing = db.scalar(
+            select(Notification.id).where(
+                Notification.delivery_outbox_id == event.id,
+                Notification.recipient_user_id == user.id,
+                Notification.channel == 'in_app',
+                Notification.event == 'account_approved',
+            )
+        )
+        if not existing:
+            db.add(Notification(
+                recipient_user_id=user.id,
+                event='account_approved',
+                message='Your Procumaterial account has been approved.',
+                channel='in_app',
+                status='delivered',
+                delivery_outbox_id=event.id,
+            ))
+    context = {
+        'url': f'{base}/app',
+        'approval_method': str(event.payload.get('approval_method') or ''),
+    }
+    if user.email and user.email_verified and user.email_notifications_enabled:
+        queue_delivery(
+            db, user_id=user.id, channel='email', template='account_approved',
+            context=context, dedupe_key=f'account-approved:{user.id}:email',
+        )
+    if user.phone_verified and user.sms_notifications_enabled:
+        queue_delivery(
+            db, user_id=user.id, channel='sms', template='account_approved',
+            context=context, dedupe_key=f'account-approved:{user.id}:sms',
+        )

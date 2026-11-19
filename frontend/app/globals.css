@@ -664,3 +664,10 @@ input::placeholder,textarea::placeholder{color:#4b5563;opacity:1}
 .material-autocomplete .select-suggestions button{overflow-wrap:anywhere;flex-wrap:wrap}
 
 .material-autocomplete [role="listbox"]{display:grid}
+
+.material-bulk-dialog .admin-modal-body{display:grid;gap:18px}
+.material-bulk-stats{grid-template-columns:repeat(auto-fit,minmax(145px,1fr))}
+.material-bulk-dialog input[type=file]{max-width:100%;white-space:normal}
+.category-duplicates summary{cursor:pointer;font-weight:600}
+.category-duplicates li{overflow-wrap:anywhere}
+@media(max-width:640px){.material-bulk-dialog .admin-modal-footer{flex-wrap:wrap}.material-bulk-dialog .admin-modal-footer button{flex:1;white-space:normal}.material-bulk-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}

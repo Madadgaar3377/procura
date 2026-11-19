@@ -204,7 +204,9 @@ def process_batch(db,limit=25,now=None,event_ids=None):
     now=core._utc(now or datetime.now(UTC))
     if event_ids is None:
         from app.modules.notifications.procurement import schedule_reminders
+        from app.modules.organizations.auto_approval import run_auto_approval_sweep
         schedule_reminders(db,now)
+        run_auto_approval_sweep(db,now)
     due=or_(Outbox.next_attempt_at.is_(None),Outbox.next_attempt_at<=now)
     eligible=or_(and_(Outbox.status.in_({'pending','retry','awaiting_status'}),due),and_(Outbox.status=='processing',or_(Outbox.lock_until.is_(None),Outbox.lock_until<=now)))
     query=select(Outbox.id).where(eligible)
@@ -226,6 +228,15 @@ def process_batch(db,limit=25,now=None,event_ids=None):
             elif event.event=='company.verification_updated':
                 from app.modules.notifications.procurement import company_notice
                 company_notice(db,event)
+            elif event.event=='rfq.invitation.responded':
+                from app.modules.notifications.procurement import invitation_response_notice
+                invitation_response_notice(db,event)
+            elif event.event=='rfq.status_updated':
+                from app.modules.notifications.procurement import rfq_status_notice
+                rfq_status_notice(db,event)
+            elif event.event=='account.approved':
+                from app.modules.notifications.procurement import account_approved_notice
+                account_approved_notice(db,event)
             elif event.event=='quotation.submitted':
                 from app.modules.notifications.procurement import quotation_notice
                 quotation_notice(db,event)

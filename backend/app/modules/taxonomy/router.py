@@ -10,6 +10,7 @@ from app.response_cache import cached_get
 from app.database import get_db
 from app.models import Category, Material, MaterialRevision, MeasurementUnit, User, uid, Capability
 from app.modules.taxonomy.category_imports import router as category_imports
+from app.modules.taxonomy.duplicates import router as duplicate_categories
 from app.response_contracts import (CategoryOut, CategorySummary, IndustryCatalogPage,
                                     IndustryTaxonomyReviewCandidate, MaterialOut, SubcategoryMaterialOut)
 from app.schemas import CategoryIn, CategoryEdit, SubcategoryMaterialIn, MaterialIn, MaterialMasterIn, MaterialRevisionOut, MeasurementUnitIn, MaterialFilterPage
@@ -47,6 +48,7 @@ class TaxonomyRoute(APIRoute):
 
 router=APIRouter(prefix='/taxonomy',tags=['Material Master'],route_class=TaxonomyRoute)
 router.include_router(category_imports)
+router.include_router(duplicate_categories)
 
 @router.get('/industry-review-candidates',response_model=list[IndustryTaxonomyReviewCandidate])
 def industry_review_candidates(user:User=Depends(admin_user),db:Session=Depends(get_db),
