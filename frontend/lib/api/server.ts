@@ -56,7 +56,7 @@ export async function proxy(request:NextRequest,path:string[]) {
   let access=request.cookies.get(accessName)?.value;
   const refresh=request.cookies.get(refreshName)?.value;
   let pair:Pair|null=null;
-  const isPublic=['auth/login','auth/register','auth/otp/request','auth/otp/verify','auth/password/forgot','auth/password/verify','auth/password/reset'].includes(route)||route.startsWith('directory/')||route.startsWith('taxonomy/')&&request.method==='GET'||route==='memberships/plans';
+  const isPublic=['auth/login','auth/register','auth/otp/request','auth/otp/verify','auth/password/forgot','auth/password/verify','auth/password/reset'].includes(route)||route.startsWith('directory/')||route.startsWith('taxonomy/')&&!route.startsWith('taxonomy/review/')&&!route.startsWith('taxonomy/industry-review-candidates')&&request.method==='GET'||route==='memberships/plans';
   if(!access && refresh && !isPublic){pair=await rotate(refresh);access=pair?.access_token;}
   const send=async()=>{
    const headers=new Headers();
@@ -66,7 +66,7 @@ export async function proxy(request:NextRequest,path:string[]) {
    if(route==='auth/logout') {headers.set('Content-Type','application/json');payload=JSON.stringify({refresh_token:pair?.refresh_token||refresh||''});}
    // Material upload, preview, confirmation and progress calls only stage/read a
    // durable job now. Workbook parsing and application run in the worker.
-   const longImport=route.startsWith('taxonomy/categories/import/')||route.startsWith('imports/suppliers')||route.startsWith('pricebooks/')&&route.endsWith('/bulk-import');
+   const longImport=route.startsWith('taxonomy/categories/import/')||route.startsWith('taxonomy/review/')||route.startsWith('imports/suppliers')||route.startsWith('pricebooks/')&&route.endsWith('/bulk-import');
    const timeout=longImport?120_000:20_000;
    return fetch(`${upstream()}/api/v1/${route}${request.nextUrl.search}`,{method:request.method,headers,body:payload,cache:'no-store',redirect:'error',signal:AbortSignal.timeout(timeout)});
   };

@@ -1,0 +1,1633 @@
+"""Category review classification, safe discipline inference, and batched repair service."""
+from __future__ import annotations
+
+import logging
+import re
+from collections import Counter, defaultdict
+from dataclasses import dataclass, field
+from hashlib import sha256
+from typing import Callable
+
+from fastapi import HTTPException
+from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.orm import Session
+
+from app import catalog_cache
+from app.database import SessionLocal
+from app.models import (
+    Capability,
+    Category,
+    CategoryReviewDecision,
+    ImportBatch,
+    ImportedRow,
+    Material,
+    MaterialRevision,
+    User,
+    utcnow,
+)
+from app.modules.materials.service import material_identity, material_snapshot, normalize_category_name, normalize_text
+from app.modules.taxonomy.duplicates import category_references
+from app.security import audit
+
+logger = logging.getLogger(__name__)
+
+SUPPORTED_DISCIPLINES: dict[str, str] = {
+    'civil': 'Civil',
+    'electrical': 'Electrical',
+    'mechanical': 'Mechanical',
+}
+BATCH_SIZE = 30
+JOB_SIZE = 300
+CATEGORY_REVIEW_LOCK_KEY = 717341399
+
+SUSPICIOUS_LABEL_RE = re.compile(r'\b(qa|test|sample|bulk)\b', re.IGNORECASE)
+
+DISCIPLINE_ALIASES: dict[str, str] = {
+    'elec': 'Electrical',
+    'electrical works': 'Electrical',
+    'electrical systems': 'Electrical',
+    'elv': 'Electrical',
+    'low current': 'Electrical',
+    'power': 'Electrical',
+    'mech': 'Mechanical',
+    'mechanical works': 'Mechanical',
+    'mechanical systems': 'Mechanical',
+    'hvac': 'Mechanical',
+    'plumbing': 'Mechanical',
+    'firefighting': 'Mechanical',
+    'fire fighting': 'Mechanical',
+    'civil works': 'Civil',
+    'structural': 'Civil',
+    'concrete': 'Civil',
+    'architectural': 'Civil',
+    'arch': 'Civil',
+    'finishes': 'Civil',
+}
+
+# Categories that genuinely span multiple disciplines or are too generic to infer
+# discipline from the category label alone without inspecting each material.
+SHARED_OR_GENERIC_PATTERNS = (
+    re.compile(r'\bshared\b', re.IGNORECASE),
+    re.compile(r'\bconsumables?\b', re.IGNORECASE),
+    re.compile(r'\badhesives?\b', re.IGNORECASE),
+    re.compile(r'\bresins?\b', re.IGNORECASE),
+    re.compile(r'\banchors?\b', re.IGNORECASE),
+    re.compile(r'\bfasteners?\b', re.IGNORECASE),
+    re.compile(r'\bsealants?\b', re.IGNORECASE),
+    re.compile(r'\bchemicals?\b', re.IGNORECASE),
+    re.compile(r'\baccessories\b', re.IGNORECASE),
+    re.compile(r'\bgeneral\b', re.IGNORECASE),
+    re.compile(r'\bmisc(?:ellaneous)?\b', re.IGNORECASE),
+    re.compile(r'\btools?\b', re.IGNORECASE),
+)
+
+CIVIL_KEYWORDS = re.compile(
+    r'\b('
+    r'concrete|cement|admixtures?|ready[\s-]?mix|aggregate|rebar|reinforcing\s+steel|'
+    r'masonry|blockwork|brickwork|plaster|mortar|screed|waterproofing|bitumen|'
+    r'geotextile|asphalt|kerb|curbstone|paver|gypsum|drywall|ceiling\s+(?:board|tile|panel)|'
+    r'acoustic\s+(?:board|panel|tile|ceiling|baffle|partition|wall)|'
+    r'air\s*(?:&|and)?\s*vapou?r\s+control|vapou?r\s+barrier|air\s+barrier|'
+    r'architectural\s+insulation|building\s+envelope|thermal\s+facade|cladding|'
+    r'formwork|scaffolding|structural\s+steel|terrazzo|concrete\s+anchor|chemical\s+anchor|'
+    r'wedge\s+anchor|rebar\s+epoxy|structural\s+epoxy|concrete\s+fibre|concrete\s+fiber|'
+    r'polypropylene\s+fib(?:re|er)|steel\s+fib(?:re|er)|tile\s+adhesive|grout|'
+    r'architectural\s+metalwork|handrails?|balustrades?|louvers?|civil'
+    r')\b',
+    re.IGNORECASE,
+)
+
+ELECTRICAL_KEYWORDS = re.compile(
+    r'\b('
+    r'cable|wire|wiring|switchgear|circuit\s+breaker|mcb|mccb|rccb|rcbo|'
+    r'distribution\s+board|panelboard|transformer|busbar|conduit|cable\s+tray|'
+    r'trunking|junction\s+box|pull\s+box|socket|switch(?:es)?|luminaire|lighting\s+fixture|'
+    r'led\s+(?:light|lamp|panel|flood)|lamp|ups|earthing|grounding|lightning\s+protection|'
+    r'patch\s+panel|cat6|cat6a|fib(?:re|er)\s+optic|fire\s+alarm|cctv|access\s+control|'
+    r'elv|low\s+current|cable\s+gland|cable\s+lug|cable\s+tie|terminal\s+block|'
+    r'contactor|relay|isolator|busduct|electrical|voltage|ampere|kva|kw|xlpe|pvc\s+conduit'
+    r')\b',
+    re.IGNORECASE,
+)
+
+MECHANICAL_KEYWORDS = re.compile(
+    r'\b('
+    r'hvac|chiller|ahu|fcu|duct(?:work)?|duct\s+insulation|duct\s+acoustic|damper|'
+    r'diffuser|grille|exhaust\s+fan|ventilation|pump|valve|gate\s+valve|ball\s+valve|'
+    r'butterfly\s+valve|check\s+valve|pipe|piping|hdpe\s+pipe|ppr\s+pipe|upvc\s+pipe|'
+    r'cpvc\s+pipe|black\s+steel\s+pipe|ductile\s+iron\s+pipe|pipe\s+fitting|flange|'
+    r'pipe\s+clamp|pipe\s+hanger|pipe\s+insulation|chilled\s+water|fire\s+sprinkler|'
+    r'hydrant|fire\s+hose|plumbing|sanitary\s+ware|water\s+heater|water\s+tank|'
+    r'boiler|compressor|refrigerant|air\s+conditioning|mechanical'
+    r')\b',
+    re.IGNORECASE,
+)
+
+UNAMBIGUOUS_HIERARCHY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r'\b(concrete\s+constituents|supplied\s+concrete|admixtures|reinforcing\s+steel|masonry|waterproofing|structural\s+concrete|architectural\s+insulation|air\s*/\s*vapor\s+control|air\s*&\s*vapor\s+control|architectural\s+specialties|architectural\s+metalwork)\b', re.IGNORECASE), 'Civil'),
+    (re.compile(r'\b(electrical\s+distribution|wiring\s+devices|lighting\s+fixtures|low\s+current|switchgear|cables?\s*&\s*wires?)\b', re.IGNORECASE), 'Electrical'),
+    (re.compile(r'\b(hvac|plumbing|fire\s*fighting|firefighting|chilled\s+water|pumps?\s*&\s*valves?|ductwork|sanitary)\b', re.IGNORECASE), 'Mechanical'),
+)
+
+ISSUE_LABELS: dict[str, str] = {
+    'invalid_import_data': 'Invalid import data',
+    'duplicate_category': 'Duplicate category',
+    'parent_mismatch': 'Parent category mismatch',
+    'unsupported_discipline': 'Unsupported discipline',
+    'missing_discipline': 'Missing discipline',
+    'ambiguous_classification': 'Ambiguous classification',
+    'inactive_materials_only': 'Inactive materials only',
+    'empty_category': 'Empty category',
+}
+
+
+@dataclass
+class MaterialAssessment:
+    material_id: str
+    code: str
+    name_en: str
+    current_discipline: str | None
+    inferred_discipline: str | None
+    safe: bool
+    evidence: str
+    issue: str  # ok | missing_discipline | unsupported_discipline | ambiguous | parent_mismatch
+
+
+@dataclass
+class CategoryAssessment:
+    category: Category
+    parent: Category | None
+    issue_type: str
+    reason: str
+    secondary_issues: list[str] = field(default_factory=list)
+    active_material_count: int = 0
+    inactive_material_count: int = 0
+    missing_discipline_count: int = 0
+    unsupported_discipline_count: int = 0
+    duplicate_ids: list[str] = field(default_factory=list)
+    duplicate_canonical_id: str | None = None
+    duplicate_safe: bool = False
+    duplicate_blockers: list[str] = field(default_factory=list)
+    proposed_action: str = 'manual_review'  # assign_discipline | repair_parent | merge_duplicate | retain_empty | approve | manual_review
+    proposed_discipline: str | None = None
+    safe_to_auto_fix: bool = False
+    can_approve: bool = False
+    can_retain_empty: bool = False
+    can_merge: bool = False
+    can_archive: bool = False
+    requires_manual_review: bool = False
+    evidence: list[str] = field(default_factory=list)
+    current_decision: CategoryReviewDecision | None = None
+    material_assessments: list[MaterialAssessment] = field(default_factory=list)
+    safe_material_fixes: dict[str, str] = field(default_factory=dict)  # material_id -> discipline
+    parent_fix_material_ids: list[str] = field(default_factory=list)
+
+
+def normalize_supported_discipline(value: str | None) -> str | None:
+    if not value:
+        return None
+    return SUPPORTED_DISCIPLINES.get(value.strip().casefold())
+
+
+def _is_shared_or_generic(name: str) -> bool:
+    return any(pattern.search(name or '') for pattern in SHARED_OR_GENERIC_PATTERNS)
+
+
+def _text_disciplines(text_value: str) -> set[str]:
+    found: set[str] = set()
+    if not text_value:
+        return found
+    if CIVIL_KEYWORDS.search(text_value):
+        found.add('Civil')
+    if ELECTRICAL_KEYWORDS.search(text_value):
+        found.add('Electrical')
+    if MECHANICAL_KEYWORDS.search(text_value):
+        found.add('Mechanical')
+    return found
+
+
+def _hierarchy_discipline(category: Category, parent: Category | None) -> tuple[str | None, bool]:
+    """Return (inferred_discipline, is_shared_or_generic)."""
+    combined = f'{parent.name_en if parent else ""} {category.name_en}'.strip()
+    is_shared = _is_shared_or_generic(category.name_en) or (parent is not None and _is_shared_or_generic(parent.name_en))
+    if parent and parent.name_en.strip().casefold() in SUPPORTED_DISCIPLINES:
+        return SUPPORTED_DISCIPLINES[parent.name_en.strip().casefold()], is_shared
+    if not parent and category.name_en.strip().casefold() in SUPPORTED_DISCIPLINES:
+        return SUPPORTED_DISCIPLINES[category.name_en.strip().casefold()], is_shared
+    if is_shared:
+        return None, True
+    matches: set[str] = set()
+    for pattern, disc in UNAMBIGUOUS_HIERARCHY_PATTERNS:
+        if pattern.search(combined):
+            matches.add(disc)
+    if len(matches) == 1:
+        return next(iter(matches)), False
+    return None, is_shared
+
+
+def _source_discipline_from_metadata(
+    material: Material,
+    batches_by_id: dict[str, ImportBatch],
+    rows_by_key: dict[tuple[str, int], ImportedRow],
+) -> str | None:
+    if material.import_batch_id and material.import_row_number is not None:
+        row = rows_by_key.get((material.import_batch_id, material.import_row_number))
+        if row and isinstance(row.raw, dict):
+            for key in ('_discipline', 'discipline', 'Discipline', 'trade', 'Trade'):
+                val = row.raw.get(key)
+                if isinstance(val, str):
+                    resolved = normalize_supported_discipline(val)
+                    if resolved:
+                        return resolved
+    if material.import_batch_id:
+        batch = batches_by_id.get(material.import_batch_id)
+        if batch:
+            meta = batch.preview_metadata or {}
+            if isinstance(meta, dict):
+                resolved = normalize_supported_discipline(str(meta.get('discipline') or ''))
+                if resolved:
+                    return resolved
+            evidence = re.sub(r'[^a-z]+', ' ', (batch.filename or '').casefold())
+            hits = [label for key, label in SUPPORTED_DISCIPLINES.items() if re.search(rf'\b{key}\b', evidence)]
+            if len(hits) == 1:
+                return hits[0]
+    return None
+
+
+def _assess_material_discipline(
+    material: Material,
+    category: Category,
+    parent: Category | None,
+    sibling_disciplines: set[str],
+    batches_by_id: dict[str, ImportBatch],
+    rows_by_key: dict[tuple[str, int], ImportedRow],
+) -> MaterialAssessment:
+    current = (material.discipline or '').strip() or None
+    supported = normalize_supported_discipline(current)
+    if supported:
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=supported,
+            safe=True,
+            evidence='existing_supported_discipline',
+            issue='ok',
+        )
+
+    base_issue = 'unsupported_discipline' if current else 'missing_discipline'
+    spec_text = ' '.join(
+        str(v) for v in (material.specs_template or {}).values() if isinstance(v, (str, int, float))
+    )
+    material_text = f'{material.name_en or ""} {material.description or ""} {spec_text}'.strip()
+    text_hits = _text_disciplines(material_text)
+
+    if len(text_hits) > 1:
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=None,
+            safe=False,
+            evidence=f'Conflicting description signals ({", ".join(sorted(text_hits))})',
+            issue='ambiguous',
+        )
+
+    source_disc = _source_discipline_from_metadata(material, batches_by_id, rows_by_key)
+    if source_disc:
+        if not text_hits or text_hits == {source_disc}:
+            return MaterialAssessment(
+                material_id=material.id,
+                code=material.code,
+                name_en=material.name_en,
+                current_discipline=current,
+                inferred_discipline=source_disc,
+                safe=True,
+                evidence=f'Source import metadata ({source_disc})',
+                issue=base_issue,
+            )
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=None,
+            safe=False,
+            evidence=f'Source import ({source_disc}) conflicts with description ({", ".join(sorted(text_hits))})',
+            issue='ambiguous',
+        )
+
+    if current:
+        alias_disc = DISCIPLINE_ALIASES.get(current.casefold())
+        if alias_disc:
+            if not text_hits or text_hits == {alias_disc}:
+                return MaterialAssessment(
+                    material_id=material.id,
+                    code=material.code,
+                    name_en=material.name_en,
+                    current_discipline=current,
+                    inferred_discipline=alias_disc,
+                    safe=True,
+                    evidence=f'Normalized discipline alias "{current}" -> {alias_disc}',
+                    issue=base_issue,
+                )
+            return MaterialAssessment(
+                material_id=material.id,
+                code=material.code,
+                name_en=material.name_en,
+                current_discipline=current,
+                inferred_discipline=None,
+                safe=False,
+                evidence=f'Discipline value "{current}" conflicts with description ({", ".join(sorted(text_hits))})',
+                issue='ambiguous',
+            )
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=None,
+            safe=False,
+            evidence=f'Unsupported discipline "{current}" requires manual review',
+            issue='unsupported_discipline',
+        )
+
+    hier_disc, is_shared = _hierarchy_discipline(category, parent)
+
+    if is_shared:
+        # Shared / generic categories (e.g., Shared Chemicals, Anchors & Consumables,
+        # or Electrical -> Accessories) require material-level evidence rather than
+        # blindly inheriting one discipline.
+        if len(text_hits) == 1:
+            inferred = next(iter(text_hits))
+            if hier_disc and inferred != hier_disc:
+                return MaterialAssessment(
+                    material_id=material.id,
+                    code=material.code,
+                    name_en=material.name_en,
+                    current_discipline=current,
+                    inferred_discipline=None,
+                    safe=False,
+                    evidence=f'Description ({inferred}) conflicts with parent hierarchy ({hier_disc})',
+                    issue='ambiguous',
+                )
+            return MaterialAssessment(
+                material_id=material.id,
+                code=material.code,
+                name_en=material.name_en,
+                current_discipline=current,
+                inferred_discipline=inferred,
+                safe=True,
+                evidence=f'Material description and specifications ({inferred})',
+                issue=base_issue,
+            )
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=None,
+            safe=False,
+            evidence='Shared/generic category material lacks single-discipline evidence',
+            issue='ambiguous',
+        )
+
+    if hier_disc:
+        if text_hits and text_hits != {hier_disc}:
+            return MaterialAssessment(
+                material_id=material.id,
+                code=material.code,
+                name_en=material.name_en,
+                current_discipline=current,
+                inferred_discipline=None,
+                safe=False,
+                evidence=f'Description ({", ".join(sorted(text_hits))}) conflicts with category hierarchy ({hier_disc})',
+                issue='ambiguous',
+            )
+        if sibling_disciplines and sibling_disciplines != {hier_disc}:
+            return MaterialAssessment(
+                material_id=material.id,
+                code=material.code,
+                name_en=material.name_en,
+                current_discipline=current,
+                inferred_discipline=None,
+                safe=False,
+                evidence=f'Existing sibling materials span multiple disciplines ({", ".join(sorted(sibling_disciplines))})',
+                issue='ambiguous',
+            )
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=hier_disc,
+            safe=True,
+            evidence=f'Category hierarchy ({hier_disc})' + (' confirmed by description' if text_hits else ''),
+            issue=base_issue,
+        )
+
+    if len(sibling_disciplines) == 1:
+        sib_disc = next(iter(sibling_disciplines))
+        if not text_hits or text_hits == {sib_disc}:
+            return MaterialAssessment(
+                material_id=material.id,
+                code=material.code,
+                name_en=material.name_en,
+                current_discipline=current,
+                inferred_discipline=sib_disc,
+                safe=True,
+                evidence=f'Unanimous sibling materials in category ({sib_disc})',
+                issue=base_issue,
+            )
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=None,
+            safe=False,
+            evidence=f'Description ({", ".join(sorted(text_hits))}) conflicts with sibling materials ({sib_disc})',
+            issue='ambiguous',
+        )
+
+    if len(text_hits) == 1 and not sibling_disciplines:
+        inferred = next(iter(text_hits))
+        return MaterialAssessment(
+            material_id=material.id,
+            code=material.code,
+            name_en=material.name_en,
+            current_discipline=current,
+            inferred_discipline=inferred,
+            safe=True,
+            evidence=f'Material description and specifications ({inferred})',
+            issue=base_issue,
+        )
+
+    return MaterialAssessment(
+        material_id=material.id,
+        code=material.code,
+        name_en=material.name_en,
+        current_discipline=current,
+        inferred_discipline=None,
+        safe=False,
+        evidence='Insufficient evidence to assign a supported discipline automatically',
+        issue='ambiguous',
+    )
+
+
+def _load_current_decisions(db: Session) -> dict[str, CategoryReviewDecision]:
+    try:
+        rows = db.scalars(
+            select(CategoryReviewDecision).where(CategoryReviewDecision.is_current.is_(True))
+        ).all()
+        return {row.category_id: row for row in rows}
+    except ProgrammingError:
+        db.rollback()
+        return {}
+
+
+def _duplicate_group_safety(
+    db: Session,
+    group: list[Category],
+    all_categories: list[Category],
+    active_mat_counts: dict[str, int],
+    materials_by_cat: dict[str, list[Material]],
+) -> tuple[Category, bool, list[str]]:
+    """Determine canonical category and whether a same-parent duplicate group is safe to merge."""
+    ids = {c.id for c in group}
+    reasons: list[str] = []
+
+    # Never merge across different parents (caller already groups by parent_id, double-check)
+    if len({c.parent_id for c in group}) > 1:
+        reasons.append('Categories belong to different parent categories.')
+
+    # Choose canonical: prefer the one with the most active materials, then earliest created_at, then id
+    ordered = sorted(
+        group,
+        key=lambda c: (-active_mat_counts.get(c.id, 0), c.created_at, c.id),
+    )
+    canonical = ordered[0]
+    source_ids = {c.id for c in ordered[1:]}
+
+    # Do not merge if any duplicate alias being archived has active children
+    if any(c.parent_id in source_ids and c.active for c in all_categories):
+        reasons.append('Duplicate alias has active subcategories; merge leaf categories first.')
+
+    # Check Arabic label disagreement
+    arabic = {normalize_category_name(c.name_ar) for c in group if c.name_ar and c.name_ar.strip()}
+    if len(arabic) > 1:
+        reasons.append('Arabic category names disagree.')
+
+    # Check conflicting disciplines across active materials in the duplicate group
+    group_disciplines = {
+        normalize_supported_discipline(m.discipline)
+        for cid in ids
+        for m in materials_by_cat.get(cid, [])
+        if m.active and normalize_supported_discipline(m.discipline)
+    }
+    if len(group_disciplines) > 1:
+        reasons.append(f'Active materials span conflicting disciplines ({", ".join(sorted(group_disciplines))}).')
+
+    # Check supplier capability overlap
+    caps = list(db.scalars(select(Capability).where(Capability.category_id.in_(ids))).all())
+    cap_keys = [(c.org_id, c.city) for c in caps]
+    if len(set(cap_keys)) != len(cap_keys):
+        reasons.append('Supplier capability areas overlap; review capability approvals before merging.')
+
+    # Check material identity overlap across the duplicate categories
+    mats = list(db.scalars(select(Material).where(Material.category_id.in_(ids))).all())
+    mat_keys = [(normalize_category_name(m.name_en), m.unit) for m in mats]
+    if len(set(mat_keys)) != len(mat_keys):
+        reasons.append('Material identities overlap across duplicate categories; review before merging.')
+
+    return canonical, not reasons, reasons
+
+
+def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[CategoryAssessment]:
+    """Analyze all active categories and return structured assessments."""
+    all_categories = list(db.scalars(select(Category).order_by(Category.name_en, Category.id)).all())
+    by_id = {c.id: c for c in all_categories}
+    active_categories = [c for c in all_categories if c.active]
+    active_ids = {c.id for c in active_categories}
+
+    all_materials = list(db.scalars(select(Material)).all())
+    materials_by_cat: dict[str, list[Material]] = defaultdict(list)
+    active_mat_counts: dict[str, int] = defaultdict(int)
+    inactive_mat_counts: dict[str, int] = defaultdict(int)
+
+    for m in all_materials:
+        linked_cats = {cid for cid in (m.category_id, m.main_category_id, m.subcategory_id) if cid and cid in active_ids}
+        for cid in linked_cats:
+            materials_by_cat[cid].append(m)
+            if m.active:
+                active_mat_counts[cid] += 1
+            else:
+                inactive_mat_counts[cid] += 1
+
+    # Load import batch & row metadata only for active materials missing/unsupported discipline
+    needing_meta = [
+        m for m in all_materials
+        if m.active and not normalize_supported_discipline(m.discipline) and m.import_batch_id
+    ]
+    batch_ids = {m.import_batch_id for m in needing_meta if m.import_batch_id}
+    batches_by_id: dict[str, ImportBatch] = {}
+    rows_by_key: dict[tuple[str, int], ImportedRow] = {}
+    if batch_ids:
+        batches_by_id = {
+            b.id: b for b in db.scalars(select(ImportBatch).where(ImportBatch.id.in_(batch_ids))).all()
+        }
+        row_nums = {m.import_row_number for m in needing_meta if m.import_row_number is not None}
+        if row_nums:
+            for row in db.scalars(
+                select(ImportedRow).where(
+                    ImportedRow.batch_id.in_(batch_ids),
+                    ImportedRow.row_number.in_(row_nums),
+                )
+            ).all():
+                rows_by_key[(row.batch_id, row.row_number)] = row
+
+    # Detect duplicate active categories under the exact same parent_id + normalized name
+    dup_groups_raw: dict[tuple[str | None, str], list[Category]] = defaultdict(list)
+    for c in active_categories:
+        dup_groups_raw[(c.parent_id, normalize_category_name(c.name_en))].append(c)
+
+    dup_info: dict[str, tuple[Category, bool, list[str], list[str]]] = {}
+    for group in dup_groups_raw.values():
+        if len(group) > 1:
+            canonical, safe, blockers = _duplicate_group_safety(
+                db, group, all_categories, active_mat_counts, materials_by_cat
+            )
+            group_ids = [c.id for c in group]
+            for c in group:
+                dup_info[c.id] = (canonical, safe, blockers, group_ids)
+
+    decisions = _load_current_decisions(db)
+    active_children_by_parent: dict[str, list[Category]] = defaultdict(list)
+    for c in active_categories:
+        if c.parent_id:
+            active_children_by_parent[c.parent_id].append(c)
+
+    assessments: list[CategoryAssessment] = []
+
+    for category in active_categories:
+        parent = by_id.get(category.parent_id) if category.parent_id else None
+        mats = materials_by_cat.get(category.id, [])
+        active_mats = [m for m in mats if m.active]
+        inactive_mats = [m for m in mats if not m.active]
+        current_decision = decisions.get(category.id)
+
+        # Direct materials belonging to this category (for subcategory parent mismatch check)
+        direct_active = [
+            m for m in active_mats
+            if m.subcategory_id == category.id or (m.subcategory_id is None and m.category_id == category.id)
+        ]
+        expected_main_id = category.parent_id or category.id
+        mismatched_mats = [
+            m for m in direct_active
+            if m.main_category_id is not None and m.main_category_id != expected_main_id
+        ]
+
+        # Assess discipline for every active material linked to this category
+        sibling_supported = {
+            normalize_supported_discipline(m.discipline)
+            for m in active_mats
+            if normalize_supported_discipline(m.discipline)
+        }
+        sibling_supported.discard(None)  # type: ignore[arg-type]
+
+        mat_assessments: list[MaterialAssessment] = []
+        safe_material_fixes: dict[str, str] = {}
+        missing_count = 0
+        unsupported_count = 0
+        ambiguous_count = 0
+
+        direct_ids = {m.id for m in direct_active}
+        for m in active_mats:
+            leaf_cat = by_id.get(m.subcategory_id or m.category_id) or category
+            leaf_parent = by_id.get(leaf_cat.parent_id) if leaf_cat.parent_id else None
+            ma = _assess_material_discipline(
+                m, leaf_cat, leaf_parent, sibling_supported, batches_by_id, rows_by_key
+            )
+            mat_assessments.append(ma)
+            if ma.issue == 'ok':
+                continue
+            if not (m.discipline or '').strip():
+                missing_count += 1
+            else:
+                unsupported_count += 1
+            if ma.safe and ma.inferred_discipline and m.id in direct_ids:
+                safe_material_fixes[m.id] = ma.inferred_discipline
+            else:
+                ambiguous_count += 1
+
+        # Determine issues
+        secondary: list[str] = []
+        evidence: list[str] = []
+        label_text = f'{category.name_en} {parent.name_en if parent else ""}'
+        is_suspicious_label = bool(SUSPICIOUS_LABEL_RE.search(label_text))
+        is_broken_parent = bool(category.parent_id and (parent is None or not parent.active or parent.parent_id is not None))
+        is_duplicate = category.id in dup_info
+        has_active_children = bool(active_children_by_parent.get(category.id))
+        can_archive = (len(active_mats) == 0) and (not has_active_children)
+
+        # Determine primary issue_type & action
+        issue_type: str | None = None
+        reason = ''
+        proposed_action = 'manual_review'
+        proposed_discipline: str | None = None
+        safe_to_auto_fix = False
+        can_approve = False
+        can_retain_empty = False
+        can_merge = False
+        duplicate_ids: list[str] = []
+        duplicate_canonical_id: str | None = None
+        duplicate_safe = False
+        duplicate_blockers: list[str] = []
+        parent_fix_ids: list[str] = []
+
+        if is_duplicate:
+            canonical, d_safe, blockers, group_ids = dup_info[category.id]
+            duplicate_ids = group_ids
+            duplicate_canonical_id = canonical.id
+            duplicate_safe = d_safe
+            duplicate_blockers = blockers
+            can_merge = d_safe
+
+        if is_broken_parent or is_suspicious_label:
+            issue_type = 'invalid_import_data'
+            if is_broken_parent:
+                reason = 'Category parent is missing, archived, or exceeds the two-level hierarchy.'
+            else:
+                reason = 'Category label resembles test, QA, sample, or bulk data; review before public use.'
+            if is_duplicate:
+                secondary.append('duplicate_category')
+            if mismatched_mats:
+                secondary.append('parent_mismatch')
+            # Admin can explicitly approve a false-positive suspicious label ONLY if no broken parent or bad materials
+            can_approve = (
+                not is_broken_parent
+                and not mismatched_mats
+                and missing_count == 0
+                and unsupported_count == 0
+                and not is_duplicate
+                and len(active_mats) > 0
+            )
+            proposed_action = 'manual_review'
+            evidence.append(reason)
+
+        elif is_duplicate:
+            issue_type = 'duplicate_category'
+            if duplicate_safe:
+                is_canonical = category.id == duplicate_canonical_id
+                reason = (
+                    f'Duplicate active category ({len(duplicate_ids)} records under same parent). '
+                    + ('Selected as canonical target; safe to merge aliases into this category.'
+                       if is_canonical
+                       else 'Safe to merge into canonical category and archive alias.')
+                )
+                proposed_action = 'merge_duplicate'
+                safe_to_auto_fix = True
+                evidence.append(f'Canonical category ID: {duplicate_canonical_id}')
+            else:
+                reason = 'Duplicate active category with merge conflicts: ' + ' '.join(duplicate_blockers)
+                proposed_action = 'manual_review'
+                evidence.extend(duplicate_blockers)
+            if missing_count or unsupported_count:
+                secondary.append('missing_discipline' if missing_count else 'unsupported_discipline')
+
+        elif mismatched_mats:
+            issue_type = 'parent_mismatch'
+            reason = f'{len(mismatched_mats)} active material(s) reference a main category that disagrees with this subcategory parent.'
+            if parent and parent.active and not parent.parent_id:
+                parent_fix_ids = [m.id for m in mismatched_mats]
+                proposed_action = 'repair_parent'
+                safe_to_auto_fix = True
+                evidence.append(f'Align main_category_id to parent "{parent.name_en}" ({parent.id})')
+            else:
+                proposed_action = 'manual_review'
+                evidence.append('Parent hierarchy cannot be repaired automatically.')
+            if missing_count or unsupported_count:
+                secondary.append('missing_discipline' if missing_count else 'unsupported_discipline')
+
+        elif unsupported_count > 0 or missing_count > 0:
+            if ambiguous_count > 0 and not safe_material_fixes:
+                issue_type = 'ambiguous_classification' if unsupported_count == 0 else 'unsupported_discipline'
+                reason = (
+                    f'{ambiguous_count} active material(s) have ambiguous or conflicting discipline evidence and require manual review.'
+                    if issue_type == 'ambiguous_classification'
+                    else f'{unsupported_count} active material(s) have an unsupported discipline value requiring manual review.'
+                )
+                proposed_action = 'manual_review'
+                evidence.extend(
+                    sorted({ma.evidence for ma in mat_assessments if not ma.safe})[:5]
+                )
+            elif ambiguous_count > 0 and safe_material_fixes:
+                issue_type = 'ambiguous_classification'
+                inferred_set = sorted(set(safe_material_fixes.values()))
+                reason = (
+                    f'{len(safe_material_fixes)} material(s) can be assigned safely ({", ".join(inferred_set)}), '
+                    f'but {ambiguous_count} material(s) remain ambiguous for manual review.'
+                )
+                proposed_action = 'assign_discipline'
+                proposed_discipline = inferred_set[0] if len(inferred_set) == 1 else None
+                safe_to_auto_fix = True  # fixes only the safe subset; ambiguous materials remain untouched
+                evidence.extend(sorted({ma.evidence for ma in mat_assessments if ma.issue != 'ok'})[:5])
+            else:
+                issue_type = 'unsupported_discipline' if unsupported_count > 0 else 'missing_discipline'
+                inferred_set = sorted(set(safe_material_fixes.values()))
+                proposed_discipline = inferred_set[0] if len(inferred_set) == 1 else None
+                if issue_type == 'unsupported_discipline':
+                    reason = f'{unsupported_count} active material(s) use a non-standard discipline value that maps safely to {", ".join(inferred_set)}.'
+                else:
+                    reason = f'{missing_count} active material(s) are missing a discipline assignment; safe assignment identified: {", ".join(inferred_set)}.'
+                proposed_action = 'assign_discipline'
+                safe_to_auto_fix = True
+                evidence.extend(sorted({ma.evidence for ma in mat_assessments if ma.issue != 'ok'})[:5])
+
+        elif len(active_mats) == 0:
+            if len(inactive_mats) > 0:
+                issue_type = 'inactive_materials_only'
+                reason = f'Category has {len(inactive_mats)} archived material(s) and no active materials.'
+                proposed_action = 'retain_empty'
+                can_retain_empty = True
+                evidence.append('Retain as valid empty category (hidden from buyer selection) or archive.')
+            else:
+                issue_type = 'empty_category'
+                reason = 'Valid category with no active materials yet. Retain as empty or add materials.'
+                proposed_action = 'retain_empty'
+                can_retain_empty = True
+                evidence.append('Retaining keeps this category out of buyer selection until active materials exist.')
+
+        else:
+            # Category has active materials, all with valid supported disciplines, no duplicates, no parent mismatch, no suspicious label!
+            # It is completely healthy and does NOT need review.
+            if not include_resolved:
+                continue
+            issue_type = 'valid'
+            reason = 'Category and linked active materials are valid.'
+            proposed_action = 'approve'
+            can_approve = True
+
+        # Check whether an explicit prior admin decision already resolved this exact issue
+        resolved_by_decision = False
+        if current_decision:
+            if current_decision.decision == 'retain_empty' and issue_type in {'empty_category', 'inactive_materials_only'}:
+                resolved_by_decision = True
+            elif current_decision.decision == 'approve' and issue_type == 'invalid_import_data' and is_suspicious_label and not is_broken_parent and not mismatched_mats and missing_count == 0 and unsupported_count == 0 and not is_duplicate:
+                resolved_by_decision = True
+
+        if resolved_by_decision and not include_resolved:
+            continue
+
+        requires_manual = (not safe_to_auto_fix) and issue_type not in {'empty_category', 'inactive_materials_only', 'valid'}
+
+        assessments.append(
+            CategoryAssessment(
+                category=category,
+                parent=parent,
+                issue_type=issue_type,
+                reason=reason,
+                secondary_issues=secondary,
+                active_material_count=len(active_mats),
+                inactive_material_count=len(inactive_mats),
+                missing_discipline_count=missing_count,
+                unsupported_discipline_count=unsupported_count,
+                duplicate_ids=duplicate_ids,
+                duplicate_canonical_id=duplicate_canonical_id,
+                duplicate_safe=duplicate_safe,
+                duplicate_blockers=duplicate_blockers,
+                proposed_action=proposed_action,
+                proposed_discipline=proposed_discipline,
+                safe_to_auto_fix=safe_to_auto_fix,
+                can_approve=can_approve,
+                can_retain_empty=can_retain_empty,
+                can_merge=can_merge,
+                can_archive=can_archive,
+                requires_manual_review=requires_manual,
+                evidence=evidence,
+                current_decision=current_decision,
+                material_assessments=[ma for ma in mat_assessments if ma.issue != 'ok'][:10],
+                safe_material_fixes=safe_material_fixes,
+                parent_fix_material_ids=parent_fix_ids,
+            )
+        )
+
+    return assessments
+
+
+def record_review_decision(
+    db: Session,
+    *,
+    category_id: str,
+    decision: str,
+    issue_type: str,
+    actor: User | None,
+    discipline: str | None = None,
+    merged_into_category_id: str | None = None,
+    notes: str | None = None,
+    details: dict | None = None,
+) -> CategoryReviewDecision:
+    """Persist an explicit admin/auto-fix review decision and retire prior current flags."""
+    db.execute(
+        update(CategoryReviewDecision)
+        .where(CategoryReviewDecision.category_id == category_id, CategoryReviewDecision.is_current.is_(True))
+        .values(is_current=False, updated_at=utcnow())
+    )
+    entry = CategoryReviewDecision(
+        category_id=category_id,
+        decision=decision,
+        issue_type=issue_type,
+        discipline=discipline,
+        merged_into_category_id=merged_into_category_id,
+        actor_user_id=actor.id if actor else None,
+        notes=notes,
+        details=details or {},
+        is_current=True,
+    )
+    db.add(entry)
+    return entry
+
+
+def _recompute_material_identity(db: Session, material: Material) -> str | None:
+    main = db.get(Category, material.main_category_id or material.category_id)
+    sub = db.get(Category, material.subcategory_id) if material.subcategory_id else None
+    if not main:
+        return material.source_identity
+    return material_identity(
+        main_category=main.normalized_name or main.name_en,
+        subcategory=(sub.normalized_name or sub.name_en) if sub else '',
+        description=material.name_en,
+        unit=material.unit,
+        specifications=material.description,
+        discipline=material.discipline,
+    )
+
+
+def _apply_material_discipline_updates(
+    db: Session,
+    material_fixes: dict[str, str],
+    actor: User | None,
+    action_label: str = 'review_discipline_assigned',
+) -> int:
+    """Update Material.discipline in place, preserving IDs and appending revisions."""
+    if not material_fixes:
+        return 0
+    ordered_ids = sorted(material_fixes.keys())
+    materials = list(
+        db.scalars(
+            select(Material).where(Material.id.in_(ordered_ids)).order_by(Material.id).with_for_update()
+        ).all()
+    )
+    updated = 0
+    for mat in materials:
+        target_disc = normalize_supported_discipline(material_fixes.get(mat.id))
+        if not target_disc or mat.discipline == target_disc:
+            continue
+        mat.discipline = target_disc
+        new_identity = _recompute_material_identity(db, mat)
+        if new_identity and new_identity != mat.source_identity:
+            conflict = db.scalar(
+                select(Material.id).where(Material.source_identity == new_identity, Material.id != mat.id)
+            )
+            if not conflict:
+                mat.source_identity = new_identity
+        mat.version += 1
+        db.add(
+            MaterialRevision(
+                material_id=mat.id,
+                version=mat.version,
+                actor_user_id=actor.id if actor else None,
+                action=action_label[:30],
+                snapshot=material_snapshot(mat),
+            )
+        )
+        updated += 1
+    return updated
+
+
+def _apply_parent_link_repairs(
+    db: Session,
+    category_id: str,
+    material_ids: list[str],
+    actor: User | None,
+) -> int:
+    """Repair mismatched main_category_id on active materials in place without changing IDs."""
+    if not material_ids:
+        return 0
+    cat = db.scalar(select(Category).where(Category.id == category_id).with_for_update())
+    if not cat or not cat.active:
+        return 0
+    expected_main_id = cat.parent_id or cat.id
+    ordered_ids = sorted(set(material_ids))
+    materials = list(
+        db.scalars(
+            select(Material).where(Material.id.in_(ordered_ids)).order_by(Material.id).with_for_update()
+        ).all()
+    )
+    repaired = 0
+    for mat in materials:
+        if mat.main_category_id == expected_main_id:
+            continue
+        mat.main_category_id = expected_main_id
+        if cat.parent_id:
+            mat.subcategory_id = cat.id
+            mat.category_id = cat.id
+        new_identity = _recompute_material_identity(db, mat)
+        if new_identity and new_identity != mat.source_identity:
+            conflict = db.scalar(
+                select(Material.id).where(Material.source_identity == new_identity, Material.id != mat.id)
+            )
+            if not conflict:
+                mat.source_identity = new_identity
+        mat.version += 1
+        db.add(
+            MaterialRevision(
+                material_id=mat.id,
+                version=mat.version,
+                actor_user_id=actor.id if actor else None,
+                action='review_parent_repaired',
+                snapshot=material_snapshot(mat),
+            )
+        )
+        repaired += 1
+    return repaired
+
+
+def _merge_duplicate_group_in_session(
+    db: Session,
+    group_ids: list[str],
+    actor: User | None,
+) -> tuple[str | None, list[str], int]:
+    """Safely merge a duplicate category group in a short transaction, preserving all references."""
+    ordered_ids = sorted(set(group_ids))
+    if len(ordered_ids) < 2:
+        return None, [], 0
+    locked = list(
+        db.scalars(
+            select(Category).where(Category.id.in_(ordered_ids)).order_by(Category.id).with_for_update()
+        ).all()
+    )
+    active_group = [c for c in locked if c.active]
+    if len(active_group) < 2:
+        return None, [], 0
+    # Re-verify identical parent and normalized name
+    if len({(c.parent_id, normalize_category_name(c.name_en)) for c in active_group}) != 1:
+        return None, [], 0
+
+    all_categories = list(db.scalars(select(Category)).all())
+    active_mat_counts: dict[str, int] = defaultdict(int)
+    materials_by_cat: dict[str, list[Material]] = defaultdict(list)
+    for m in db.scalars(
+        select(Material).where(
+            or_(
+                Material.category_id.in_(ordered_ids),
+                Material.main_category_id.in_(ordered_ids),
+                Material.subcategory_id.in_(ordered_ids),
+            )
+        )
+    ).all():
+        for cid in {m.category_id, m.main_category_id, m.subcategory_id}:
+            if cid in ordered_ids:
+                materials_by_cat[cid].append(m)
+                if m.active:
+                    active_mat_counts[cid] += 1
+
+    canonical, safe, _ = _duplicate_group_safety(
+        db, active_group, all_categories, active_mat_counts, materials_by_cat
+    )
+    if not safe:
+        return None, [], 0
+
+    sources = [c for c in active_group if c.id != canonical.id]
+    source_ids = [c.id for c in sources]
+    for src in sources:
+        src.active = False
+    db.flush()
+
+    moved = 0
+    for tbl, col in category_references():
+        if tbl.name == 'category_review_decisions':
+            continue
+        res = db.execute(update(tbl).where(col.in_(source_ids)).values({col.name: canonical.id}))
+        moved += res.rowcount or 0
+
+    if not canonical.name_ar:
+        canonical.name_ar = next((c.name_ar for c in sources if c.name_ar), '')
+    canonical.normalized_name = normalize_category_name(canonical.name_en)
+
+    for src in sources:
+        record_review_decision(
+            db,
+            category_id=src.id,
+            decision='merge_duplicate',
+            issue_type='duplicate_category',
+            actor=actor,
+            merged_into_category_id=canonical.id,
+            notes=f'Merged duplicate alias into canonical category {canonical.name_en} ({canonical.code}).',
+            details={'canonical_id': canonical.id, 'references_moved': moved},
+        )
+    audit(
+        db,
+        actor,
+        'category.duplicates_merged',
+        entity_id=canonical.id,
+        archived_ids=source_ids,
+        references_moved=moved,
+    )
+    return canonical.id, source_ids, moved
+
+
+def run_bulk_auto_fix(
+    *,
+    actor: User | None,
+    dry_run: bool = False,
+    category_ids: list[str] | None = None,
+    cursor_after_id: str | None = None,
+    job_limit: int = JOB_SIZE,
+    batch_size: int = BATCH_SIZE,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> dict:
+    """Execute safe category review fixes in short committed batches of 30, up to 300 per job.
+
+    Opens and closes a fresh session per batch so no PostgreSQL transaction is ever held
+    idle between batches and the Material Master is never globally locked.
+    """
+    job_limit = max(1, min(job_limit, JOB_SIZE))
+    batch_size = max(1, min(batch_size, BATCH_SIZE))
+
+    # Step 1: Read-only analysis snapshot in a short session
+    with session_factory() as read_db:
+        all_assessments = analyze_categories(read_db, include_resolved=False)
+
+    requested_set = set(category_ids) if category_ids else None
+    safe_candidates: list[CategoryAssessment] = []
+    skipped_ambiguous = 0
+    seen_dup_groups: set[tuple[str, ...]] = set()
+
+    for item in sorted(all_assessments, key=lambda a: a.category.id):
+        if requested_set is not None and item.category.id not in requested_set:
+            continue
+        if not item.safe_to_auto_fix:
+            if item.requires_manual_review:
+                skipped_ambiguous += 1
+            continue
+        if item.proposed_action == 'merge_duplicate':
+            key = tuple(sorted(item.duplicate_ids))
+            if key in seen_dup_groups:
+                continue
+            seen_dup_groups.add(key)
+        safe_candidates.append(item)
+
+    if cursor_after_id:
+        eligible = [item for item in safe_candidates if item.category.id > cursor_after_id]
+    else:
+        eligible = safe_candidates
+
+    job_slice = eligible[:job_limit]
+    remaining_after_job = max(0, len(eligible) - len(job_slice))
+    next_cursor = job_slice[-1].category.id if (remaining_after_job > 0 and job_slice) else None
+
+    preview_items = [
+        {
+            'category_id': item.category.id,
+            'code': item.category.code,
+            'name_en': item.category.name_en,
+            'parent_name_en': item.parent.name_en if item.parent else None,
+            'issue_type': item.issue_type,
+            'proposed_action': item.proposed_action,
+            'proposed_discipline': item.proposed_discipline,
+            'materials_to_update': len(item.safe_material_fixes) + len(item.parent_fix_material_ids),
+            'duplicate_count': len(item.duplicate_ids),
+            'reason': item.reason,
+        }
+        for item in job_slice
+    ]
+
+    if dry_run or not job_slice:
+        return {
+            'dry_run': dry_run,
+            'job_size': job_limit,
+            'batch_size': batch_size,
+            'batches_executed': 0,
+            'categories_processed': len(job_slice) if dry_run else 0,
+            'categories_resolved': 0,
+            'materials_updated': sum(len(i.safe_material_fixes) for i in job_slice) if dry_run else 0,
+            'duplicates_merged': sum(max(0, len(i.duplicate_ids) - 1) for i in job_slice if i.proposed_action == 'merge_duplicate') if dry_run else 0,
+            'parent_links_repaired': sum(len(i.parent_fix_material_ids) for i in job_slice) if dry_run else 0,
+            'skipped_ambiguous': skipped_ambiguous,
+            'remaining_safe': remaining_after_job if dry_run else 0,
+            'has_more': remaining_after_job > 0,
+            'next_cursor': next_cursor,
+            'preview_items': preview_items[:100],
+            'errors': [],
+        }
+
+    batches_executed = 0
+    categories_processed = 0
+    categories_resolved = 0
+    materials_updated = 0
+    duplicates_merged = 0
+    parent_links_repaired = 0
+    errors: list[dict] = []
+
+    for start in range(0, len(job_slice), batch_size):
+        chunk = job_slice[start : start + batch_size]
+        batches_executed += 1
+        with session_factory() as batch_db:
+            try:
+                for item in chunk:
+                    categories_processed += 1
+                    if item.proposed_action == 'merge_duplicate' and item.duplicate_ids:
+                        canonical_id, archived_ids, _ = _merge_duplicate_group_in_session(
+                            batch_db, item.duplicate_ids, actor
+                        )
+                        if canonical_id and archived_ids:
+                            duplicates_merged += len(archived_ids)
+                            categories_resolved += len(archived_ids)
+                    elif item.proposed_action == 'repair_parent' and item.parent_fix_material_ids:
+                        repaired = _apply_parent_link_repairs(
+                            batch_db, item.category.id, item.parent_fix_material_ids, actor
+                        )
+                        parent_links_repaired += repaired
+                        if repaired:
+                            record_review_decision(
+                                batch_db,
+                                category_id=item.category.id,
+                                decision='reclassify',
+                                issue_type=item.issue_type,
+                                actor=actor,
+                                notes=f'Auto-repaired main_category_id for {repaired} material(s).',
+                                details={'materials_repaired': repaired, 'auto_fix': True},
+                            )
+                            categories_resolved += 1
+                    elif item.proposed_action == 'assign_discipline' and item.safe_material_fixes:
+                        updated = _apply_material_discipline_updates(
+                            batch_db, item.safe_material_fixes, actor, action_label='auto_fix_discipline'
+                        )
+                        materials_updated += updated
+                        if updated:
+                            fully_resolved = item.issue_type != 'ambiguous_classification'
+                            if fully_resolved:
+                                record_review_decision(
+                                    batch_db,
+                                    category_id=item.category.id,
+                                    decision='reclassify',
+                                    issue_type=item.issue_type,
+                                    actor=actor,
+                                    discipline=item.proposed_discipline,
+                                    notes=f'Auto-assigned supported discipline to {updated} material(s).',
+                                    details={'materials_updated': updated, 'auto_fix': True},
+                                )
+                                categories_resolved += 1
+                batch_db.commit()
+            except Exception as exc:
+                batch_db.rollback()
+                logger.exception('Bulk category review auto-fix batch failed')
+                errors.append({'batch': batches_executed, 'error': str(exc)})
+
+    if materials_updated or duplicates_merged or parent_links_repaired:
+        catalog_cache.invalidate()
+
+    # Re-check remaining safe count after applying this job
+    with session_factory() as verify_db:
+        post_assessments = analyze_categories(verify_db, include_resolved=False)
+        remaining_safe = sum(1 for a in post_assessments if a.safe_to_auto_fix)
+
+    return {
+        'dry_run': False,
+        'job_size': job_limit,
+        'batch_size': batch_size,
+        'batches_executed': batches_executed,
+        'categories_processed': categories_processed,
+        'categories_resolved': categories_resolved,
+        'materials_updated': materials_updated,
+        'duplicates_merged': duplicates_merged,
+        'parent_links_repaired': parent_links_repaired,
+        'skipped_ambiguous': skipped_ambiguous,
+        'remaining_safe': remaining_safe,
+        'has_more': remaining_after_job > 0 and remaining_safe > 0,
+        'next_cursor': next_cursor if remaining_safe > 0 else None,
+        'preview_items': preview_items[:100],
+        'errors': errors,
+    }
+
+
+def run_bulk_approve_valid(
+    *,
+    actor: User | None,
+    dry_run: bool = False,
+    include_empty: bool = True,
+    category_ids: list[str] | None = None,
+    cursor_after_id: str | None = None,
+    job_limit: int = JOB_SIZE,
+    batch_size: int = BATCH_SIZE,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> dict:
+    """Explicitly retain valid empty categories (and approve valid items) in short batches of 30."""
+    job_limit = max(1, min(job_limit, JOB_SIZE))
+    batch_size = max(1, min(batch_size, BATCH_SIZE))
+
+    with session_factory() as read_db:
+        all_assessments = analyze_categories(read_db, include_resolved=False)
+
+    requested_set = set(category_ids) if category_ids else None
+    valid_candidates: list[CategoryAssessment] = []
+    for item in sorted(all_assessments, key=lambda a: a.category.id):
+        if requested_set is not None and item.category.id not in requested_set:
+            continue
+        if include_empty and item.can_retain_empty and item.issue_type in {'empty_category', 'inactive_materials_only'}:
+            valid_candidates.append(item)
+
+    if cursor_after_id:
+        eligible = [item for item in valid_candidates if item.category.id > cursor_after_id]
+    else:
+        eligible = valid_candidates
+
+    job_slice = eligible[:job_limit]
+    remaining_after_job = max(0, len(eligible) - len(job_slice))
+    next_cursor = job_slice[-1].category.id if (remaining_after_job > 0 and job_slice) else None
+
+    preview_items = [
+        {
+            'category_id': item.category.id,
+            'code': item.category.code,
+            'name_en': item.category.name_en,
+            'parent_name_en': item.parent.name_en if item.parent else None,
+            'issue_type': item.issue_type,
+            'proposed_action': 'retain_empty',
+            'proposed_discipline': None,
+            'materials_to_update': 0,
+            'duplicate_count': 0,
+            'reason': item.reason,
+        }
+        for item in job_slice
+    ]
+
+    if dry_run or not job_slice:
+        return {
+            'dry_run': dry_run,
+            'job_size': job_limit,
+            'batch_size': batch_size,
+            'batches_executed': 0,
+            'retained_empty': len(job_slice) if dry_run else 0,
+            'approved': 0,
+            'remaining_valid': remaining_after_job if dry_run else 0,
+            'has_more': remaining_after_job > 0,
+            'next_cursor': next_cursor,
+            'preview_items': preview_items[:100],
+        }
+
+    batches_executed = 0
+    retained_empty = 0
+
+    for start in range(0, len(job_slice), batch_size):
+        chunk = job_slice[start : start + batch_size]
+        batches_executed += 1
+        with session_factory() as batch_db:
+            for item in chunk:
+                record_review_decision(
+                    batch_db,
+                    category_id=item.category.id,
+                    decision='retain_empty',
+                    issue_type=item.issue_type,
+                    actor=actor,
+                    notes='Explicitly retained as a valid empty category; hidden from buyer selection until active materials exist.',
+                    details={'bulk_approve_valid': True},
+                )
+                retained_empty += 1
+            audit(
+                batch_db,
+                actor,
+                'category.bulk_retained_empty',
+                count=len(chunk),
+            )
+            batch_db.commit()
+
+    if retained_empty:
+        catalog_cache.invalidate()
+
+    return {
+        'dry_run': False,
+        'job_size': job_limit,
+        'batch_size': batch_size,
+        'batches_executed': batches_executed,
+        'retained_empty': retained_empty,
+        'approved': 0,
+        'remaining_valid': remaining_after_job,
+        'has_more': remaining_after_job > 0,
+        'next_cursor': next_cursor,
+        'preview_items': preview_items[:100],
+    }
+
+
+def apply_single_category_decision(
+    db: Session,
+    *,
+    category_id: str,
+    decision: str,
+    actor: User,
+    discipline: str | None = None,
+    target_parent_id: str | None = None,
+    material_disciplines: dict[str, str] | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Apply an explicit admin decision for one category with strict validation."""
+    category = db.scalar(select(Category).where(Category.id == category_id).with_for_update())
+    if not category:
+        raise HTTPException(404, 'Category not found')
+
+    assessments = {a.category.id: a for a in analyze_categories(db, include_resolved=True)}
+    assessment = assessments.get(category_id)
+    if not assessment:
+        raise HTTPException(404, 'Active category not found')
+
+    materials_updated = 0
+    archived_ids: list[str] = []
+    merged_into: str | None = None
+
+    if decision == 'approve':
+        if assessment.missing_discipline_count > 0 or assessment.unsupported_discipline_count > 0:
+            raise HTTPException(
+                422,
+                'Cannot approve category while active materials have missing or unsupported disciplines. Reclassify materials first.',
+            )
+        if assessment.issue_type in {'duplicate_category', 'parent_mismatch'}:
+            raise HTTPException(422, f'Resolve {assessment.issue_type.replace("_", " ")} before approving.')
+        if assessment.active_material_count == 0:
+            raise HTTPException(422, 'Empty categories cannot be approved as populated; use Retain Empty Category instead.')
+        record_review_decision(
+            db,
+            category_id=category.id,
+            decision='approve',
+            issue_type=assessment.issue_type,
+            actor=actor,
+            notes=notes or 'Explicitly approved by administrator.',
+        )
+        audit(db, actor, 'category.review_approved', entity_id=category.id, issue_type=assessment.issue_type)
+
+    elif decision == 'retain_empty':
+        if assessment.active_material_count > 0:
+            raise HTTPException(422, 'Only categories with zero active materials can be retained as empty.')
+        if assessment.issue_type == 'duplicate_category':
+            raise HTTPException(422, 'Merge or resolve duplicate category before retaining as empty.')
+        record_review_decision(
+            db,
+            category_id=category.id,
+            decision='retain_empty',
+            issue_type=assessment.issue_type,
+            actor=actor,
+            notes=notes or 'Retained as valid empty category; hidden from buyer selection until active materials exist.',
+        )
+        audit(db, actor, 'category.review_retained_empty', entity_id=category.id)
+
+    elif decision == 'reclassify':
+        fixes: dict[str, str] = {}
+        if material_disciplines:
+            for mid, disc in material_disciplines.items():
+                norm = normalize_supported_discipline(disc)
+                if not norm:
+                    raise HTTPException(422, f'Unsupported discipline: {disc}. Use Civil, Electrical, or Mechanical.')
+                fixes[mid] = norm
+        elif discipline:
+            norm = normalize_supported_discipline(discipline)
+            if not norm:
+                raise HTTPException(422, 'Discipline must be Civil, Electrical, or Mechanical.')
+            # Assign to all active materials in this category that are missing or unsupported
+            linked = db.scalars(
+                select(Material).where(
+                    or_(
+                        Material.category_id == category.id,
+                        Material.main_category_id == category.id,
+                        Material.subcategory_id == category.id,
+                    ),
+                    Material.active.is_(True),
+                )
+            ).all()
+            for mat in linked:
+                if not normalize_supported_discipline(mat.discipline):
+                    fixes[mat.id] = norm
+        if target_parent_id and target_parent_id != category.parent_id:
+            new_parent = db.scalar(select(Category).where(Category.id == target_parent_id).with_for_update())
+            if not new_parent or not new_parent.active or new_parent.parent_id is not None:
+                raise HTTPException(422, 'Target parent must be an active main category.')
+            if not category.parent_id:
+                raise HTTPException(422, 'Only subcategories can be moved to a different main category.')
+            category.parent_id = new_parent.id
+            affected = db.scalars(
+                select(Material).where(
+                    or_(Material.category_id == category.id, Material.subcategory_id == category.id)
+                )
+            ).all()
+            for mat in affected:
+                mat.main_category_id = new_parent.id
+                mat.subcategory_id = category.id
+                mat.category_id = category.id
+        if not fixes and not target_parent_id:
+            raise HTTPException(422, 'Provide a supported discipline, per-material disciplines, or a target parent category.')
+        materials_updated = _apply_material_discipline_updates(db, fixes, actor, action_label='admin_reclassify')
+        record_review_decision(
+            db,
+            category_id=category.id,
+            decision='reclassify',
+            issue_type=assessment.issue_type,
+            actor=actor,
+            discipline=normalize_supported_discipline(discipline) if discipline else None,
+            notes=notes or f'Reclassified {materials_updated} material(s).',
+            details={'materials_updated': materials_updated, 'target_parent_id': target_parent_id},
+        )
+        audit(db, actor, 'category.review_reclassified', entity_id=category.id, materials_updated=materials_updated)
+
+    elif decision == 'merge_duplicate':
+        if not assessment.duplicate_ids or len(assessment.duplicate_ids) < 2:
+            raise HTTPException(422, 'This category has no active duplicates under the same parent.')
+        if not assessment.duplicate_safe:
+            raise HTTPException(409, 'Duplicate group has conflicts: ' + ' '.join(assessment.duplicate_blockers))
+        canonical_id, archived_ids, moved = _merge_duplicate_group_in_session(
+            db, assessment.duplicate_ids, actor
+        )
+        if not canonical_id:
+            raise HTTPException(409, 'Duplicate group changed or is no longer safe to merge; refresh and try again.')
+        merged_into = canonical_id
+
+    elif decision == 'archive':
+        if db.scalar(select(Category.id).where(Category.parent_id == category.id, Category.active.is_(True)).limit(1)):
+            raise HTTPException(409, 'Archive or delete active subcategories first.')
+        if db.scalar(
+            select(Material.id)
+            .where(
+                or_(
+                    Material.category_id == category.id,
+                    Material.main_category_id == category.id,
+                    Material.subcategory_id == category.id,
+                ),
+                Material.active.is_(True),
+            )
+            .limit(1)
+        ):
+            raise HTTPException(409, 'Move or archive active materials in this category first.')
+        category.active = False
+        record_review_decision(
+            db,
+            category_id=category.id,
+            decision='archive',
+            issue_type=assessment.issue_type,
+            actor=actor,
+            notes=notes or 'Archived from category review queue.',
+        )
+        audit(db, actor, 'category.archived', entity_id=category.id)
+    else:
+        raise HTTPException(422, f'Unsupported review decision: {decision}')
+
+    db.commit()
+    catalog_cache.invalidate()
+    return {
+        'category_id': category.id,
+        'decision': decision,
+        'materials_updated': materials_updated,
+        'merged_into_category_id': merged_into,
+        'archived_ids': archived_ids,
+    }
+
+
+def serialize_assessment(item: CategoryAssessment) -> dict:
+    return {
+        'id': item.category.id,
+        'code': item.category.code,
+        'name_en': item.category.name_en,
+        'name_ar': item.category.name_ar or '',
+        'parent_id': item.category.parent_id,
+        'parent_name_en': item.parent.name_en if item.parent else None,
+        'issue_type': item.issue_type,
+        'issue_label': ISSUE_LABELS.get(item.issue_type, item.issue_type),
+        'reason': item.reason,
+        'secondary_issues': item.secondary_issues,
+        'active_material_count': item.active_material_count,
+        'inactive_material_count': item.inactive_material_count,
+        'missing_discipline_count': item.missing_discipline_count,
+        'unsupported_discipline_count': item.unsupported_discipline_count,
+        'duplicate_ids': item.duplicate_ids,
+        'duplicate_canonical_id': item.duplicate_canonical_id,
+        'duplicate_safe': item.duplicate_safe,
+        'proposed_action': item.proposed_action,
+        'proposed_discipline': item.proposed_discipline,
+        'safe_to_auto_fix': item.safe_to_auto_fix,
+        'can_approve': item.can_approve,
+        'can_retain_empty': item.can_retain_empty,
+        'can_merge': item.can_merge,
+        'can_archive': item.can_archive,
+        'requires_manual_review': item.requires_manual_review,
+        'evidence': item.evidence,
+        'current_decision': item.current_decision.decision if item.current_decision else None,
+        'materials_preview': [
+            {
+                'id': ma.material_id,
+                'code': ma.code,
+                'name_en': ma.name_en,
+                'current_discipline': ma.current_discipline,
+                'inferred_discipline': ma.inferred_discipline,
+                'safe': ma.safe,
+                'evidence': ma.evidence,
+                'issue': ma.issue,
+            }
+            for ma in item.material_assessments
+        ],
+    }
+
+
+def build_analysis_payload(
+    db: Session,
+    *,
+    issue_type: str | None = None,
+    conflicts_only: bool = False,
+    include_resolved: bool = False,
+    q: str = '',
+    limit: int = 100,
+    offset: int = 0,
+) -> dict:
+    all_items = analyze_categories(db, include_resolved=include_resolved)
+    counts_by_issue = Counter(item.issue_type for item in all_items if item.issue_type != 'valid')
+    counts_by_action = Counter(item.proposed_action for item in all_items if item.issue_type != 'valid')
+
+    total_pending = sum(1 for item in all_items if item.issue_type != 'valid')
+    total_safe_auto_fix = sum(1 for item in all_items if item.safe_to_auto_fix)
+    total_valid_approvable = sum(
+        1 for item in all_items if item.can_retain_empty and item.issue_type in {'empty_category', 'inactive_materials_only'}
+    )
+    total_conflicts = sum(1 for item in all_items if item.requires_manual_review)
+
+    filtered = all_items
+    if issue_type:
+        filtered = [item for item in filtered if item.issue_type == issue_type]
+    if conflicts_only:
+        filtered = [item for item in filtered if item.requires_manual_review]
+    term = normalize_text(q)
+    if term:
+        filtered = [
+            item
+            for item in filtered
+            if term in normalize_text(f'{item.category.name_en} {item.category.code} {item.parent.name_en if item.parent else ""} {item.reason}')
+        ]
+
+    token = sha256(
+        repr([(i.category.id, i.issue_type, i.proposed_action, i.proposed_discipline, i.active_material_count) for i in all_items]).encode()
+    ).hexdigest()[:24]
+
+    page_items = filtered[offset : offset + limit]
+    return {
+        'total_pending': total_pending,
+        'total_filtered': len(filtered),
+        'total_safe_auto_fix': total_safe_auto_fix,
+        'total_valid_approvable': total_valid_approvable,
+        'total_conflicts': total_conflicts,
+        'counts_by_issue_type': dict(counts_by_issue),
+        'counts_by_action': dict(counts_by_action),
+        'preview_token': token,
+        'batch_size': BATCH_SIZE,
+        'job_size': JOB_SIZE,
+        'limit': limit,
+        'offset': offset,
+        'items': [serialize_assessment(item) for item in page_items],
+    }

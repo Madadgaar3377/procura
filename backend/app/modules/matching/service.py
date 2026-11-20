@@ -158,7 +158,11 @@ def _match_batch(
         suppliers_org[org.id] = org
 
     linked_ids = {mid for cap, _ in rows for mid in (cap.material_ids or [])}
-    linked_materials = {m.id: m for m in db.scalars(select(Material).where(Material.id.in_(linked_ids), Material.active.is_(True)))}
+    linked_materials = {
+        m.id: m
+        for m in db.scalars(select(Material).where(Material.id.in_(linked_ids), Material.active.is_(True)))
+        if (not m.discipline or m.discipline.strip().casefold() in {'civil', 'electrical', 'mechanical'})
+    }
     category_names = dict(db.execute(select(Category.id, Category.name_en).where(Category.id.in_(category_scopes))).all())
     active_categories = set(db.scalars(select(Category.id).where(Category.active.is_(True), Category.id.in_({cap.category_id for cap, _ in rows}))))
 

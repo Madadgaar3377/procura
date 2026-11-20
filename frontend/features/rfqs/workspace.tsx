@@ -36,7 +36,7 @@ function RFQWizardForm({id}:{id?:string}) {
  const [fieldErrors,setFieldErrors]=useState<Record<string,string>>({});
  const [savedId,setSavedId]=useState(id);const initialized=useRef<string|undefined>(undefined);const submitting=useRef(false);
  const [items,setItems]=useState<MaterialLine[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState('');
- const taxonomy=useApi<Schemas['CategoryOut'][]>('taxonomy/categories');
+ const taxonomy=useApi<Schemas['CategoryOut'][]>('taxonomy/categories?with_active_materials=true');
  const units=useApi<{code:string;name_en:string}[]>('taxonomy/units');
  const draft=useApi<Schemas['RFQDetail']>(id?`rfqs/${id}`:null);
  useEffect(()=>{if(!id)setItems([emptyLine()]);},[id]);

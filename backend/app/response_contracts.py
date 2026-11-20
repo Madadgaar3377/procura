@@ -432,6 +432,10 @@ class IndustryTaxonomyReviewCandidate(ResponseModel):
     parent_id: str | None = None
     parent_name_en: str | None = None
     reason: str
+    issue_type: str | None = None
+    active_material_count: int = 0
+    proposed_action: str | None = None
+    safe_to_auto_fix: bool = False
 
 class ReportActivity(ResponseModel):
     month: str

@@ -11,6 +11,8 @@ from app.database import get_db
 from app.models import Category, Material, MaterialRevision, MeasurementUnit, User, uid, Capability
 from app.modules.taxonomy.category_imports import router as category_imports
 from app.modules.taxonomy.duplicates import router as duplicate_categories
+from app.modules.taxonomy.review_router import router as category_review
+from app.modules.taxonomy.review_service import analyze_categories, normalize_supported_discipline, serialize_assessment
 from app.response_contracts import (CategoryOut, CategorySummary, IndustryCatalogPage,
                                     IndustryTaxonomyReviewCandidate, MaterialOut, SubcategoryMaterialOut)
 from app.schemas import CategoryIn, CategoryEdit, SubcategoryMaterialIn, MaterialIn, MaterialMasterIn, MaterialRevisionOut, MeasurementUnitIn, MaterialFilterPage
@@ -49,39 +51,21 @@ class TaxonomyRoute(APIRoute):
 router=APIRouter(prefix='/taxonomy',tags=['Material Master'],route_class=TaxonomyRoute)
 router.include_router(category_imports)
 router.include_router(duplicate_categories)
+router.include_router(category_review)
 
 @router.get('/industry-review-candidates',response_model=list[IndustryTaxonomyReviewCandidate])
 def industry_review_candidates(user:User=Depends(admin_user),db:Session=Depends(get_db),
                                limit:int=Query(100,ge=1,le=250),offset:int=Query(0,ge=0)):
-    """Read-only review queue for suspicious active labels or missing discipline assignments."""
-    parent=aliased(Category)
-    known=('civil','electrical','mechanical')
-    name_flags=[func.lower(Category.name_en).like(f'%{word}%') for word in ('qa','test','sample','bulk')]
-    name_flags.extend(func.lower(parent.name_en).like(f'%{word}%') for word in ('qa','test','sample','bulk'))
-    material_link=or_(Material.category_id==Category.id,Material.main_category_id==Category.id,
-                      Material.subcategory_id==Category.id)
-    unknown_discipline=select(Material.id).where(material_link,Material.active.is_(True),or_(
-        Material.discipline.is_(None),func.lower(Material.discipline).not_in(known))).exists()
-    linked_category=or_(Material.subcategory_id==Category.id,and_(Material.subcategory_id.is_(None),
-        Material.category_id==Category.id))
-    mismatched_parent=select(Material.id).where(linked_category,Material.active.is_(True),
-        Material.main_category_id.is_not(None),Material.main_category_id!=func.coalesce(Category.parent_id,Category.id)).exists()
-    supported_material=select(Material.id).where(material_link,Material.active.is_(True),
-        func.lower(Material.discipline).in_(known)).exists()
-    rows=db.execute(select(Category,parent,(~supported_material).label('no_supported_material'),
-        mismatched_parent.label('mismatched_parent')).outerjoin(parent,parent.id==Category.parent_id).where(
-        Category.active.is_(True),or_(*name_flags,unknown_discipline,mismatched_parent,~supported_material)).distinct()
-        .order_by(Category.name_en,Category.id).offset(offset).limit(limit)).all()
-    return [{'id':category.id,'code':category.code,'name_en':category.name_en,'name_ar':category.name_ar or '',
-        'parent_id':category.parent_id,'parent_name_en':parent.name_en if parent else None,
-        'reason':'Category label resembles test or bulk data; review before public use.'
-            if any(word in (category.name_en+' '+(parent.name_en if parent else '')).casefold()
-                   for word in ('qa','test','sample','bulk'))
-            else 'Material main category and subcategory parent do not agree.'
-                if mismatched
-            else 'No active Material Master record assigns a supported discipline to this category.'
-                if no_supported else 'Linked active material has no supported discipline assignment.'}
-        for category,parent,no_supported,mismatched in rows]
+    """Read-only review queue with separated issue types and explicit decision filtering."""
+    del user
+    items=analyze_categories(db,include_resolved=False)
+    page=items[offset:offset+limit]
+    return [{'id':item.category.id,'code':item.category.code,'name_en':item.category.name_en,
+        'name_ar':item.category.name_ar or '','parent_id':item.category.parent_id,
+        'parent_name_en':item.parent.name_en if item.parent else None,'reason':item.reason,
+        'issue_type':item.issue_type,'active_material_count':item.active_material_count,
+        'proposed_action':item.proposed_action,'safe_to_auto_fix':item.safe_to_auto_fix}
+        for item in page]
 
 @router.get('/industry-catalog',response_model=IndustryCatalogPage)
 @cached_get('public-industry-catalog', 300)
@@ -166,9 +150,9 @@ def industry_catalog(q:str=Query('',max_length=100),discipline:str|None=None,
 
 @router.get('/categories',response_model=list[CategoryOut])
 def categories(parent_id:str|None=None,q:str='',limit:int|None=Query(None,ge=1,le=250),
-               offset:int=Query(0,ge=0),roots_only:bool=False,db:Session=Depends(get_db)):
-    if roots_only or parent_id or q or limit is not None or offset:
-        params={'parent_id':parent_id,'q':q,'limit':limit,'offset':offset,'roots_only':roots_only}
+               offset:int=Query(0,ge=0),roots_only:bool=False,with_active_materials:bool=False,db:Session=Depends(get_db)):
+    if roots_only or parent_id or q or limit is not None or offset or with_active_materials:
+        params={'parent_id':parent_id,'q':q,'limit':limit,'offset':offset,'roots_only':roots_only,'with_active_materials':with_active_materials}
         epoch=catalog_cache.version()
         cached=catalog_cache.get('category-options-v2',params,epoch)
         if cached is not None:return cached
@@ -177,6 +161,14 @@ def categories(parent_id:str|None=None,q:str='',limit:int|None=Query(None,ge=1,l
         if parent_id:
             query=query.where(Category.parent_id==parent_id)
         query=query.where(Category.active.is_(True))
+        if with_active_materials:
+            known=('civil','electrical','mechanical')
+            valid_mat=and_(
+                Material.active.is_(True),
+                or_(Material.discipline.is_(None),func.lower(Material.discipline).in_(known)),
+                or_(Material.category_id==Category.id,Material.main_category_id==Category.id,Material.subcategory_id==Category.id),
+            )
+            query=query.where(select(Material.id).where(valid_mat).exists())
         if q:
             if len(q)>100:raise HTTPException(422,'Category search must be 100 characters or fewer')
             term=q.strip().replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
@@ -283,7 +275,10 @@ def edit_category(category_id:str,payload:CategoryEdit,user:User=Depends(admin_u
         c.parent_id=payload.parent_id
         for m in affected:
             m.main_category_id=payload.parent_id;m.subcategory_id=c.id;m.category_id=c.id
-            m.discipline=parent.name_en.title() if parent.name_en.casefold() in {'civil','electrical','mechanical'} else None
+            if parent.name_en.casefold() in {'civil','electrical','mechanical'}:
+                m.discipline=parent.name_en.title()
+            elif not normalize_supported_discipline(m.discipline):
+                m.discipline=None
     identities={}
     for m in affected:
         main=db.get(Category,m.main_category_id or m.category_id)
@@ -550,7 +545,7 @@ def _save_master_material(payload:MaterialMasterIn,user:User,db:Session,existing
         parent=db.get(Category,root.parent_id)
         if not parent:break
         root=parent;depth+=1
-    discipline=root.name_en if root.name_en.casefold() in {'civil','electrical','mechanical'} else None
+    discipline=root.name_en.title() if root.name_en.casefold() in {'civil','electrical','mechanical'} else (normalize_supported_discipline(existing.discipline) if existing else None)
     if existing:
         old=material_snapshot(existing)
         identity_owner=db.scalar(select(Material).where(Material.source_identity==identity,Material.id!=existing.id))

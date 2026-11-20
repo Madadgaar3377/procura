@@ -298,6 +298,24 @@ class Category(TimeID, Base):
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
 
+class CategoryReviewDecision(TimeID, Base):
+    """Explicit admin review decisions and audit history for material categories."""
+    __tablename__='category_review_decisions'
+    __table_args__=(
+        Index('ix_cat_review_category_created','category_id','created_at'),
+        Index('ix_cat_review_category_current','category_id','is_current'),
+    )
+    category_id: Mapped[str] = mapped_column(ForeignKey('categories.id', ondelete='CASCADE'), index=True)
+    decision: Mapped[str] = mapped_column(String(30))
+    issue_type: Mapped[str] = mapped_column(String(40))
+    discipline: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    merged_into_category_id: Mapped[str | None] = mapped_column(ForeignKey('categories.id', ondelete='SET NULL'), nullable=True)
+    actor_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    details: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
+    is_current: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
+
 class MeasurementUnit(TimeID, Base):
     __tablename__='measurement_units'
     code: Mapped[str] = mapped_column(String(30), unique=True, index=True)
