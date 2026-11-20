@@ -6,3 +6,23 @@
 .supplier-price-dialog{width:min(860px,calc(100vw - 24px));overscroll-behavior:contain;scrollbar-gutter:stable}.price-category-tools{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-block-end:16px}.supplier-price-dialog .searchable-select,.supplier-price-dialog .price-material-search{position:relative;min-width:0}.supplier-price-dialog .searchable-select:focus-within,.supplier-price-dialog .price-material-search:focus-within{z-index:5}.supplier-price-dialog .select-suggestions{position:absolute;inset-inline:0;top:100%;z-index:30;max-height:min(260px,32dvh);overflow-y:auto;overscroll-behavior:contain;background:white;border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px #162e4b20;display:block}.supplier-price-dialog .select-suggestions button{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;width:100%;padding:10px 12px;text-align:start;white-space:normal;overflow-wrap:anywhere}.supplier-price-dialog .select-suggestions small{display:block;color:var(--muted);font-size:12px}.price-capability-badge{display:inline-block;flex-shrink:0;padding:4px 8px;border-radius:6px;font-size:12px;font-weight:600;line-height:1.5;background:#eef2f7;color:#34455d}.price-capability-badge.approved{background:#e8f5ee;color:#17633a}.price-capability-badge.pending{background:#fff4dc;color:#80560b}.price-category-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.price-category-status p{margin:0;flex:1;min-width:180px}.price-rate-status{display:grid;gap:4px;justify-items:start}.price-rate-status small{white-space:normal}
 @media(max-width:540px){.supplier-price-dialog{padding:14px;scrollbar-gutter:auto}.supplier-price-dialog .select-suggestions button{gap:8px}.supplier-price-dialog .select-suggestions .price-capability-badge{font-size:11px;padding:3px 5px}.price-category-tools button{width:100%}}
 .price-unit-field{min-width:0}.supplier-price-dialog .price-unit-field .select-suggestions{top:auto;bottom:100%}.price-capability-badge.declared{background:#eef4ff;color:#2457a5}.supplier-price-dialog .price-material-search>small{font-size:13px;color:var(--muted);line-height:1.5}.supplier-price-dialog .price-material-search{margin-block-end:4px}
+
+.price-book-import-dialog .price-import-downloads{display:flex;flex-wrap:wrap;gap:10px;margin-block-end:14px}
+.price-book-import-dialog .price-import-results{display:grid;gap:14px;margin-block-start:12px}
+.price-book-import-dialog .price-import-meta{margin:4px 0 0;font-size:13px;line-height:1.5}
+.price-book-import-dialog .price-import-stats{margin-block:4px}
+.price-book-import-dialog .price-import-actions-bar{display:flex;flex-wrap:wrap;gap:10px}
+.price-book-import-dialog .price-import-filters{display:flex;flex-wrap:wrap;gap:8px}
+.price-book-import-dialog .price-import-table-wrap{overflow:auto;max-width:100%;border:1px solid var(--line);border-radius:10px}
+.price-book-import-dialog .price-import-table-wrap .data-table{min-width:760px}
+.price-book-import-dialog .price-import-subtext{display:block;color:var(--muted);font-size:12px;margin-block-start:2px}
+.price-book-import-dialog .price-import-pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:12px;font-weight:600;white-space:nowrap}
+.price-book-import-dialog .price-import-pill.status-ready,.price-book-import-dialog .price-import-pill.status-saved{background:#e8f5ee;color:#17633a}
+.price-book-import-dialog .price-import-pill.status-unmatched,.price-book-import-dialog .price-import-pill.status-conflict{background:#fff4dc;color:#80560b}
+.price-book-import-dialog .price-import-pill.status-invalid,.price-book-import-dialog .price-import-pill.status-duplicate,.price-book-import-dialog .price-import-pill.status-failed{background:#fdecec;color:#a12626}
+.price-book-import-dialog .price-import-issue{color:#a12626;font-size:13px}
+.price-book-import-dialog .price-import-mapper{padding:14px;display:grid;gap:10px}
+@media(max-width:640px){
+ .price-book-import-dialog .price-import-downloads button,.price-book-import-dialog .price-import-actions-bar button{width:100%;justify-content:center}
+ .price-book-import-dialog .price-import-filters button{flex:1 1 auto}
+}

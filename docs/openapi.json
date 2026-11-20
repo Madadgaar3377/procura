@@ -9568,6 +9568,159 @@
         }
       }
     },
+    "/api/v1/pricebooks/{org_id}/import-template": {
+      "get": {
+        "tags": [
+          "Private Supplier Rates"
+        ],
+        "summary": "Download Template",
+        "operationId": "download_template_api_v1_pricebooks__org_id__import_template_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pricebooks/{org_id}/export": {
+      "get": {
+        "tags": [
+          "Private Supplier Rates"
+        ],
+        "summary": "Export Existing Price Book",
+        "operationId": "export_existing_price_book_api_v1_pricebooks__org_id__export_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pricebooks/{org_id}/imports/recent": {
+      "get": {
+        "tags": [
+          "Private Supplier Rates"
+        ],
+        "summary": "Recent Imports",
+        "operationId": "recent_imports_api_v1_pricebooks__org_id__imports_recent_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 20,
+              "minimum": 1,
+              "default": 5,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RateImportOut"
+                  },
+                  "title": "Response Recent Imports Api V1 Pricebooks  Org Id  Imports Recent Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/pricebooks/{org_id}/bulk-import": {
       "post": {
         "tags": [
@@ -9598,6 +9751,22 @@
               "type": "boolean",
               "default": true,
               "title": "Dry Run"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Idempotency-Key"
             }
           }
         ],
@@ -9687,6 +9856,17 @@
               "minimum": 0,
               "default": 0,
               "title": "Offset"
+            }
+          },
+          {
+            "name": "filter_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(all|valid|issues|saved|failed)$",
+              "default": "all",
+              "title": "Filter Status"
             }
           }
         ],
@@ -9829,6 +10009,116 @@
                 "schema": {
                   "$ref": "#/components/schemas/RateImportOut"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pricebooks/{org_id}/imports/{batch_id}/retry": {
+      "post": {
+        "tags": [
+          "Private Supplier Rates"
+        ],
+        "summary": "Retry Import",
+        "operationId": "retry_import_api_v1_pricebooks__org_id__imports__batch_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RateImportOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pricebooks/{org_id}/imports/{batch_id}/errors.xlsx": {
+      "get": {
+        "tags": [
+          "Private Supplier Rates"
+        ],
+        "summary": "Download Failed Rows",
+        "operationId": "download_failed_rows_api_v1_pricebooks__org_id__imports__batch_id__errors_xlsx_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -20805,6 +21095,21 @@
             ],
             "title": "Unit Price"
           },
+          "min_order_quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Order Quantity"
+          },
           "currency": {
             "type": "string",
             "const": "SAR",
@@ -20929,6 +21234,17 @@
             "type": "string",
             "title": "Unit Price"
           },
+          "min_order_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Min Order Quantity"
+          },
           "lead_days": {
             "type": "integer",
             "title": "Lead Days"
@@ -21031,6 +21347,7 @@
           "model",
           "offered_specs",
           "unit_price",
+          "min_order_quantity",
           "lead_days",
           "valid_until",
           "version",
@@ -22872,9 +23189,19 @@
             "type": "string",
             "title": "Batch Id"
           },
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "default": ""
+          },
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage",
+            "default": "parse"
           },
           "rows": {
             "type": "integer",
@@ -22883,6 +23210,51 @@
           "valid": {
             "type": "integer",
             "title": "Valid"
+          },
+          "new_count": {
+            "type": "integer",
+            "title": "New Count",
+            "default": 0
+          },
+          "update_count": {
+            "type": "integer",
+            "title": "Update Count",
+            "default": 0
+          },
+          "unmatched_count": {
+            "type": "integer",
+            "title": "Unmatched Count",
+            "default": 0
+          },
+          "invalid_count": {
+            "type": "integer",
+            "title": "Invalid Count",
+            "default": 0
+          },
+          "duplicate_count": {
+            "type": "integer",
+            "title": "Duplicate Count",
+            "default": 0
+          },
+          "conflict_count": {
+            "type": "integer",
+            "title": "Conflict Count",
+            "default": 0
+          },
+          "created": {
+            "type": "integer",
+            "title": "Created",
+            "default": 0
+          },
+          "updated_count": {
+            "type": "integer",
+            "title": "Updated Count",
+            "default": 0
+          },
+          "skipped_count": {
+            "type": "integer",
+            "title": "Skipped Count",
+            "default": 0
           },
           "errors": {
             "type": "integer",
@@ -22895,6 +23267,31 @@
           "completed_rows": {
             "type": "integer",
             "title": "Completed Rows"
+          },
+          "current_job": {
+            "type": "integer",
+            "title": "Current Job",
+            "default": 0
+          },
+          "jobs_total": {
+            "type": "integer",
+            "title": "Jobs Total",
+            "default": 0
+          },
+          "current_batch": {
+            "type": "integer",
+            "title": "Current Batch",
+            "default": 0
+          },
+          "batches_in_job": {
+            "type": "integer",
+            "title": "Batches In Job",
+            "default": 0
+          },
+          "progress_percent": {
+            "type": "integer",
+            "title": "Progress Percent",
+            "default": 0
           },
           "failure_reason": {
             "anyOf": [
@@ -22943,17 +23340,62 @@
             "type": "integer",
             "title": "Row"
           },
+          "main_category": {
+            "type": "string",
+            "title": "Main Category",
+            "default": ""
+          },
+          "subcategory": {
+            "type": "string",
+            "title": "Subcategory",
+            "default": ""
+          },
           "description": {
             "type": "string",
             "title": "Description"
+          },
+          "material_code": {
+            "type": "string",
+            "title": "Material Code",
+            "default": ""
           },
           "unit": {
             "type": "string",
             "title": "Unit"
           },
+          "brand": {
+            "type": "string",
+            "title": "Brand",
+            "default": ""
+          },
+          "model": {
+            "type": "string",
+            "title": "Model",
+            "default": ""
+          },
           "unit_price": {
             "type": "string",
             "title": "Unit Price"
+          },
+          "min_order_quantity": {
+            "type": "string",
+            "title": "Min Order Quantity",
+            "default": ""
+          },
+          "lead_days": {
+            "type": "string",
+            "title": "Lead Days",
+            "default": ""
+          },
+          "row_status": {
+            "type": "string",
+            "title": "Row Status",
+            "default": "Active"
+          },
+          "notes": {
+            "type": "string",
+            "title": "Notes",
+            "default": ""
           },
           "material_id": {
             "anyOf": [
@@ -22966,6 +23408,39 @@
             ],
             "title": "Material Id"
           },
+          "matched_material_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Material Code"
+          },
+          "matched_material_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Material Name"
+          },
+          "existing_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Existing Price"
+          },
           "action": {
             "type": "string",
             "title": "Action",
@@ -22974,6 +23449,17 @@
           "status": {
             "type": "string",
             "title": "Status"
+          },
+          "issue_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue Category"
           },
           "issue": {
             "anyOf": [

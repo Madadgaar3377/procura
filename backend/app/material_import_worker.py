@@ -10,6 +10,7 @@ from app.database import SessionLocal
 from app.modules.imports.materials import process_queued_material_imports
 from app.modules.imports.router import process_queued_supplier_imports
 from app.modules.imports.supplier_jobs import process_supplier_jobs
+from app.modules.pricebooks.worker import process_pricing_jobs
 
 
 def main() -> None:
@@ -25,6 +26,7 @@ def main() -> None:
                 completed = process_queued_material_imports(db)
                 supplier_completed = process_queued_supplier_imports(db)
                 process_supplier_jobs(db)
+                process_pricing_jobs(db)
         except Exception as exc:
             # A temporary database outage must not terminate the durable runner.
             logger.error('Import worker poll failed type=%s', type(exc).__name__)

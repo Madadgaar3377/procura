@@ -95,21 +95,50 @@ class RateHistory(ResponseModel):
     after:dict[str,Any]|None=None
 class RateImportRow(ResponseModel):
     row:int
+    main_category:str=''
+    subcategory:str=''
     description:str
+    material_code:str=''
     unit:str
+    brand:str=''
+    model:str=''
     unit_price:str
+    min_order_quantity:str=''
+    lead_days:str=''
+    row_status:str='Active'
+    notes:str=''
     material_id:str|None=None
+    matched_material_code:str|None=None
+    matched_material_name:str|None=None
+    existing_price:str|None=None
     action:str='create'
     status:str
+    issue_category:str|None=None
     issue:str|None=None
 class RateImportOut(ResponseModel):
     batch_id:str
+    filename:str=''
     status:str
+    stage:str='parse'
     rows:int
     valid:int
+    new_count:int=0
+    update_count:int=0
+    unmatched_count:int=0
+    invalid_count:int=0
+    duplicate_count:int=0
+    conflict_count:int=0
+    created:int=0
+    updated_count:int=0
+    skipped_count:int=0
     errors:int
     saved:int
     completed_rows:int
+    current_job:int=0
+    jobs_total:int=0
+    current_batch:int=0
+    batches_in_job:int=0
+    progress_percent:int=0
     failure_reason:str|None=None
     items:list[RateImportRow]=Field(default_factory=list)
     limit:int=25

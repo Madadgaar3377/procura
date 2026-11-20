@@ -478,6 +478,15 @@
     "GET",
     "PUT"
   ],
+  "pricebooks/{org_id}/import-template": [
+    "GET"
+  ],
+  "pricebooks/{org_id}/export": [
+    "GET"
+  ],
+  "pricebooks/{org_id}/imports/recent": [
+    "GET"
+  ],
   "pricebooks/{org_id}/bulk-import": [
     "POST"
   ],
@@ -489,6 +498,12 @@
   ],
   "pricebooks/{org_id}/imports/{batch_id}/confirm": [
     "POST"
+  ],
+  "pricebooks/{org_id}/imports/{batch_id}/retry": [
+    "POST"
+  ],
+  "pricebooks/{org_id}/imports/{batch_id}/errors.xlsx": [
+    "GET"
   ],
   "quotations": [
     "GET"

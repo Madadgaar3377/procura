@@ -398,7 +398,7 @@ class StoredFile(TimeID, Base):
 
 class ImportedRow(TimeID, Base):
     __tablename__='import_rows'
-    __table_args__ = (Index('ix_import_row_job_status', 'batch_id', 'status', 'created_at'),)
+    __table_args__ = (Index('ix_import_row_job_status', 'batch_id', 'status', 'created_at'), Index('ix_import_rows_batch_status_row', 'batch_id', 'status', 'row_number'))
     batch_id: Mapped[str] = mapped_column(ForeignKey('import_batches.id'), index=True)
     row_number: Mapped[int] = mapped_column(Integer)
     raw: Mapped[dict] = mapped_column(JSON)
@@ -446,7 +446,7 @@ class Capability(TimeID, Base):
 
 class PriceBookItem(TimeID, Base):
     __tablename__='price_book_items'
-    __table_args__=(CheckConstraint('unit_price > 0',name='ck_private_rate_positive'),Index('uq_private_rate_active','org_id','material_id','price_basis',unique=True,sqlite_where=text('active = 1'),postgresql_where=text('active = true')),Index('ix_private_rate_org_active_material','org_id','active','material_id','price_basis'),Index('ix_private_rate_org_created','org_id','created_at','id'),Index('ix_private_rate_org_categories','org_id','main_category_id','subcategory_id'),Index('uq_private_custom_rate_active','org_id','custom_key','price_basis',unique=True,sqlite_where=text('active = 1 AND material_id IS NULL'),postgresql_where=text('active = true AND material_id IS NULL')),CheckConstraint("material_id IS NOT NULL OR (main_category_id IS NOT NULL AND length(trim(supplier_description)) >= 3 AND length(trim(unit)) > 0 AND custom_key IS NOT NULL)",name='ck_private_custom_rate_details'))
+    __table_args__=(CheckConstraint('unit_price > 0',name='ck_private_rate_positive'),CheckConstraint('min_order_quantity IS NULL OR min_order_quantity > 0',name='ck_private_rate_moq_positive'),Index('uq_private_rate_active','org_id','material_id','price_basis',unique=True,sqlite_where=text('active = 1'),postgresql_where=text('active = true')),Index('ix_private_rate_org_active_material','org_id','active','material_id','price_basis'),Index('ix_private_rate_org_material','org_id','material_id','price_basis'),Index('ix_private_rate_org_status_updated','org_id','active','updated_at'),Index('ix_private_rate_org_created','org_id','created_at','id'),Index('ix_private_rate_org_categories','org_id','main_category_id','subcategory_id'),Index('uq_private_custom_rate_active','org_id','custom_key','price_basis',unique=True,sqlite_where=text('active = 1 AND material_id IS NULL'),postgresql_where=text('active = true AND material_id IS NULL')),CheckConstraint("material_id IS NOT NULL OR (main_category_id IS NOT NULL AND length(trim(supplier_description)) >= 3 AND length(trim(unit)) > 0 AND custom_key IS NOT NULL)",name='ck_private_custom_rate_details'))
     org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
     material_id: Mapped[str | None] = mapped_column(ForeignKey('materials.id'), nullable=True, index=True)
     main_category_id: Mapped[str | None] = mapped_column(ForeignKey('categories.id'), nullable=True)
@@ -457,6 +457,7 @@ class PriceBookItem(TimeID, Base):
     model: Mapped[str] = mapped_column(String(150), default='')
     offered_specs: Mapped[str] = mapped_column(Text, default='')
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14,2))
+    min_order_quantity: Mapped[Decimal | None] = mapped_column(Numeric(14,3), nullable=True)
     lead_days: Mapped[int] = mapped_column(Integer, default=7)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1)

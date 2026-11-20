@@ -1,6 +1,5 @@
 "use client";
-import {useEffect,useRef,useState,type FormEvent} from 'react';
-import Link from 'next/link';
+import {useEffect,useState,type FormEvent} from 'react';
 import {api,json} from '@/lib/api/client';
 import {useApi} from '@/lib/api/use-api';
 import type {Schemas} from '@/lib/api/generated/schema';
@@ -10,6 +9,7 @@ import {Button} from '@/components/ui/button';
 import {Heading,State,DataTable} from '@/features/shared/ui';
 import {RateStatus,useApprovalRefresh} from './price-book-form';
 import {RateForm} from './price-book-entry';
+import {PriceBookImportModal} from './price-book-import';
 import {useToast} from '@/features/shared/toast';
 import './price-book.css';
 
@@ -46,29 +46,9 @@ function PriceBookWorkspace({orgId}:{orgId:string}){
  {!rates.data?.total&&<p className="notice">{w('Add your first material rate or private draft, or adjust the filters. No Material Master records will be created.','أضف أول سعر لمادة أو مسودة خاصة أو عدّل عوامل التصفية. لن يتم إنشاء مواد في الدليل الرئيسي.')}</p>}
  <div className="table-footer"><span>{rates.data?.total||0} {w('private rates','أسعار خاصة')}</span><div className="live-actions"><Button variant="outline" disabled={!offset||rates.fetching} onClick={()=>setOffset(Math.max(0,offset-25))}>{t('Previous')}</Button><Button variant="outline" disabled={rates.fetching||offset+25>=(rates.data?.total||0)} onClick={()=>setOffset(offset+25)}>{t('Next')}</Button></div></div></>}
  {editing!==undefined&&<RateForm orgId={orgId} rate={editing} close={()=>setEditing(undefined)} done={()=>{setEditing(undefined);rates.reload();}}/>}
- {importOpen&&<RateImport orgId={orgId} close={()=>{setImportOpen(false);rates.reload();}}/>}
+ {importOpen&&<PriceBookImportModal orgId={orgId} open={importOpen} onClose={()=>{setImportOpen(false);rates.reload();}} onDone={()=>rates.reload()}/>}
  <AutomationSettings orgId={orgId}/>
  </div>;
-}
-
-function Dialog({title,close,children}:{title:string;close:()=>void;children:React.ReactNode}){
- const ref=useRef<HTMLDialogElement>(null);const w=useWords();
- useEffect(()=>{ref.current?.showModal();},[]);
- return <dialog ref={ref} className="live-dialog supplier-price-dialog" aria-label={title} onCancel={close}><div className="price-dialog-heading"><h2>{title}</h2><Button variant="outline" onClick={close}>{w('Close','إغلاق')}</Button></div>{children}</dialog>;
-}
-function RateImport({orgId,close}:{orgId:string;close:()=>void}){
- const w=useWords();const {t}=useLocale();const [batch,setBatch]=useState(''),[offset,setOffset]=useState(0),[busy,setBusy]=useState(false),[error,setError]=useState(''),[mapping,setMapping]=useState<number|null>(null),[search,setSearch]=useState('');const query=useDebounce(search);
- const progress=useApi<Schemas['RateImportOut']>(batch?`pricebooks/${orgId}/imports/${batch}?limit=25&offset=${offset}`:null);
- const materials=useApi<Material[]>(mapping!==null?`taxonomy/materials?autocomplete=true&limit=20&q=${encodeURIComponent(query)}`:null);
- const state=progress.data?.status;
- useEffect(()=>{if(!batch||['preview','completed','completed_with_errors','failed'].includes(state||''))return;const timer=setTimeout(progress.reload,1500);return()=>clearTimeout(timer);},[batch,state,progress.data,progress.reload]);
- async function run(action:()=>Promise<unknown>){if(busy)return;setBusy(true);setError('');try{await action();progress.reload();}catch(e){setError(e instanceof Error?e.message:t('Request failed'));}finally{setBusy(false);}}
- return <Dialog title={w('Import private rates','استيراد الأسعار الخاصة')} close={close}><p>{w('Columns: Main Category, Subcategory, Description, Unit, Unit Price. Optional: Brand, Model, Lead Time, Price Valid Until. Review and resolve every row before confirming.','الأعمدة: Main Category, Subcategory, Description, Unit, Unit Price. اختياري: Brand, Model, Lead Time, Price Valid Until. راجع جميع الصفوف قبل التأكيد.')}</p>
- {!batch&&<label className="field">{w('Excel or CSV file','ملف Excel أو CSV')}<input type="file" accept=".csv,.xlsx" disabled={busy} onChange={e=>{const file=e.target.files?.[0];if(file)void run(async()=>{const body=new FormData();body.set('file',file);const result=await api<Schemas['RateImportOut']>(`pricebooks/${orgId}/bulk-import`,{method:'POST',body});setBatch(result.batch_id);});}}/></label>}
- <State {...progress} retry={progress.reload}/>{progress.data&&<><p role="status">{t(progress.data.status)} · {progress.data.saved}/{progress.data.rows} {w('saved','محفوظ')} · {progress.data.errors} {w('issues','مشكلات')}</p>{progress.data.failure_reason&&<p role="alert">{progress.data.failure_reason}</p>}<DataTable paginate={false} rows={progress.data.items||[]} columns={['row','description','unit','unit_price','action','status','issue']} action={r=>state==='preview'?<Button variant="outline" onClick={()=>setMapping(Number(r.row))}>{w('Map material','ربط المادة')}</Button>:null}/>
- <div className="live-actions"><Button variant="outline" disabled={!offset} onClick={()=>setOffset(Math.max(0,offset-25))}>{t('Previous')}</Button><Button variant="outline" disabled={offset+25>=progress.data.rows} onClick={()=>setOffset(offset+25)}>{t('Next')}</Button>{state==='preview'&&<Button disabled={busy||progress.data.errors>0||!progress.data.rows} onClick={()=>run(()=>api(`pricebooks/${orgId}/imports/${batch}/confirm`,{method:'POST'}))}>{w('Confirm and save rates','تأكيد وحفظ الأسعار')}</Button>}</div></>}
- {mapping!==null&&<section className="panel"><h3>{w('Map row','ربط الصف')} {mapping}</h3><label className="field">{w('Search Material Master','البحث في دليل المواد')}<input value={search} maxLength={100} onChange={e=>setSearch(e.target.value)}/></label><State {...materials} retry={materials.reload}/><select aria-label={w('Select material','اختر المادة')} value="" onChange={e=>{if(e.target.value)void run(async()=>{await api(`pricebooks/${orgId}/imports/${batch}/rows/${mapping}`,{method:'PUT',body:json({material_id:e.target.value})});setMapping(null);});}}><option value="">{w('Select material','اختر المادة')}</option>{materials.data?.map(m=><option key={m.id} value={m.id}>{m.code} · {m.name_en} · {m.unit}</option>)}</select></section>}
- {error&&<p role="alert" className="notice">{t(error)}</p>}</Dialog>;
 }
 
 function AutomationSettings({orgId}:{orgId:string}){

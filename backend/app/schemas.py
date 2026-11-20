@@ -443,6 +443,7 @@ class PriceIn(Model):
     offered_description:str=Field(default='',max_length=4000)
     remarks:str=Field(default='',max_length=4000)
     unit_price:Decimal=Field(gt=0,max_digits=14,decimal_places=2)
+    min_order_quantity:Decimal|None=Field(default=None,gt=0,max_digits=14,decimal_places=3)
     currency:Literal['SAR']='SAR'
     price_basis:Literal['supply','supply_install']='supply'
     lead_days:int=Field(default=7,ge=0,le=3650)
