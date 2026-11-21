@@ -16,8 +16,7 @@ from app.modules.auth.router import router as auth
 from app.modules.auth.phone_change import router as phone_change
 from app.modules.organizations.router import router as organizations
 from app.modules.taxonomy.router import router as taxonomy
-from app.modules.imports.router import process_queued_supplier_imports, router as imports
-from app.modules.imports.materials import process_queued_material_imports
+from app.modules.imports.router import router as imports
 from app.modules.capabilities.router import router as capabilities
 from app.modules.capabilities.directory import router as directory
 from app.modules.rfqs.router import router as rfqs
@@ -54,15 +53,11 @@ if settings.is_production:
     raise RuntimeError('Production readiness gate: private R2 storage, malware scanning, admin MFA, legal review and production concurrency testing remain incomplete')
 
 def _process_import_queue_once() -> None:
-    with SessionLocal() as db:
-        process_queued_material_imports(db)
-        process_queued_supplier_imports(db)
-        from app.modules.imports.supplier_jobs import process_supplier_jobs
-        process_supplier_jobs(db)
-        from app.modules.pricebooks.worker import process_pricing_jobs
-        process_pricing_jobs(db)
-        from app.modules.rfqs.imports import process_rfq_import_jobs
-        process_rfq_import_jobs(db)
+    from app.import_worker_lock import import_worker_lock
+    from app.material_import_worker import process_once
+    with import_worker_lock() as acquired:
+        if acquired:
+            process_once()
 
 
 async def _development_import_worker() -> None:
@@ -81,7 +76,7 @@ async def lifespan(_: FastAPI):
     # threads; keep pool lifecycle operations off the event loop too.
     await asyncio.to_thread(get_redis)
     worker = None
-    if settings.app_env.casefold() == 'development':
+    if settings.app_env.casefold() == 'development' and settings.embedded_import_worker_enabled:
         worker = asyncio.create_task(_development_import_worker(), name='development-import-worker')
         logger.info('Development material and supplier import worker started with the API')
     try:

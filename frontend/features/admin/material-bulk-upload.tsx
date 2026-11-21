@@ -16,6 +16,7 @@ const finished=(status?:string)=>['completed','completed_with_errors'].includes(
 export function MaterialBulkUpload({open,onClose,onDone}:{open:boolean;onClose:()=>void;onDone:()=>void}){
  const {t,arabic}=useLocale();
  const categories=useApi<Schemas['CategoryOut'][]>('taxonomy/categories');
+ const [optionsChanged,setOptionsChanged]=useState(false);
  const [groupMapping,setGroupMapping]=useState<Record<string,{main_category_id:string;subcategory_id:string|null}>>({});
  const [file,setFile]=useState<File>(),[result,setResult]=useState<Progress>(),[batchId,setBatchId]=useState<string>();
  const [posting,setPosting]=useState(false),[recovering,setRecovering]=useState(false),[error,setError]=useState('');
@@ -50,13 +51,13 @@ export function MaterialBulkUpload({open,onClose,onDone}:{open:boolean;onClose:(
   try{
    const body=new FormData();body.set('file',file);body.set('sheet_name','__all__');if(discipline)body.set('discipline',discipline);
    const next=await upload<Progress>('imports/materials/preview',body,setPercent);
-   setResult(next);setBatchId(next.batch_id||undefined);setPollVersion(v=>v+1);
+   setResult(next);setOptionsChanged(false);setBatchId(next.batch_id||undefined);setPollVersion(v=>v+1);
   }catch(cause){setError(cause instanceof Error?cause.message:t('Import preview failed'));}
   finally{submitting.current=false;setPosting(false);setPercent(undefined);}
  }
  async function mapGroups(){
   if(!batchId||posting)return;setPosting(true);setError('');
-  try{const body=new FormData();body.set('discipline',discipline);body.set('sheet_name','__all__');body.set('group_mapping',JSON.stringify(groupMapping));const next=await upload<Progress>(`imports/materials/${batchId}/preview-options`,body,()=>{});setResult(next);setPollVersion(v=>v+1);}
+  try{const body=new FormData();body.set('discipline',discipline);body.set('sheet_name','__all__');if(Object.keys(groupMapping).length)body.set('group_mapping',JSON.stringify(groupMapping));const next=await upload<Progress>(`imports/materials/${batchId}/preview-options`,body,()=>{});setResult(next);setOptionsChanged(false);setPollVersion(v=>v+1);}
   catch(cause){setError(cause instanceof Error?cause.message:t('Mapping failed'));}finally{setPosting(false);}
  }
  async function action(kind:'confirm'|'retry'){
@@ -70,7 +71,7 @@ export function MaterialBulkUpload({open,onClose,onDone}:{open:boolean;onClose:(
   if(!next||busy)return;
   if(!/\.(xlsx|csv)$/i.test(next.name)){setError(t('Choose an .xlsx or .csv file.'));return;}
   if(next.size>8_000_000){setError(t('Maximum workbook size is 8 MB.'));return;}
-  setGroupMapping({});setFile(next);setResult(undefined);setBatchId(undefined);setError('');done.current=undefined;
+  setOptionsChanged(false);setGroupMapping({});setFile(next);setResult(undefined);setBatchId(undefined);setError('');done.current=undefined;
  }
  const stats:[string,number][]=[['Total rows',result?.rows||0],['Processed rows',result?.completed_rows||0],
   ['New categories',result?.new_categories?.length||0],['Existing categories reused',result?.existing_categories_reused||0],
@@ -83,7 +84,7 @@ export function MaterialBulkUpload({open,onClose,onDone}:{open:boolean;onClose:(
    <DownloadAction path="imports/materials/template" filename="civil-materials-template.xlsx" onError={setError}>{t('Download Excel Template')}</DownloadAction>
    <label className="field">{t('Choose Excel File')}<input type="file" accept=".xlsx,.csv" disabled={busy} onChange={e=>{select(e.target.files?.[0]);e.target.value='';}}/></label>
    {file&&<p><bdi>{file.name}</bdi></p>}
-   <label className="field">{t('Discipline fallback (optional)')}<select value={discipline} disabled={busy||!!result} onChange={e=>setDiscipline(e.target.value)}><option value="">{t('Auto-detect / Mixed disciplines')}</option>{['Civil','Electrical','Mechanical'].map(value=><option key={value} value={value}>{t(value)}</option>)}</select></label>
+   <label className="field">{t('Discipline fallback (optional)')}<select value={discipline} disabled={busy||!!result&&!['preview','needs_review','needs_discipline','needs_sheet_selection'].includes(result.status)} onChange={e=>{setDiscipline(e.target.value);setOptionsChanged(true);}}><option value="">{t('Auto-detect / Mixed disciplines')}</option>{['Civil','Electrical','Mechanical'].map(value=><option key={value} value={value}>{t(value)}</option>)}</select></label>
    {recovering&&<p role="status">{t('Loading saved import...')}</p>}
    {posting&&percent!==undefined&&<ProgressPanel status="uploading" stage={t('Uploading workbook')} percent={percent}/>}
    {error&&<p role="alert" className="form-error">{error}</p>}
@@ -102,8 +103,8 @@ export function MaterialBulkUpload({open,onClose,onDone}:{open:boolean;onClose:(
     <p className="workflow-help">{t('Jobs contain up to 300 rows. Progress is saved after every batch of 30. Closing or refreshing does not cancel the import.')}</p>
    </>}
   </ModalBody>
-  <ModalFooter><Button type="button" variant="outline" disabled={posting} onClick={onClose}>{t('Close')}</Button>
-   {result?.status==='failed'?<Button disabled={posting} onClick={()=>void action('retry')}>{t('Retry import')}</Button>:result?.status==='preview'?<Button disabled={posting||!result.valid} onClick={()=>void action('confirm')}>{t('Import Materials')}</Button>:<Button disabled={!file||busy} onClick={()=>void preview()}><IconUpload size={18}/>{t('Preview Import')}</Button>}
+  <ModalFooter>{batchId&&result&&['preview','needs_review','needs_discipline','needs_sheet_selection'].includes(result.status)&&<Button type="button" variant="outline" disabled={posting} onClick={()=>void mapGroups()}>{t('Recheck preview')}</Button>}<Button type="button" variant="outline" disabled={posting} onClick={onClose}>{t('Close')}</Button>
+   {result?.status==='failed'?<Button disabled={posting} onClick={()=>void action('retry')}>{t('Retry import')}</Button>:result?.status==='preview'?<Button disabled={posting||optionsChanged||!result.valid} onClick={()=>void action('confirm')}>{t('Import Materials')}</Button>:<Button disabled={!file||busy} onClick={()=>void preview()}><IconUpload size={18}/>{t('Preview Import')}</Button>}
   </ModalFooter>
  </AdminModal>;
 }

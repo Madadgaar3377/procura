@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     app_env: str = 'development'
+    embedded_import_worker_enabled: bool = True
     database_url: str = 'sqlite:///./data/procurement.db'
     jwt_secret: str = 'CHANGE_ME_FOR_LOCAL_ONLY'
     jwt_issuer: str = Field(default='procura', min_length=1, max_length=200)

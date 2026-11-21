@@ -38,6 +38,7 @@ from app.modules.materials.service import (
 )
 
 router = APIRouter(prefix='/materials', tags=['Material Master Imports'])
+VALIDATION_VERSION = 4
 JOB_ROWS = 300
 BATCH_ROWS = 30
 MATERIAL_WORKER_LOCK = 717341393
@@ -332,7 +333,10 @@ def _row_discipline(explicit: str, main: str, sub: str, fallback: str,
         if candidates and candidates != {value}:
             raise HTTPException(409, 'Explicit discipline conflicts with the existing category mapping; review this row.')
         return value
-    value = (_category_discipline(main) or
+    category_value = _category_discipline(main)
+    if not category_value and len(candidates) > 1:
+        raise HTTPException(409, 'Category maps to multiple disciplines; review this row before importing.')
+    value = (category_value or
              (next(iter(candidates)) if len(candidates) == 1 else None) or
              DISCIPLINES.get(_clean(fallback).casefold()))
     if not value:
@@ -482,6 +486,12 @@ def _public_sheets(sheets: list[dict]) -> list[dict]:
     return [{k: v for k, v in item.items() if not k.startswith('_')} for item in sheets]
 
 
+def _stale_preview(batch: ImportBatch) -> bool:
+    return (batch.status == 'preview' and batch.stage == 'preview'
+            and not (batch.created or batch.updated_count or batch.unchanged_count)
+            and (batch.preview_metadata or {}).get('validation_version') != VALIDATION_VERSION)
+
+
 def _preview_view(batch: ImportBatch, rows: Sequence[ImportedRow], status_counts: Counter[str] | None = None,
                   issue_rows: Sequence[ImportedRow] | None = None) -> dict[str, Any]:
     status_counts = status_counts or Counter(row.status for row in rows)
@@ -505,13 +515,17 @@ def _preview_view(batch: ImportBatch, rows: Sequence[ImportedRow], status_counts
         if item.status in {'unchanged', 'skip'} and len(warnings) < 500:
             warnings.append({'row': item.row_number, 'reason': 'This material matches an existing imported record and will be skipped.'})
     metadata=batch.preview_metadata or {}
+    stale_preview = _stale_preview(batch)
+    if stale_preview:
+        warnings.insert(0, {'reason': 'This saved preview uses older validation rules. Recheck preview or upload the workbook again.'})
     completed=batch.completed_rows if batch.stage in {'apply','complete','parse'} else 0
     total_jobs=ceil(batch.rows/JOB_ROWS) if batch.rows else 0
     current_job=min(completed//JOB_ROWS+1,total_jobs) if total_jobs else 0
     job_start=max(0,current_job-1)*JOB_ROWS
     batches_in_job=ceil(min(JOB_ROWS,max(0,batch.rows-job_start))/BATCH_ROWS)
     current_batch=min((completed-job_start)//BATCH_ROWS+1,batches_in_job) if batches_in_job else 0
-    return {'batch_id': batch.id, 'status': batch.status, 'stage': batch.stage, 'failure_reason': batch.failure_reason,
+    return {'batch_id': batch.id, 'status': 'needs_review' if stale_preview else batch.status, 'stage': batch.stage,
+            'failure_reason': 'Saved preview uses older validation rules; recheck preview or upload again.' if stale_preview else batch.failure_reason,
             'discipline': batch_kind_discipline(rows) or metadata.get('discipline'),
             'sheets':metadata.get('sheets',[]),'headers':metadata.get('headers',[]),
             'selected_sheet': sheet_name or metadata.get('selected_sheet'),
@@ -628,7 +642,7 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
         db.commit()
     sheets=_discover(content,batch.filename,selected_name,explicit,report_progress)
     eligible=[sheet for sheet in sheets if sheet['eligible']]
-    metadata={'sheets':_public_sheets(sheets),'headers':[],'mapping':{},'selected_sheet':None,'discipline':None,'new_categories':[]}
+    metadata={'validation_version':VALIDATION_VERSION,'sheets':_public_sheets(sheets),'headers':[],'mapping':{},'selected_sheet':None,'discipline':None,'new_categories':[]}
     if not eligible:
         batch.status='needs_review';batch.preview_metadata=metadata;batch.rows=0;batch.stage='preview'
         batch.parse_duration_ms=int((perf_counter()-started)*1000);batch.updated_at=datetime.now(UTC);db.commit();return
@@ -1027,7 +1041,7 @@ def preview(
     existing=db.scalar(select(ImportBatch).where(ImportBatch.kind=='materials',ImportBatch.initiated_by==user.id,
         ImportBatch.source_sha256==digest.hex(),ImportBatch.status.in_({'uploaded','processing','preview','queued'}))
         .order_by(ImportBatch.created_at.desc()).limit(1))
-    if existing:
+    if existing and not _stale_preview(existing):
         storage.delete(key)
         result=_preview_view(existing,[])
         db.commit()
@@ -1088,6 +1102,8 @@ def confirm(batch_id: str, user: User = Depends(admin_user), db: Session = Depen
         raise HTTPException(404, 'Material import preview not found')
     if batch.initiated_by != user.id:
         raise HTTPException(403, 'Only the administrator who created this preview may confirm it')
+    if _stale_preview(batch):
+        raise HTTPException(409, 'Saved preview uses older validation rules; recheck preview or upload the workbook again.')
     if batch.status != 'preview':
         raise HTTPException(409, 'This import preview is not ready to confirm')
     batch.import_options={**(batch.import_options or {}),'cursor_version':2}

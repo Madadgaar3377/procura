@@ -7,11 +7,28 @@ import logging
 import time
 
 from app.database import SessionLocal
+from app.import_worker_lock import import_worker_lock
 from app.modules.imports.materials import process_queued_material_imports
 from app.modules.imports.router import process_queued_supplier_imports
 from app.modules.imports.supplier_jobs import process_supplier_jobs
 from app.modules.pricebooks.worker import process_pricing_jobs
 from app.modules.rfqs.imports import process_rfq_import_jobs
+
+
+def process_once() -> bool:
+    """An unavailable queue must not starve the other import queues."""
+    success = True
+    for process in (process_queued_material_imports, process_queued_supplier_imports,
+                    process_supplier_jobs, process_pricing_jobs, process_rfq_import_jobs):
+        try:
+            with SessionLocal() as db:
+                result = process(db)
+            if result:
+                logging.getLogger(__name__).info('Import poll queue=%s progressed', process.__name__)
+        except Exception as exc:
+            success = False
+            logging.getLogger(__name__).error('Import poll failed queue=%s type=%s', process.__name__, type(exc).__name__)
+    return success
 
 
 def main() -> None:
@@ -21,28 +38,18 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    while True:
-        try:
-            with SessionLocal() as db:
-                process_rfq_import_jobs(db)
-                completed = process_queued_material_imports(db)
-                supplier_completed = process_queued_supplier_imports(db)
-                process_supplier_jobs(db)
-                process_pricing_jobs(db)
-        except Exception as exc:
-            # A temporary database outage must not terminate the durable runner.
-            logger.error('Import worker poll failed type=%s', type(exc).__name__)
+    with import_worker_lock() as acquired:
+        if not acquired:
+            logger.error('Another import worker owns the local queue lock; exiting')
+            raise SystemExit(75)
+        logger.info('Import worker started; material jobs use 30-row batches and at most 300 rows per poll')
+        while True:
+            success = process_once()
             if args.once:
-                raise
+                if not success:
+                    raise SystemExit(1)
+                return
             time.sleep(max(0.25, args.interval))
-            continue
-        if completed:
-            logger.info('Completed Material Master import batches: %s', ', '.join(completed))
-        if supplier_completed:
-            logger.info('Completed supplier import batches: %s', ', '.join(supplier_completed))
-        if args.once:
-            return
-        time.sleep(max(0.25, args.interval))
 
 
 if __name__ == '__main__':

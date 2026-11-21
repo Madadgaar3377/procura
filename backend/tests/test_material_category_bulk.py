@@ -1,5 +1,6 @@
 """Durable material import acceptance, isolated DB/files; no real notifications."""
 from io import BytesIO
+import os
 from types import SimpleNamespace
 from datetime import datetime, UTC, timedelta
 import pytest
@@ -20,8 +21,22 @@ from app import catalog_cache
 
 @pytest.fixture
 def system(tmp_path,monkeypatch):
-    engine=create_engine('sqlite:///:memory:',poolclass=StaticPool,connect_args={'check_same_thread':False})
-    Base.metadata.create_all(engine);sessions=sessionmaker(bind=engine,expire_on_commit=False)
+    postgres_url=os.environ.get('MATERIAL_IMPORT_TEST_DATABASE_URL')
+    if postgres_url:
+        from sqlalchemy.engine import make_url
+        target=make_url(postgres_url)
+        assert target.get_backend_name()=='postgresql' and target.host=='127.0.0.1'
+        assert target.database.startswith('procura_material_test_'), 'Use only a disposable, migrated test database'
+        engine=create_engine(postgres_url,pool_pre_ping=True)
+        # PostgreSQL is initialized with Alembic, never create_all. Run this
+        # single integration scenario against an empty, disposable database.
+        with engine.connect() as conn:
+            assert conn.scalar(select(func.count()).select_from(Category))==0
+            assert conn.scalar(select(func.count()).select_from(Material))==0
+    else:
+        engine=create_engine('sqlite:///:memory:',poolclass=StaticPool,connect_args={'check_same_thread':False})
+        Base.metadata.create_all(engine)
+    sessions=sessionmaker(bind=engine,expire_on_commit=False)
     storage=LocalImportStorage(str(tmp_path));monkeypatch.setattr(imports,'get_import_storage',lambda:storage)
     monkeypatch.setattr(catalog_cache,'get',lambda *a,**k:None)
     monkeypatch.setattr(catalog_cache,'set',lambda *a,**k:None)
@@ -361,7 +376,9 @@ def test_category_discipline_inference():
     result=imports._prepared([row],mapping,'',{('pipes','steel'):{'Mechanical'}})[0]
     assert result['status']=='valid' and result['raw']['_discipline']=='Mechanical'
     result=imports._prepared([row],mapping,'',{('pipes','steel'):{'Mechanical','Civil'}})[0]
-    assert result['status']=='invalid' and 'unknown' in result['issue']
+    assert result['status']=='conflict' and 'multiple disciplines' in result['issue']
+    result=imports._prepared([row],mapping,'Civil',{('pipes','steel'):{'Mechanical','Civil'}})[0]
+    assert result['status']=='conflict' and 'multiple disciplines' in result['issue']
 
 
 
@@ -454,6 +471,26 @@ def test_5118_failed_export_rows_preview_and_queue(system):
     state = s.client.get('/imports/materials/' + key).json()
     assert state['status'] == 'queued' and state['completed_rows'] == state['created'] == 300
     assert state['errors'] == 0 and state['current_job'] == 2
+    # Every job uses a fresh session, as after a worker restart. Complete all
+    # 5,118 rows, then prove a new upload matches the persisted identities.
+    cursors = [state['completed_rows']]
+    while state['status'] == 'queued':
+        with s.db() as db: imports.process_queued_material_imports(db)
+        state = s.client.get('/imports/materials/' + key).json()
+        cursors.append(state['completed_rows'])
+    assert cursors == list(range(300, 5118, 300)) + [5118]
+    assert state['status'] == 'completed' and state['created'] == 5118
+    assert state['errors'] == state['invalid'] == state['duplicate_rows'] == 0
+    assert state['progress_percent'] == 100
+    with s.db() as db:
+        assert db.scalar(select(func.count()).select_from(Material)) == 5118
+        assert db.scalar(select(func.count()).select_from(Category)) == 16
+    response = s.client.post('/imports/materials/preview',
+        files={'file': ('failed-material-rows.xlsx', failed_row_workbook(5118))},
+        data={'discipline': 'Civil', 'sheet_name': '__all__'})
+    repeated = parse(s, response.json()['batch_id'])
+    assert repeated['create'] == 0 and repeated['unchanged'] == 5118
+    assert repeated['invalid'] == repeated['duplicate_rows'] == 0
 
 
 @pytest.mark.parametrize(('main', 'expected'), [
@@ -574,3 +611,35 @@ def test_worker_rechecks_explicit_mapping_conflict_after_preview(system):
     state=s.client.get('/imports/materials/'+key).json()
     assert state['created']==0 and state['conflicts']==1 and state['errors']==1
     assert 'existing category mapping' in state['issues'][0]['reason']
+
+
+
+def test_reupload_does_not_recover_stale_discipline_conflict_preview(system):
+    s=system; content=failed_row_workbook(8)
+    key=stage(s,content);parse(s,key)
+    with s.db() as db:
+        batch=db.get(ImportBatch,key);batch.preview_metadata={};batch.errors=8
+        for row in db.scalars(select(ImportedRow).where(ImportedRow.batch_id==key)):
+            row.status='invalid';row.issue='Row discipline conflicts with the selected import discipline.'
+        db.commit()
+    old=s.client.get('/imports/materials/'+key).json()
+    assert old['status']=='needs_review'
+    assert 'older validation rules' in old['failure_reason']
+    assert s.client.post(f'/imports/materials/{key}/confirm').status_code==409
+    new=stage(s,content);assert new!=key
+    preview=parse(s,new)
+    assert preview['valid']==8 and preview['invalid']==preview['errors']==0
+    with s.db() as db:
+        assert db.scalar(select(func.count()).select_from(ImportedRow).where(ImportedRow.batch_id==key))==8
+    # The current preview is still recovered rather than spawning duplicate jobs.
+    assert stage(s,content)==new
+
+
+def test_stale_preview_can_be_rechecked_without_reupload(system):
+    s=system;key=stage(s,failed_row_workbook(8));parse(s,key)
+    with s.db() as db:
+        batch=db.get(ImportBatch,key);batch.preview_metadata={};db.commit()
+    response=s.client.post(f'/imports/materials/{key}/preview-options',data={'discipline':'Civil'})
+    assert response.status_code==202
+    preview=parse(s,key)
+    assert preview['valid']==8 and preview['invalid']==0
