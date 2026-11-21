@@ -17,8 +17,11 @@ from app.modules.taxonomy.review_service import (
     ReviewActor,
     apply_single_category_decision,
     build_analysis_payload,
+    build_hierarchy_repair_preview,
+    get_hierarchy_repair_job,
     run_bulk_approve_valid,
     run_bulk_auto_fix,
+    start_hierarchy_repair_job,
 )
 from app.security import admin_user
 
@@ -44,6 +47,10 @@ class CategoryReviewItemOut(BaseModel):
     parent_id: str | None = None
     parent_name_en: str | None = None
     hierarchy_path: list[str] = Field(default_factory=list)
+    proposed_path: list[str] = Field(default_factory=list)
+    hierarchy_repair_action: str | None = None
+    hierarchy_repair_safe: bool = False
+    affected_capabilities_count: int = 0
     issue_type: str
     issue_label: str
     reason: str
@@ -72,6 +79,8 @@ class CategoryReviewAnalysisOut(BaseModel):
     total_pending: int
     total_filtered: int
     total_safe_auto_fix: int
+    total_safe_hierarchy_repairs: int = 0
+    total_hierarchy_conflicts: int = 0
     total_valid_approvable: int
     total_conflicts: int
     counts_by_issue_type: dict[str, int]
@@ -140,6 +149,7 @@ class BulkApproveValidOut(BaseModel):
     total_eligible: int = 0
     retained_empty: int
     approved: int
+    approved_count: int = 0
     skipped_already_approved: int = 0
     remaining_valid: int
     excluded_count: int = 0
@@ -149,6 +159,62 @@ class BulkApproveValidOut(BaseModel):
     preview_items: list[CategoryFixPreviewItemOut] = Field(default_factory=list)
     excluded_preview_items: list[CategoryFixPreviewItemOut] = Field(default_factory=list)
     errors: list[dict] = Field(default_factory=list)
+
+
+class HierarchyRepairItemOut(BaseModel):
+    category_id: str
+    code: str
+    name_en: str
+    parent_id: str | None = None
+    parent_name_en: str | None = None
+    grandparent_id: str | None = None
+    grandparent_name_en: str | None = None
+    current_path: list[str] = Field(default_factory=list)
+    proposed_path: list[str] = Field(default_factory=list)
+    repair_action: str
+    target_parent_id: str | None = None
+    target_category_id: str | None = None
+    affected_materials_count: int = 0
+    affected_capabilities_count: int = 0
+    safe: bool = False
+    status: str
+    reason: str = ''
+
+
+class HierarchyRepairPreviewOut(BaseModel):
+    total_hierarchy_issues: int
+    safe_repairs: int
+    manual_review_count: int
+    affected_materials: int
+    affected_capabilities: int
+    counts_by_action: dict[str, int] = Field(default_factory=dict)
+    batch_size: int
+    job_size: int
+    items: list[HierarchyRepairItemOut] = Field(default_factory=list)
+
+
+class HierarchyRepairJobIn(BaseModel):
+    category_ids: list[str] | None = Field(default=None, max_length=300)
+    job_limit: int = Field(default=JOB_SIZE, ge=1, le=JOB_SIZE)
+    batch_size: int = Field(default=BATCH_SIZE, ge=1, le=BATCH_SIZE)
+    async_mode: bool = True
+
+
+class HierarchyRepairJobOut(BaseModel):
+    job_id: str | None = None
+    status: str
+    total_records: int = 0
+    completed_records: int = 0
+    repaired_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    batches_executed: int = 0
+    materials_updated: int = 0
+    references_moved: int = 0
+    remaining_safe: int = 0
+    has_more: bool = False
+    errors: list[dict] = Field(default_factory=list)
+    failure_reason: str | None = None
 
 
 class CategoryReviewDecisionIn(BaseModel):
@@ -304,3 +370,47 @@ def category_review_history(
         }
         for r in rows
     ]
+
+
+@router.get('/hierarchy-repairs/preview', response_model=HierarchyRepairPreviewOut)
+def preview_hierarchy_repairs(
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    user: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    """Analyze all depth > 2 hierarchy issues and preview safe vs manual-review repairs without mutating data."""
+    del user
+    return build_hierarchy_repair_preview(db, limit=limit, offset=offset)
+
+
+@router.post('/hierarchy-repairs', response_model=HierarchyRepairJobOut)
+def apply_hierarchy_repairs(
+    payload: HierarchyRepairJobIn,
+    user: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    """Start (or resume) a durable batched hierarchy repair job (30/batch, up to 300/job).
+
+    Returns immediately with a job_id when async_mode=True so long repairs never block HTTP requests.
+    """
+    actor_snapshot = _detach_actor(user, db)
+    return start_hierarchy_repair_job(
+        actor=actor_snapshot,
+        category_ids=payload.category_ids,
+        job_limit=payload.job_limit,
+        batch_size=payload.batch_size,
+        async_mode=payload.async_mode,
+        session_factory=SessionLocal,
+    )
+
+
+@router.get('/hierarchy-repairs/jobs/{job_id}', response_model=HierarchyRepairJobOut)
+def hierarchy_repair_job_status(
+    job_id: str,
+    user: User = Depends(admin_user),
+    db: Session = Depends(get_db),
+):
+    """Return persisted progress for a running or completed hierarchy repair job."""
+    del user
+    return get_hierarchy_repair_job(db, job_id)

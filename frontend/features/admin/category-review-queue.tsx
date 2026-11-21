@@ -1,6 +1,14 @@
 "use client";
 import { useEffect, useRef, useState } from 'react';
-import { IconCheck, IconFilter, IconRefresh, IconSparkles, IconWand, IconX } from '@tabler/icons-react';
+import {
+  IconCheck,
+  IconFilter,
+  IconGitMerge,
+  IconRefresh,
+  IconSparkles,
+  IconWand,
+  IconX,
+} from '@tabler/icons-react';
 import { api, json } from '@/lib/api/client';
 import { useApi } from '@/lib/api/use-api';
 import { useLocale } from '@/lib/locale';
@@ -28,6 +36,10 @@ type CategoryReviewItem = {
   parent_id: string | null;
   parent_name_en: string | null;
   hierarchy_path?: string[];
+  proposed_path?: string[];
+  hierarchy_repair_action?: string | null;
+  hierarchy_repair_safe?: boolean;
+  affected_capabilities_count?: number;
   issue_type: string;
   issue_label: string;
   reason: string;
@@ -56,6 +68,8 @@ type CategoryReviewAnalysis = {
   total_pending: number;
   total_filtered: number;
   total_safe_auto_fix: number;
+  total_safe_hierarchy_repairs?: number;
+  total_hierarchy_conflicts?: number;
   total_valid_approvable: number;
   total_conflicts: number;
   counts_by_issue_type: Record<string, number>;
@@ -107,6 +121,7 @@ type BulkApproveResponse = {
   total_eligible: number;
   retained_empty: number;
   approved: number;
+  approved_count?: number;
   skipped_already_approved: number;
   remaining_valid: number;
   excluded_count: number;
@@ -118,21 +133,71 @@ type BulkApproveResponse = {
   errors: Array<Record<string, unknown>>;
 };
 
+type HierarchyRepairItem = {
+  category_id: string;
+  code: string;
+  name_en: string;
+  parent_id: string | null;
+  parent_name_en: string | null;
+  grandparent_id: string | null;
+  grandparent_name_en: string | null;
+  current_path: string[];
+  proposed_path: string[];
+  repair_action: string;
+  target_parent_id: string | null;
+  target_category_id: string | null;
+  affected_materials_count: number;
+  affected_capabilities_count: number;
+  safe: boolean;
+  status: string;
+  reason: string;
+};
+
+type HierarchyRepairPreview = {
+  total_hierarchy_issues: number;
+  safe_repairs: number;
+  manual_review_count: number;
+  affected_materials: number;
+  affected_capabilities: number;
+  counts_by_action: Record<string, number>;
+  batch_size: number;
+  job_size: number;
+  items: HierarchyRepairItem[];
+};
+
+type HierarchyRepairJob = {
+  job_id: string | null;
+  status: string;
+  total_records: number;
+  completed_records: number;
+  repaired_count: number;
+  skipped_count: number;
+  failed_count: number;
+  batches_executed: number;
+  materials_updated: number;
+  references_moved: number;
+  remaining_safe: number;
+  has_more: boolean;
+  errors: Array<Record<string, unknown>>;
+  failure_reason: string | null;
+};
+
 const ISSUE_LABELS: Record<string, string> = {
   missing_parent: 'Missing parent',
   archived_parent: 'Archived parent',
-  hierarchy_depth_exceeded: 'Exceeds two-level hierarchy',
+  hierarchy_depth_exceeded: 'Exceeds 2 levels',
   missing_discipline: 'Missing discipline',
   unsupported_discipline: 'Unsupported discipline',
   empty_category: 'Empty category',
-  inactive_materials_only: 'Inactive materials only',
-  duplicate_category: 'Duplicate category',
+  inactive_materials_only: 'Inactive only',
+  duplicate_category: 'Duplicate',
   parent_mismatch: 'Parent mismatch',
-  ambiguous_classification: 'Ambiguous classification',
-  invalid_import_data: 'Invalid import data',
+  ambiguous_classification: 'Ambiguous',
+  invalid_import_data: 'Invalid import',
 };
 
 const DISCIPLINES = ['Civil', 'Electrical', 'Mechanical'] as const;
+const PAGE_SIZE = 50;
 
 export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
   const { t } = useLocale();
@@ -148,9 +213,11 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
   const [error, setError] = useState('');
 
   // Confirmation preview modal state
-  const [previewKind, setPreviewKind] = useState<'auto-fix' | 'approve-valid' | null>(null);
+  const [previewKind, setPreviewKind] = useState<'auto-fix' | 'approve-valid' | 'hierarchy-repair' | null>(null);
   const [fixPreview, setFixPreview] = useState<BulkFixResponse | null>(null);
   const [approvePreview, setApprovePreview] = useState<BulkApproveResponse | null>(null);
+  const [hierarchyPreview, setHierarchyPreview] = useState<HierarchyRepairPreview | null>(null);
+  const [activeRepairJob, setActiveRepairJob] = useState<HierarchyRepairJob | null>(null);
   const previewDialog = useRef<HTMLDialogElement>(null);
 
   // Reclassify modal state
@@ -161,7 +228,7 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
   const reclassifyDialog = useRef<HTMLDialogElement>(null);
 
   const queryParams = new URLSearchParams({
-    limit: '100',
+    limit: String(PAGE_SIZE),
     offset: String(offset),
     ...(issueFilter ? { issue_type: issueFilter } : {}),
     ...(conflictsOnly ? { conflicts_only: 'true' } : {}),
@@ -177,6 +244,39 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
   useEffect(() => {
     if (reclassifyItem && !reclassifyDialog.current?.open) reclassifyDialog.current?.showModal();
   }, [reclassifyItem]);
+
+  // Poll durable hierarchy repair job until completion
+  useEffect(() => {
+    if (!activeRepairJob?.job_id) return;
+    if (!['queued', 'processing'].includes(activeRepairJob.status)) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const status = await api<HierarchyRepairJob>(
+          `taxonomy/review/hierarchy-repairs/jobs/${activeRepairJob.job_id}`,
+        );
+        if (cancelled) return;
+        setActiveRepairJob(status);
+        if (!['queued', 'processing'].includes(status.status)) {
+          setProgressNote('');
+          toast.success(
+            t('Hierarchy repairs completed'),
+            t(`${status.repaired_count} repaired, ${status.skipped_count} skipped, ${status.failed_count} failed (${status.batches_executed} batches).`),
+          );
+          analysis.reload();
+          onChanged();
+        }
+      } catch (cause) {
+        if (cancelled) return;
+        const msg = cause instanceof Error ? cause.message : t('Could not check repair progress');
+        setError(msg);
+      }
+    }, 1500);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [activeRepairJob, analysis, onChanged, t, toast]);
 
   function refreshAll() {
     setError('');
@@ -199,6 +299,25 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
     }
   }
 
+  async function openHierarchyRepairPreview() {
+    if (busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      const preview = await api<HierarchyRepairPreview>('taxonomy/review/hierarchy-repairs/preview?limit=200&offset=0');
+      setHierarchyPreview(preview);
+      setFixPreview(null);
+      setApprovePreview(null);
+      setPreviewKind('hierarchy-repair');
+    } catch (cause) {
+      const msg = cause instanceof Error ? cause.message : t('Could not preview hierarchy repairs');
+      setError(msg);
+      toast.error(t('Preview failed'), msg);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function openAutoFixPreview() {
     if (busy) return;
     setBusy(true);
@@ -210,6 +329,7 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
       });
       setFixPreview(preview);
       setApprovePreview(null);
+      setHierarchyPreview(null);
       setPreviewKind('auto-fix');
     } catch (cause) {
       const msg = cause instanceof Error ? cause.message : t('Could not preview safe fixes');
@@ -231,6 +351,7 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
       });
       setApprovePreview(preview);
       setFixPreview(null);
+      setHierarchyPreview(null);
       setPreviewKind('approve-valid');
     } catch (cause) {
       const msg = cause instanceof Error ? cause.message : t('Could not preview valid categories');
@@ -246,7 +367,29 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
     setBusy(true);
     setError('');
     try {
-      if (previewKind === 'auto-fix') {
+      if (previewKind === 'hierarchy-repair') {
+        setProgressNote(t('Starting safe hierarchy repair job (batches of 30)...'));
+        const job = await api<HierarchyRepairJob>('taxonomy/review/hierarchy-repairs', {
+          method: 'POST',
+          body: json({ job_limit: 300, batch_size: 30, async_mode: true }),
+        });
+        setPreviewKind(null);
+        setHierarchyPreview(null);
+        if (job.job_id && ['queued', 'processing'].includes(job.status)) {
+          setActiveRepairJob(job);
+          toast.success(
+            t('Hierarchy repair started'),
+            t(`Processing ${job.total_records} safe repairs in batches of 30.`),
+          );
+        } else {
+          setActiveRepairJob(job);
+          toast.success(
+            t('Hierarchy repairs completed'),
+            t(`${job.repaired_count} repaired, ${job.skipped_count} skipped, ${job.failed_count} failed.`),
+          );
+          refreshAll();
+        }
+      } else if (previewKind === 'auto-fix') {
         let cursor: string | null = null;
         let totalResolved = 0;
         let totalMaterials = 0;
@@ -275,6 +418,7 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
           t('Safe fixes applied'),
           t(`${totalResolved} categories resolved, ${totalMaterials} materials updated, ${totalMerged} duplicates merged, ${totalParentRepaired} parent links repaired (${totalBatches} batches).`),
         );
+        refreshAll();
       } else {
         let cursor: string | null = null;
         let totalRetained = 0;
@@ -300,16 +444,16 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
           t('Valid categories updated'),
           totalSkipped > 0
             ? t(`${totalRetained} valid empty categories retained (${totalSkipped} already approved skipped, ${totalBatches} batch(es)).`)
-            : t(`${totalRetained} valid empty categories retained in ${totalBatches} batch(es) (hidden from buyer selection until active materials exist).`),
+            : t(`${totalRetained} valid empty categories retained in ${totalBatches} batch(es).`),
         );
+        refreshAll();
       }
-      refreshAll();
     } catch (cause) {
       const msg = cause instanceof Error ? cause.message : t('Bulk action could not finish');
       setError(msg);
       toast.error(t('Bulk action failed'), msg);
     } finally {
-      setProgressNote('');
+      if (previewKind !== 'hierarchy-repair') setProgressNote('');
       setBusy(false);
     }
   }
@@ -395,33 +539,93 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
   if (analysis.error && !data) return null;
   if (!data || (data.total_pending === 0 && !issueFilter && !conflictsOnly && !search)) return null;
 
+  const hierarchyConflicts =
+    data.total_hierarchy_conflicts ??
+    (data.counts_by_issue_type.hierarchy_depth_exceeded || 0) +
+      (data.counts_by_issue_type.missing_parent || 0) +
+      (data.counts_by_issue_type.archived_parent || 0);
+  const invalidImports = data.counts_by_issue_type.invalid_import_data || 0;
+  const safeHierarchyRepairs = data.total_safe_hierarchy_repairs || 0;
+  const totalSafeRepairs = safeHierarchyRepairs + data.total_safe_auto_fix;
+  const jobRunning = Boolean(activeRepairJob?.job_id && ['queued', 'processing'].includes(activeRepairJob.status));
+
+  function rowStatusBadge(item: CategoryReviewItem) {
+    if (item.hierarchy_repair_safe) {
+      return <span className="status verified">{t('Safe repair')}</span>;
+    }
+    if (item.safe_to_auto_fix) {
+      return <span className="status verified">{t('Auto-fix')}</span>;
+    }
+    if (item.can_retain_empty) {
+      return <span className="status pending">{t('Valid empty')}</span>;
+    }
+    return <span className="status rejected">{t('Manual review')}</span>;
+  }
+
   return (
-    <details className="panel industry-taxonomy-review" open={analyzed || conflictsOnly || Boolean(issueFilter)}>
+    <details className="panel industry-taxonomy-review" open={analyzed || conflictsOnly || Boolean(issueFilter) || jobRunning}>
       <summary>
         {t('Category review needed')} <span>{data.total_pending}</span>
       </summary>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.75rem' }}>
-        <p style={{ margin: 0 }}>
-          {t('Categories are grouped by specific review reason. Safe discipline fixes, parent link repairs, and duplicate merges run in short batches of 30 (up to 300 per job) while preserving Material IDs. Ambiguous records remain pending for manual review.')}
-        </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', marginTop: '0.85rem' }}>
+        {/* Compact Summary Metrics */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
+            gap: '0.5rem',
+          }}
+        >
+          <div style={{ padding: '0.6rem 0.75rem', borderRadius: '8px', border: '1px solid var(--border, #e2e8f0)' }}>
+            <div style={{ fontSize: '0.78rem', opacity: 0.75 }}>{t('Total review issues')}</div>
+            <strong style={{ fontSize: '1.25rem' }}>{data.total_pending}</strong>
+          </div>
+          <div style={{ padding: '0.6rem 0.75rem', borderRadius: '8px', border: '1px solid var(--border, #e2e8f0)' }}>
+            <div style={{ fontSize: '0.78rem', opacity: 0.75 }}>{t('Hierarchy conflicts')}</div>
+            <strong style={{ fontSize: '1.25rem' }}>{hierarchyConflicts}</strong>
+          </div>
+          <div style={{ padding: '0.6rem 0.75rem', borderRadius: '8px', border: '1px solid var(--border, #e2e8f0)' }}>
+            <div style={{ fontSize: '0.78rem', opacity: 0.75 }}>{t('Invalid imports')}</div>
+            <strong style={{ fontSize: '1.25rem' }}>{invalidImports}</strong>
+          </div>
+          <div style={{ padding: '0.6rem 0.75rem', borderRadius: '8px', border: '1px solid var(--border, #e2e8f0)' }}>
+            <div style={{ fontSize: '0.78rem', opacity: 0.75 }}>{t('Safe repairs')}</div>
+            <strong style={{ fontSize: '1.25rem' }}>{totalSafeRepairs}</strong>
+          </div>
+          <div style={{ padding: '0.6rem 0.75rem', borderRadius: '8px', border: '1px solid var(--border, #e2e8f0)' }}>
+            <div style={{ fontSize: '0.78rem', opacity: 0.75 }}>{t('Manual review')}</div>
+            <strong style={{ fontSize: '1.25rem' }}>{data.total_conflicts}</strong>
+          </div>
+        </div>
 
         {/* Action Toolbar */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
-          <Button type="button" variant="outline" disabled={busy} onClick={() => void handleAnalyzeAll()}>
-            <IconSparkles size={16} /> {t('Analyze All')}
+          <Button type="button" variant="outline" disabled={busy || jobRunning} onClick={() => void handleAnalyzeAll()}>
+            <IconSparkles size={16} /> {t('Analyze')}
           </Button>
           <Button
             type="button"
-            disabled={busy || data.total_safe_auto_fix === 0}
-            onClick={() => void openAutoFixPreview()}
+            variant={hierarchyConflicts > 0 ? 'default' : 'outline'}
+            disabled={busy || jobRunning || hierarchyConflicts === 0}
+            onClick={() => void openHierarchyRepairPreview()}
           >
-            <IconWand size={16} /> {t('Auto-Fix Safe Records')} ({data.total_safe_auto_fix})
+            <IconGitMerge size={16} /> {t('Repair Hierarchy')} ({safeHierarchyRepairs}/{hierarchyConflicts})
           </Button>
+          {data.total_safe_auto_fix > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={busy || jobRunning}
+              onClick={() => void openAutoFixPreview()}
+            >
+              <IconWand size={16} /> {t('Auto-Fix Safe Records')} ({data.total_safe_auto_fix})
+            </Button>
+          )}
           <Button
             type="button"
             variant="outline"
-            disabled={busy || data.total_valid_approvable === 0}
+            disabled={busy || jobRunning || data.total_valid_approvable === 0}
             onClick={() => void openApproveValidPreview()}
           >
             <IconCheck size={16} /> {t('Approve All Valid')} ({data.total_valid_approvable})
@@ -443,7 +647,29 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
           </Button>
         </div>
 
-        {/* Issue Type Breakdown Pills */}
+        {/* Active Background Job Progress Banner */}
+        {activeRepairJob && activeRepairJob.job_id && (
+          <div
+            role="status"
+            className="notice"
+            style={{ display: 'flex', flexWrap: 'wrap', gap: '0.75rem', alignItems: 'center', justifyContent: 'space-between' }}
+          >
+            <div>
+              <strong>
+                {jobRunning ? t('Hierarchy repair in progress') : t('Hierarchy repair finished')}:
+              </strong>{' '}
+              {activeRepairJob.completed_records} / {activeRepairJob.total_records}{' '}
+              ({t('repaired')}: {activeRepairJob.repaired_count}, {t('skipped')}: {activeRepairJob.skipped_count}, {t('failed')}: {activeRepairJob.failed_count})
+            </div>
+            {!jobRunning && (
+              <Button type="button" size="sm" variant="ghost" onClick={() => setActiveRepairJob(null)}>
+                {t('Dismiss')}
+              </Button>
+            )}
+          </div>
+        )}
+
+        {/* Filter Pills + Server-side Search */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.4rem', alignItems: 'center' }}>
           <Button
             type="button"
@@ -479,166 +705,165 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
               setSearch(e.target.value);
               setOffset(0);
             }}
-            placeholder={t('Filter review queue...')}
-            style={{ marginInlineStart: 'auto', minWidth: '180px' }}
+            placeholder={t('Search categories or paths...')}
+            style={{ marginInlineStart: 'auto', minWidth: '200px' }}
           />
         </div>
 
         {progressNote && <p role="status" className="notice">{progressNote}</p>}
         {error && <p role="alert" className="category-editor-error">{error}</p>}
 
-        {/* Review Table */}
+        {/* Clean Compact Review Table */}
         <div className="table-wrap">
           <table className="data-table">
             <thead>
               <tr>
                 <th>{t('Category')}</th>
-                <th>{t('Parent')}</th>
+                <th>{t('Current path')}</th>
+                <th>{t('Proposed path')}</th>
+                <th>{t('Materials affected')}</th>
                 <th>{t('Issue')}</th>
-                <th>{t('Materials')}</th>
-                <th>{t('Review reason')}</th>
-                <th>{t('Actions')}</th>
+                <th>{t('Status')}</th>
+                <th>{t('Action')}</th>
               </tr>
             </thead>
             <tbody>
-              {data.items.map(item => (
-                <tr key={item.id}>
-                  <td>
-                    <strong>{item.name_en}</strong>
-                    <br />
-                    <small>{item.code}</small>
-                  </td>
-                  <td>
-                    {item.parent_name_en || t('Top level')}
-                    {item.hierarchy_path && item.hierarchy_path.length > 2 && (
-                      <div>
-                        <small>{item.hierarchy_path.join(' → ')}</small>
+              {data.items.map(item => {
+                const currentPath =
+                  item.hierarchy_path && item.hierarchy_path.length > 0
+                    ? item.hierarchy_path.join(' → ')
+                    : item.parent_name_en
+                      ? `${item.parent_name_en} → ${item.name_en}`
+                      : item.name_en;
+                const proposedPath =
+                  item.proposed_path && item.proposed_path.length > 0
+                    ? item.proposed_path.join(' → ')
+                    : '—';
+                return (
+                  <tr key={item.id}>
+                    <td>
+                      <strong>{item.name_en}</strong>
+                      <div><small>{item.code}</small></div>
+                    </td>
+                    <td title={item.reason}>
+                      <span dir="auto">{currentPath}</span>
+                    </td>
+                    <td>
+                      <span dir="auto">{proposedPath}</span>
+                    </td>
+                    <td>
+                      <div>{item.active_material_count} {t('materials')}</div>
+                      {(item.affected_capabilities_count || 0) > 0 && (
+                        <small>{item.affected_capabilities_count} {t('capabilities')}</small>
+                      )}
+                    </td>
+                    <td>
+                      <span className="status pending" title={item.reason}>
+                        {t(ISSUE_LABELS[item.issue_type] || item.issue_label)}
+                      </span>
+                    </td>
+                    <td>{rowStatusBadge(item)}</td>
+                    <td>
+                      <div className="category-row-actions">
+                        {item.hierarchy_repair_safe && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || jobRunning}
+                            onClick={() => void openHierarchyRepairPreview()}
+                          >
+                            {t('Preview repair')}
+                          </Button>
+                        )}
+                        {item.can_approve && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || jobRunning}
+                            onClick={() => void submitDecision(item, 'approve')}
+                          >
+                            {t('Approve')}
+                          </Button>
+                        )}
+                        {item.can_retain_empty && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || jobRunning}
+                            onClick={() => void submitDecision(item, 'retain_empty')}
+                          >
+                            {t('Retain empty')}
+                          </Button>
+                        )}
+                        {item.can_merge && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || jobRunning}
+                            onClick={() => void submitDecision(item, 'merge_duplicate')}
+                          >
+                            {t('Merge')}
+                          </Button>
+                        )}
+                        {(item.missing_discipline_count > 0 || item.unsupported_discipline_count > 0) && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={busy || jobRunning}
+                            onClick={() => openReclassify(item)}
+                          >
+                            {t('Reclassify')}
+                          </Button>
+                        )}
+                        {item.can_archive && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={busy || jobRunning}
+                            onClick={() => void submitDecision(item, 'archive')}
+                          >
+                            {t('Archive')}
+                          </Button>
+                        )}
                       </div>
-                    )}
-                  </td>
-                  <td>
-                    <span className={`status ${item.safe_to_auto_fix ? 'verified' : item.requires_manual_review ? 'rejected' : 'pending'}`}>
-                      {t(item.issue_label)}
-                    </span>
-                    {item.proposed_discipline && (
-                      <div><small>{t('Proposed')}: {item.proposed_discipline}</small></div>
-                    )}
-                  </td>
-                  <td>
-                    {item.active_material_count} {t('active')}
-                    {item.inactive_material_count > 0 && (
-                      <div><small>{item.inactive_material_count} {t('archived')}</small></div>
-                    )}
-                  </td>
-                  <td>
-                    <div>{item.reason}</div>
-                    {item.materials_preview.length > 0 && (
-                      <details style={{ marginTop: '0.25rem' }}>
-                        <summary style={{ cursor: 'pointer', fontSize: '0.85em' }}>
-                          {t('Inspect materials')} ({item.materials_preview.length})
-                        </summary>
-                        <ul style={{ margin: '0.25rem 0 0', paddingInlineStart: '1.1rem', fontSize: '0.85em' }}>
-                          {item.materials_preview.map(mat => (
-                            <li key={mat.id}>
-                              <strong>{mat.name_en}</strong> ({mat.code}) —{' '}
-                              {mat.inferred_discipline
-                                ? `${t('Safe')}: ${mat.inferred_discipline}`
-                                : t('Manual review')}{' '}
-                              <small>({mat.evidence})</small>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    )}
-                  </td>
-                  <td>
-                    <div className="category-row-actions">
-                      {item.can_approve && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void submitDecision(item, 'approve')}
-                        >
-                          {t('Approve')}
-                        </Button>
-                      )}
-                      {item.can_retain_empty && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void submitDecision(item, 'retain_empty')}
-                        >
-                          {t('Retain empty')}
-                        </Button>
-                      )}
-                      {item.can_merge && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => void submitDecision(item, 'merge_duplicate')}
-                        >
-                          {t('Merge duplicate')}
-                        </Button>
-                      )}
-                      {(item.missing_discipline_count > 0 || item.unsupported_discipline_count > 0) && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          disabled={busy}
-                          onClick={() => openReclassify(item)}
-                        >
-                          {t('Reclassify')}
-                        </Button>
-                      )}
-                      {item.can_archive && (
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          disabled={busy}
-                          onClick={() => void submitDecision(item, 'archive')}
-                        >
-                          {t('Archive')}
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                  </tr>
+                );
+              })}
               {data.items.length === 0 && (
                 <tr>
-                  <td colSpan={6}>{t('No categories match this review filter.')}</td>
+                  <td colSpan={7}>{t('No categories match this review filter.')}</td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
 
+        {/* Server-side Pagination */}
         <div className="table-pagination">
           <span>
-            {t('Showing')} {data.items.length} {t('of')} {data.total_filtered}
+            {t('Showing')} {data.items.length === 0 ? 0 : offset + 1}–{offset + data.items.length} {t('of')} {data.total_filtered}
           </span>
           {offset > 0 && (
-            <Button type="button" variant="outline" onClick={() => setOffset(v => Math.max(0, v - 100))}>
+            <Button type="button" variant="outline" onClick={() => setOffset(v => Math.max(0, v - PAGE_SIZE))}>
               {t('Previous')}
             </Button>
           )}
           {offset + data.items.length < data.total_filtered && (
-            <Button type="button" variant="outline" onClick={() => setOffset(v => v + 100)}>
+            <Button type="button" variant="outline" onClick={() => setOffset(v => v + PAGE_SIZE)}>
               {t('Next')}
             </Button>
           )}
         </div>
       </div>
 
-      {/* Confirmation Preview Modal for Bulk Actions */}
+      {/* Confirmation Preview Modal for Bulk Actions & Hierarchy Repair */}
       {previewKind && (
         <AdminModal
           ref={previewDialog}
@@ -658,17 +883,76 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
           <div className="category-editor-form">
             <header className="category-editor-header">
               <h2 id="bulk-review-preview-title">
-                {previewKind === 'auto-fix' ? t('Confirm Auto-Fix Safe Records') : t('Confirm Approve All Valid')}
+                {previewKind === 'hierarchy-repair'
+                  ? t('Preview Hierarchy Repairs')
+                  : previewKind === 'auto-fix'
+                    ? t('Confirm Auto-Fix Safe Records')
+                    : t('Confirm Approve All Valid')}
               </h2>
               <Button type="button" variant="ghost" aria-label={t('Close')} disabled={busy} onClick={() => setPreviewKind(null)}>
                 <IconX size={20} />
               </Button>
             </header>
 
+            {previewKind === 'hierarchy-repair' && hierarchyPreview && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <p style={{ margin: 0 }}>
+                  {t('Only verified safe repairs will be applied in committed batches of 30 (up to 300 per job). Existing Material IDs, supplier capabilities, and RFQ references are preserved. Ambiguous records remain untouched for manual review.')}
+                </p>
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))',
+                    gap: '0.45rem',
+                  }}
+                >
+                  <div><small>{t('Total issues')}</small><div><strong>{hierarchyPreview.total_hierarchy_issues}</strong></div></div>
+                  <div><small>{t('Safe repairs')}</small><div><strong>{hierarchyPreview.safe_repairs}</strong></div></div>
+                  <div><small>{t('Manual review')}</small><div><strong>{hierarchyPreview.manual_review_count}</strong></div></div>
+                  <div><small>{t('Materials affected')}</small><div><strong>{hierarchyPreview.affected_materials}</strong></div></div>
+                  <div><small>{t('Capabilities affected')}</small><div><strong>{hierarchyPreview.affected_capabilities}</strong></div></div>
+                </div>
+
+                {hierarchyPreview.items.length > 0 && (
+                  <div className="table-wrap" style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>{t('Current hierarchy')}</th>
+                          <th>{t('Proposed hierarchy')}</th>
+                          <th>{t('Materials')}</th>
+                          <th>{t('Capabilities')}</th>
+                          <th>{t('Status')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {hierarchyPreview.items.map(item => (
+                          <tr key={item.category_id}>
+                            <td dir="auto" title={item.code}>{item.current_path.join(' → ')}</td>
+                            <td dir="auto">{item.proposed_path.length ? item.proposed_path.join(' → ') : '—'}</td>
+                            <td>{item.affected_materials_count}</td>
+                            <td>{item.affected_capabilities_count}</td>
+                            <td>
+                              <span
+                                className={`status ${item.safe ? 'verified' : 'rejected'}`}
+                                title={item.reason}
+                              >
+                                {item.safe ? t('Safe') : t('Manual review')}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
+
             {previewKind === 'auto-fix' && fixPreview && (
               <div>
                 <p>
-                  {t('Only safe, verified fixes will be applied in batches of 30 (up to 300 per job with automatic continuation). Material IDs and RFQ references are preserved. Ambiguous records remain pending.')}
+                  {t('Only safe, verified fixes will be applied in batches of 30 (up to 300 per job). Material IDs and RFQ references are preserved. Ambiguous records remain pending.')}
                 </p>
                 <ul>
                   <li><strong>{t('Safe categories in job')}:</strong> {fixPreview.categories_processed}{fixPreview.has_more ? '+' : ''}</li>
@@ -677,28 +961,6 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
                   <li><strong>{t('Parent links to repair')}:</strong> {fixPreview.parent_links_repaired}</li>
                   <li><strong>{t('Ambiguous records left for manual review')}:</strong> {fixPreview.skipped_ambiguous}</li>
                 </ul>
-                {fixPreview.preview_items.length > 0 && (
-                  <div className="table-wrap" style={{ maxHeight: '240px', overflowY: 'auto' }}>
-                    <table className="data-table">
-                      <thead>
-                        <tr>
-                          <th>{t('Category')}</th>
-                          <th>{t('Action')}</th>
-                          <th>{t('Details')}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {fixPreview.preview_items.slice(0, 25).map(p => (
-                          <tr key={p.category_id}>
-                            <td>{p.parent_name_en ? `${p.parent_name_en} → ` : ''}{p.name_en}</td>
-                            <td>{p.proposed_action}{p.proposed_discipline ? ` (${p.proposed_discipline})` : ''}</td>
-                            <td>{p.reason}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
               </div>
             )}
 
@@ -710,8 +972,7 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
                 <ul style={{ margin: 0 }}>
                   <li>
                     <strong>{t('Eligible valid records to approve')}:</strong>{' '}
-                    {approvePreview.total_eligible} ({Math.max(1, Math.ceil(approvePreview.total_eligible / Math.max(1, approvePreview.batch_size)))}{' '}
-                    {t('batch(es) of')} {approvePreview.batch_size})
+                    {approvePreview.total_eligible}
                   </li>
                   <li>
                     <strong>{t('Excluded invalid or conflicting records')}:</strong>{' '}
@@ -720,31 +981,25 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
                 </ul>
 
                 {approvePreview.preview_items.length > 0 && (
-                  <div>
-                    <p style={{ margin: '0 0 0.35rem', fontWeight: 600 }}>
-                      {t('Records that will change')} ({approvePreview.preview_items.length}
-                      {approvePreview.total_eligible > approvePreview.preview_items.length ? ` / ${approvePreview.total_eligible}` : ''})
-                    </p>
-                    <div className="table-wrap" style={{ maxHeight: '200px', overflowY: 'auto' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>{t('Category')}</th>
-                            <th>{t('Current status')}</th>
-                            <th>{t('Change')}</th>
+                  <div className="table-wrap" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th>{t('Category')}</th>
+                          <th>{t('Current status')}</th>
+                          <th>{t('Change')}</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {approvePreview.preview_items.slice(0, 30).map(p => (
+                          <tr key={p.category_id}>
+                            <td>{p.parent_name_en ? `${p.parent_name_en} → ` : ''}{p.name_en}</td>
+                            <td>{t(ISSUE_LABELS[p.issue_type] || p.issue_type)}</td>
+                            <td>{t('Retain as valid empty category')}</td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {approvePreview.preview_items.slice(0, 30).map(p => (
-                            <tr key={p.category_id}>
-                              <td>{p.parent_name_en ? `${p.parent_name_en} → ` : ''}{p.name_en}</td>
-                              <td>{t(ISSUE_LABELS[p.issue_type] || p.issue_type)}</td>
-                              <td>{t('Retain as valid empty category')}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
 
@@ -760,28 +1015,6 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
                         </span>
                       ))}
                     </div>
-                    {approvePreview.excluded_preview_items.length > 0 && (
-                      <div className="table-wrap" style={{ maxHeight: '180px', overflowY: 'auto' }}>
-                        <table className="data-table">
-                          <thead>
-                            <tr>
-                              <th>{t('Category')}</th>
-                              <th>{t('Issue')}</th>
-                              <th>{t('Reason excluded')}</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {approvePreview.excluded_preview_items.slice(0, 20).map(p => (
-                              <tr key={p.category_id}>
-                                <td>{p.parent_name_en ? `${p.parent_name_en} → ` : ''}{p.name_en}</td>
-                                <td>{t(ISSUE_LABELS[p.issue_type] || p.issue_type)}</td>
-                                <td>{p.reason}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    )}
                   </details>
                 )}
               </div>
@@ -795,21 +1028,27 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
               </Button>
               <Button
                 type="button"
-                disabled={busy || (previewKind === 'approve-valid' && (approvePreview?.total_eligible ?? 0) === 0)}
+                disabled={
+                  busy ||
+                  (previewKind === 'approve-valid' && (approvePreview?.total_eligible ?? 0) === 0) ||
+                  (previewKind === 'hierarchy-repair' && (hierarchyPreview?.safe_repairs ?? 0) === 0)
+                }
                 onClick={() => void confirmBulkAction()}
               >
                 {busy
                   ? t('Processing...')
-                  : previewKind === 'approve-valid'
-                    ? t(`Confirm & Approve (${approvePreview?.total_eligible ?? 0})`)
-                    : t('Apply Changes')}
+                  : previewKind === 'hierarchy-repair'
+                    ? t(`Apply Safe Repairs (${hierarchyPreview?.safe_repairs ?? 0})`)
+                    : previewKind === 'approve-valid'
+                      ? t(`Confirm & Approve (${approvePreview?.total_eligible ?? 0})`)
+                      : t('Apply Changes')}
               </Button>
             </footer>
           </div>
         </AdminModal>
       )}
 
-      {/* Explicit Reclassify Modal (supports category-level or per-material discipline for shared categories) */}
+      {/* Explicit Reclassify Modal */}
       {reclassifyItem && (
         <AdminModal
           ref={reclassifyDialog}
@@ -851,7 +1090,7 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
             {reclassifyItem.materials_preview.length > 0 && (
               <div style={{ maxHeight: '240px', overflowY: 'auto' }}>
                 <p style={{ margin: '0.25rem 0', fontSize: '0.9em' }}>
-                  {t('Or assign each material individually (recommended for shared multi-discipline categories):')}
+                  {t('Or assign each material individually:')}
                 </p>
                 {reclassifyItem.materials_preview.map(mat => (
                   <label key={mat.id} className="field" style={{ marginBottom: '0.5rem' }}>

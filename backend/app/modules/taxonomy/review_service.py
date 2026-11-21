@@ -1,10 +1,13 @@
 """Category review classification, safe discipline inference, and batched repair service."""
 from __future__ import annotations
 
+import difflib
 import logging
 import re
+import threading
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
+from datetime import timedelta
 from hashlib import sha256
 from typing import Callable
 
@@ -172,6 +175,27 @@ class MaterialAssessment:
 
 
 @dataclass
+class HierarchyRepairPlan:
+    category_id: str
+    code: str
+    name_en: str
+    parent_id: str | None
+    parent_name_en: str | None
+    grandparent_id: str | None
+    grandparent_name_en: str | None
+    current_path: list[str]
+    proposed_path: list[str]
+    repair_action: str  # reparent_to_main | merge_into_canonical_subcategory | promote_parent_to_main | manual_review
+    target_parent_id: str | None = None
+    target_category_id: str | None = None
+    affected_materials_count: int = 0
+    affected_capabilities_count: int = 0
+    safe: bool = False
+    status: str = 'manual_review'  # safe | manual_review
+    reason: str = ''
+
+
+@dataclass
 class CategoryAssessment:
     category: Category
     parent: Category | None
@@ -184,6 +208,10 @@ class CategoryAssessment:
     parent_id: str | None = None
     parent_name_en: str | None = None
     hierarchy_path: list[str] = field(default_factory=list)
+    proposed_path: list[str] = field(default_factory=list)
+    hierarchy_repair_action: str | None = None
+    hierarchy_repair_safe: bool = False
+    affected_capabilities_count: int = 0
     secondary_issues: list[str] = field(default_factory=list)
     active_material_count: int = 0
     inactive_material_count: int = 0
@@ -519,7 +547,8 @@ def _duplicate_group_safety(
     group: list[Category],
     all_categories: list[Category],
     active_mat_counts: dict[str, int],
-    materials_by_cat: dict[str, list[Material]],
+    materials_by_cat: dict[str, list[Material]] | None = None,
+    disciplines_by_cat: dict[str, set[str]] | None = None,
 ) -> tuple[Category, bool, list[str]]:
     """Determine canonical category and whether a same-parent duplicate group is safe to merge."""
     ids = {c.id for c in group}
@@ -547,12 +576,15 @@ def _duplicate_group_safety(
         reasons.append('Arabic category names disagree.')
 
     # Check conflicting disciplines across active materials in the duplicate group
-    group_disciplines = {
-        normalize_supported_discipline(m.discipline)
-        for cid in ids
-        for m in materials_by_cat.get(cid, [])
-        if m.active and normalize_supported_discipline(m.discipline)
-    }
+    if disciplines_by_cat is not None:
+        group_disciplines = {d for cid in ids for d in disciplines_by_cat.get(cid, set())}
+    else:
+        group_disciplines = {
+            normalize_supported_discipline(m.discipline)
+            for cid in ids
+            for m in (materials_by_cat or {}).get(cid, [])
+            if m.active and normalize_supported_discipline(m.discipline)
+        }
     if len(group_disciplines) > 1:
         reasons.append(f'Active materials span conflicting disciplines ({", ".join(sorted(group_disciplines))}).')
 
@@ -590,48 +622,453 @@ def _build_hierarchy_path(category: Category, by_id: dict[str, Category]) -> tup
     return chain, len(chain)
 
 
+def _find_near_duplicate_root(
+    normalized_name: str,
+    root_categories: list[Category],
+    *,
+    exclude_id: str | None = None,
+    threshold: float = 0.85,
+) -> Category | None:
+    """Detect probable spelling typos against existing active root categories (e.g. Netowrk vs Network)."""
+    if not normalized_name or len(normalized_name) < 5:
+        return None
+    best: Category | None = None
+    best_ratio = 0.0
+    for root in root_categories:
+        if exclude_id and root.id == exclude_id:
+            continue
+        r_norm = normalize_category_name(root.name_en)
+        if not r_norm or r_norm == normalized_name:
+            continue
+        ratio = difflib.SequenceMatcher(None, normalized_name, r_norm).ratio()
+        if ratio >= threshold and ratio > best_ratio:
+            best_ratio = ratio
+            best = root
+    return best
+
+
+def _plan_hierarchy_repairs(
+    db: Session,
+    *,
+    by_id: dict[str, Category],
+    active_categories: list[Category],
+    active_children_by_parent: dict[str, list[Category]],
+    total_mat_counts: dict[str, int],
+    sibling_supported_by_cat: dict[str, set[str]],
+    cap_keys_by_cat: dict[str, set[tuple[str, str]]],
+    cap_counts_by_cat: dict[str, int],
+) -> dict[str, HierarchyRepairPlan]:
+    """Compute safe, deterministic two-level hierarchy repair plans for all depth > 2 categories."""
+    roots = [c for c in active_categories if c.parent_id is None]
+    roots_by_norm: dict[str, list[Category]] = defaultdict(list)
+    for r in roots:
+        roots_by_norm[normalize_category_name(r.name_en)].append(r)
+
+    children_by_parent_norm: dict[tuple[str, str], list[Category]] = defaultdict(list)
+    for c in active_categories:
+        if c.parent_id:
+            children_by_parent_norm[(c.parent_id, normalize_category_name(c.name_en))].append(c)
+
+    # Pre-identify candidate merge pairs that have materials so we can batch-check material identity overlap
+    plans: dict[str, HierarchyRepairPlan] = {}
+    depth3_items: list[Category] = [
+        c
+        for c in active_categories
+        if c.parent_id
+        and (parent := by_id.get(c.parent_id)) is not None
+        and parent.active
+        and parent.parent_id is not None
+    ]
+    if not depth3_items:
+        return plans
+
+    # Pre-check material identity keys only for categories in depth3_items that actually have materials
+    mat_ids_to_check: set[str] = set()
+    for c in depth3_items:
+        if total_mat_counts.get(c.id, 0) > 0:
+            mat_ids_to_check.add(c.id)
+
+    mat_keys_by_cat: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    if mat_ids_to_check:
+        # Also include potential target subcategories that might receive merges from categories with materials
+        potential_targets: set[str] = set(mat_ids_to_check)
+        for c in depth3_items:
+            if c.id not in mat_ids_to_check:
+                continue
+            parent = by_id.get(c.parent_id) if c.parent_id else None
+            gp = by_id.get(parent.parent_id) if (parent and parent.parent_id) else None
+            if not parent or not gp:
+                continue
+            p_norm = normalize_category_name(parent.name_en)
+            gp_norm = normalize_category_name(gp.name_en)
+            target_mains = [gp] if gp_norm == p_norm else [r for r in roots_by_norm.get(p_norm, []) if r.id != parent.id]
+            for tm in target_mains:
+                for m in children_by_parent_norm.get((tm.id, normalize_category_name(c.name_en)), []):
+                    potential_targets.add(m.id)
+        for cid, name_en, unit in db.execute(
+            select(Material.category_id, Material.name_en, Material.unit).where(
+                Material.category_id.in_(potential_targets)
+            )
+        ).all():
+            if cid:
+                mat_keys_by_cat[cid].add((normalize_category_name(name_en or ''), unit or ''))
+
+    for c in depth3_items:
+        parent = by_id.get(c.parent_id) if c.parent_id else None
+        gp = by_id.get(parent.parent_id) if (parent and parent.parent_id) else None
+        current_path, depth = _build_hierarchy_path(c, by_id)
+        aff_mats = total_mat_counts.get(c.id, 0)
+        aff_caps = cap_counts_by_cat.get(c.id, 0)
+
+        if depth > 3 or parent is None or gp is None or not gp.active:
+            plans[c.id] = HierarchyRepairPlan(
+                category_id=c.id,
+                code=c.code,
+                name_en=c.name_en,
+                parent_id=c.parent_id,
+                parent_name_en=parent.name_en if parent else None,
+                grandparent_id=gp.id if gp else None,
+                grandparent_name_en=gp.name_en if gp else None,
+                current_path=current_path,
+                proposed_path=[],
+                repair_action='manual_review',
+                affected_materials_count=aff_mats,
+                affected_capabilities_count=aff_caps,
+                safe=False,
+                status='manual_review',
+                reason='Hierarchy exceeds 3 levels or has an inactive/missing grandparent; resolve manually.',
+            )
+            continue
+
+        if active_children_by_parent.get(c.id):
+            plans[c.id] = HierarchyRepairPlan(
+                category_id=c.id,
+                code=c.code,
+                name_en=c.name_en,
+                parent_id=c.parent_id,
+                parent_name_en=parent.name_en,
+                grandparent_id=gp.id,
+                grandparent_name_en=gp.name_en,
+                current_path=current_path,
+                proposed_path=[],
+                repair_action='manual_review',
+                affected_materials_count=aff_mats,
+                affected_capabilities_count=aff_caps,
+                safe=False,
+                status='manual_review',
+                reason='Category has active child categories; repair leaf categories first.',
+            )
+            continue
+
+        gp_norm = normalize_category_name(gp.name_en)
+        p_norm = normalize_category_name(parent.name_en)
+        cat_norm = normalize_category_name(c.name_en)
+
+        def _evaluate_target_main(target_main: Category, context_note: str) -> HierarchyRepairPlan:
+            matches = [
+                x for x in children_by_parent_norm.get((target_main.id, cat_norm), []) if x.id != c.id
+            ]
+            if len(matches) == 0:
+                return HierarchyRepairPlan(
+                    category_id=c.id,
+                    code=c.code,
+                    name_en=c.name_en,
+                    parent_id=c.parent_id,
+                    parent_name_en=parent.name_en,
+                    grandparent_id=gp.id,
+                    grandparent_name_en=gp.name_en,
+                    current_path=current_path,
+                    proposed_path=[target_main.name_en, c.name_en],
+                    repair_action='reparent_to_main',
+                    target_parent_id=target_main.id,
+                    affected_materials_count=aff_mats,
+                    affected_capabilities_count=aff_caps,
+                    safe=True,
+                    status='safe',
+                    reason=f'Reparent under "{target_main.name_en}" ({context_note}); preserves category ID, materials, and capabilities.',
+                )
+            if len(matches) > 1:
+                return HierarchyRepairPlan(
+                    category_id=c.id,
+                    code=c.code,
+                    name_en=c.name_en,
+                    parent_id=c.parent_id,
+                    parent_name_en=parent.name_en,
+                    grandparent_id=gp.id,
+                    grandparent_name_en=gp.name_en,
+                    current_path=current_path,
+                    proposed_path=[target_main.name_en, c.name_en],
+                    repair_action='manual_review',
+                    target_parent_id=target_main.id,
+                    affected_materials_count=aff_mats,
+                    affected_capabilities_count=aff_caps,
+                    safe=False,
+                    status='manual_review',
+                    reason=f'Multiple active "{c.name_en}" subcategories already exist under "{target_main.name_en}"; deduplicate first.',
+                )
+            target_sub = matches[0]
+            blockers: list[str] = []
+            if cap_keys_by_cat.get(c.id, set()) & cap_keys_by_cat.get(target_sub.id, set()):
+                blockers.append('Supplier capability areas overlap with canonical subcategory.')
+            combined_disc = sibling_supported_by_cat.get(c.id, set()) | sibling_supported_by_cat.get(target_sub.id, set())
+            if len(combined_disc) > 1:
+                blockers.append(f'Active materials span conflicting disciplines ({", ".join(sorted(combined_disc))}).')
+            if aff_mats > 0 and (mat_keys_by_cat.get(c.id, set()) & mat_keys_by_cat.get(target_sub.id, set())):
+                blockers.append('Material identities overlap with canonical subcategory.')
+            if blockers:
+                return HierarchyRepairPlan(
+                    category_id=c.id,
+                    code=c.code,
+                    name_en=c.name_en,
+                    parent_id=c.parent_id,
+                    parent_name_en=parent.name_en,
+                    grandparent_id=gp.id,
+                    grandparent_name_en=gp.name_en,
+                    current_path=current_path,
+                    proposed_path=[target_main.name_en, target_sub.name_en],
+                    repair_action='manual_review',
+                    target_parent_id=target_main.id,
+                    target_category_id=target_sub.id,
+                    affected_materials_count=aff_mats,
+                    affected_capabilities_count=aff_caps,
+                    safe=False,
+                    status='manual_review',
+                    reason=' '.join(blockers),
+                )
+            return HierarchyRepairPlan(
+                category_id=c.id,
+                code=c.code,
+                name_en=c.name_en,
+                parent_id=c.parent_id,
+                parent_name_en=parent.name_en,
+                grandparent_id=gp.id,
+                grandparent_name_en=gp.name_en,
+                current_path=current_path,
+                proposed_path=[target_main.name_en, target_sub.name_en],
+                repair_action='merge_into_canonical_subcategory',
+                target_parent_id=target_main.id,
+                target_category_id=target_sub.id,
+                affected_materials_count=aff_mats,
+                affected_capabilities_count=aff_caps,
+                safe=True,
+                status='safe',
+                reason=f'Merge duplicate level-3 record into canonical "{target_main.name_en} → {target_sub.name_en}" ({context_note}).',
+            )
+
+        if gp_norm == p_norm:
+            # Case 1: Duplicate parent level (e.g. Electrical -> Electrical -> Accessories)
+            plans[c.id] = _evaluate_target_main(gp, f'removes duplicate "{parent.name_en}" level')
+        elif gp_norm in SUPPORTED_DISCIPLINES:
+            # Case 2: Discipline stored as root category (e.g. Civil -> Architectural Insulation -> Acoustic Products)
+            existing_roots = [r for r in roots_by_norm.get(p_norm, []) if r.id != parent.id]
+            if len(existing_roots) == 1:
+                plans[c.id] = _evaluate_target_main(
+                    existing_roots[0],
+                    f'"{gp.name_en}" is a discipline, not a category level',
+                )
+            elif len(existing_roots) > 1:
+                plans[c.id] = HierarchyRepairPlan(
+                    category_id=c.id,
+                    code=c.code,
+                    name_en=c.name_en,
+                    parent_id=c.parent_id,
+                    parent_name_en=parent.name_en,
+                    grandparent_id=gp.id,
+                    grandparent_name_en=gp.name_en,
+                    current_path=current_path,
+                    proposed_path=[parent.name_en, c.name_en],
+                    repair_action='manual_review',
+                    affected_materials_count=aff_mats,
+                    affected_capabilities_count=aff_caps,
+                    safe=False,
+                    status='manual_review',
+                    reason=f'Multiple root categories named "{parent.name_en}" exist; resolve duplicate main category first.',
+                )
+            else:
+                near_root = _find_near_duplicate_root(p_norm, roots, exclude_id=parent.id)
+                if near_root is not None:
+                    plans[c.id] = HierarchyRepairPlan(
+                        category_id=c.id,
+                        code=c.code,
+                        name_en=c.name_en,
+                        parent_id=c.parent_id,
+                        parent_name_en=parent.name_en,
+                        grandparent_id=gp.id,
+                        grandparent_name_en=gp.name_en,
+                        current_path=current_path,
+                        proposed_path=[near_root.name_en, c.name_en],
+                        repair_action='manual_review',
+                        target_parent_id=near_root.id,
+                        affected_materials_count=aff_mats,
+                        affected_capabilities_count=aff_caps,
+                        safe=False,
+                        status='manual_review',
+                        reason=f'Parent "{parent.name_en}" closely resembles existing main category "{near_root.name_en}"; review spelling/merge manually.',
+                    )
+                else:
+                    plans[c.id] = HierarchyRepairPlan(
+                        category_id=c.id,
+                        code=c.code,
+                        name_en=c.name_en,
+                        parent_id=c.parent_id,
+                        parent_name_en=parent.name_en,
+                        grandparent_id=gp.id,
+                        grandparent_name_en=gp.name_en,
+                        current_path=current_path,
+                        proposed_path=[parent.name_en, c.name_en],
+                        repair_action='promote_parent_to_main',
+                        target_parent_id=parent.id,
+                        affected_materials_count=aff_mats,
+                        affected_capabilities_count=aff_caps,
+                        safe=True,
+                        status='safe',
+                        reason=f'Promote "{parent.name_en}" to top-level Main Category (removes "{gp.name_en}" discipline wrapper and preserves all IDs).',
+                    )
+        else:
+            plans[c.id] = HierarchyRepairPlan(
+                category_id=c.id,
+                code=c.code,
+                name_en=c.name_en,
+                parent_id=c.parent_id,
+                parent_name_en=parent.name_en,
+                grandparent_id=gp.id,
+                grandparent_name_en=gp.name_en,
+                current_path=current_path,
+                proposed_path=[],
+                repair_action='manual_review',
+                affected_materials_count=aff_mats,
+                affected_capabilities_count=aff_caps,
+                safe=False,
+                status='manual_review',
+                reason=f'Top-level ancestor "{gp.name_en}" is not a discipline root; review manually.',
+            )
+
+    return plans
+
+
 def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[CategoryAssessment]:
-    """Analyze all active categories and return structured assessments."""
+    """Analyze all active categories and return structured assessments using lightweight projections."""
     all_categories = list(db.scalars(select(Category).order_by(Category.name_en, Category.id)).all())
     by_id = {c.id: c for c in all_categories}
     active_categories = [c for c in all_categories if c.active]
     active_ids = {c.id for c in active_categories}
 
-    all_materials = list(db.scalars(select(Material)).all())
-    materials_by_cat: dict[str, list[Material]] = defaultdict(list)
+    # SQL-aggregated material summary (returns ~450 grouped rows instead of 10,000+ raw material rows)
+    grouped_mat_rows = db.execute(
+        select(
+            Material.active,
+            Material.category_id,
+            Material.main_category_id,
+            Material.subcategory_id,
+            Material.discipline,
+            func.count(Material.id),
+        ).group_by(
+            Material.active,
+            Material.category_id,
+            Material.main_category_id,
+            Material.subcategory_id,
+            Material.discipline,
+        )
+    ).all()
+
     active_mat_counts: dict[str, int] = defaultdict(int)
     inactive_mat_counts: dict[str, int] = defaultdict(int)
+    total_mat_counts: dict[str, int] = defaultdict(int)
+    sibling_supported_by_cat: dict[str, set[str]] = defaultdict(set)
+    cats_with_mismatch: set[str] = set()
+    has_bad_disc = False
 
-    for m in all_materials:
-        linked_cats = {cid for cid in (m.category_id, m.main_category_id, m.subcategory_id) if cid and cid in active_ids}
+    for mat_active, cat_id, main_cat_id, sub_cat_id, disc_raw, row_cnt in grouped_mat_rows:
+        cnt = int(row_cnt or 0)
+        linked_cats = {cid for cid in (cat_id, main_cat_id, sub_cat_id) if cid and cid in active_ids}
+        if not linked_cats:
+            continue
+        supported_disc = normalize_supported_discipline(disc_raw) if mat_active else None
         for cid in linked_cats:
-            materials_by_cat[cid].append(m)
-            if m.active:
-                active_mat_counts[cid] += 1
+            total_mat_counts[cid] += cnt
+            if mat_active:
+                active_mat_counts[cid] += cnt
+                if supported_disc:
+                    sibling_supported_by_cat[cid].add(supported_disc)
+                else:
+                    has_bad_disc = True
+                is_direct = (sub_cat_id == cid) or (sub_cat_id is None and cat_id == cid)
+                if is_direct:
+                    cat_obj = by_id[cid]
+                    expected_main_id = cat_obj.parent_id or cat_obj.id
+                    if main_cat_id is not None and main_cat_id != expected_main_id:
+                        cats_with_mismatch.add(cid)
             else:
-                inactive_mat_counts[cid] += 1
+                inactive_mat_counts[cid] += cnt
 
-    # Load import batch & row metadata only for active materials missing/unsupported discipline
-    needing_meta = [
-        m for m in all_materials
-        if m.active and not normalize_supported_discipline(m.discipline) and m.import_batch_id
-    ]
-    batch_ids = {m.import_batch_id for m in needing_meta if m.import_batch_id}
+    mismatched_ids_by_cat: dict[str, list[str]] = defaultdict(list)
+    if cats_with_mismatch:
+        for mat_id, cat_id, main_cat_id, sub_cat_id in db.execute(
+            select(
+                Material.id,
+                Material.category_id,
+                Material.main_category_id,
+                Material.subcategory_id,
+            ).where(
+                Material.active.is_(True),
+                or_(
+                    Material.subcategory_id.in_(cats_with_mismatch),
+                    and_(Material.subcategory_id.is_(None), Material.category_id.in_(cats_with_mismatch)),
+                ),
+            )
+        ).all():
+            direct_cid = sub_cat_id if sub_cat_id in cats_with_mismatch else cat_id
+            if direct_cid in cats_with_mismatch:
+                cat_obj = by_id[direct_cid]
+                expected_main_id = cat_obj.parent_id or cat_obj.id
+                if main_cat_id is not None and main_cat_id != expected_main_id:
+                    mismatched_ids_by_cat[direct_cid].append(mat_id)
+
+    # Fetch full Material ORM objects ONLY when active materials have missing/unsupported discipline
+    bad_materials_by_id: dict[str, Material] = {}
+    bad_disc_by_cat: dict[str, list[tuple[str, bool]]] = defaultdict(list)
     batches_by_id: dict[str, ImportBatch] = {}
     rows_by_key: dict[tuple[str, int], ImportedRow] = {}
-    if batch_ids:
-        batches_by_id = {
-            b.id: b for b in db.scalars(select(ImportBatch).where(ImportBatch.id.in_(batch_ids))).all()
-        }
-        row_nums = {m.import_row_number for m in needing_meta if m.import_row_number is not None}
-        if row_nums:
-            for row in db.scalars(
-                select(ImportedRow).where(
-                    ImportedRow.batch_id.in_(batch_ids),
-                    ImportedRow.row_number.in_(row_nums),
+    if has_bad_disc:
+        bad_mats = list(
+            db.scalars(
+                select(Material).where(
+                    Material.active.is_(True),
+                    ~func.lower(func.coalesce(Material.discipline, '')).in_(list(SUPPORTED_DISCIPLINES.keys())),
                 )
-            ).all():
-                rows_by_key[(row.batch_id, row.row_number)] = row
+            ).all()
+        )
+        bad_materials_by_id = {m.id: m for m in bad_mats}
+        for m in bad_mats:
+            for cid in {m.category_id, m.main_category_id, m.subcategory_id}:
+                if cid and cid in active_ids:
+                    is_direct = (m.subcategory_id == cid) or (m.subcategory_id is None and m.category_id == cid)
+                    bad_disc_by_cat[cid].append((m.id, is_direct))
+        needing_meta = [m for m in bad_mats if m.import_batch_id]
+        batch_ids = {m.import_batch_id for m in needing_meta if m.import_batch_id}
+        if batch_ids:
+            batches_by_id = {
+                b.id: b for b in db.scalars(select(ImportBatch).where(ImportBatch.id.in_(batch_ids))).all()
+            }
+            row_nums = {m.import_row_number for m in needing_meta if m.import_row_number is not None}
+            if row_nums:
+                for row in db.scalars(
+                    select(ImportedRow).where(
+                        ImportedRow.batch_id.in_(batch_ids),
+                        ImportedRow.row_number.in_(row_nums),
+                    )
+                ).all():
+                    rows_by_key[(row.batch_id, row.row_number)] = row
+
+    # Lightweight capability projection for hierarchy repair safety & counts
+    cap_keys_by_cat: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    cap_counts_by_cat: dict[str, int] = defaultdict(int)
+    for cap_cat_id, cap_org_id, cap_city in db.execute(
+        select(Capability.category_id, Capability.org_id, Capability.city)
+    ).all():
+        if cap_cat_id and cap_cat_id in active_ids:
+            cap_counts_by_cat[cap_cat_id] += 1
+            cap_keys_by_cat[cap_cat_id].add((cap_org_id, cap_city))
 
     # Detect duplicate active categories under the exact same parent_id + normalized name
     dup_groups_raw: dict[tuple[str | None, str], list[Category]] = defaultdict(list)
@@ -642,7 +1079,11 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
     for group in dup_groups_raw.values():
         if len(group) > 1:
             canonical, safe, blockers = _duplicate_group_safety(
-                db, group, all_categories, active_mat_counts, materials_by_cat
+                db,
+                group,
+                all_categories,
+                active_mat_counts,
+                disciplines_by_cat=sibling_supported_by_cat,
             )
             group_ids = [c.id for c in group]
             for c in group:
@@ -654,33 +1095,26 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
         if c.parent_id:
             active_children_by_parent[c.parent_id].append(c)
 
+    hierarchy_plans = _plan_hierarchy_repairs(
+        db,
+        by_id=by_id,
+        active_categories=active_categories,
+        active_children_by_parent=active_children_by_parent,
+        total_mat_counts=total_mat_counts,
+        sibling_supported_by_cat=sibling_supported_by_cat,
+        cap_keys_by_cat=cap_keys_by_cat,
+        cap_counts_by_cat=cap_counts_by_cat,
+    )
+
     assessments: list[CategoryAssessment] = []
 
     for category in active_categories:
         parent = by_id.get(category.parent_id) if category.parent_id else None
-        mats = materials_by_cat.get(category.id, [])
-        active_mats = [m for m in mats if m.active]
-        inactive_mats = [m for m in mats if not m.active]
+        active_count = active_mat_counts.get(category.id, 0)
+        inactive_count = inactive_mat_counts.get(category.id, 0)
         current_decision = decisions.get(category.id)
-
-        # Direct materials belonging to this category (for subcategory parent mismatch check)
-        direct_active = [
-            m for m in active_mats
-            if m.subcategory_id == category.id or (m.subcategory_id is None and m.category_id == category.id)
-        ]
-        expected_main_id = category.parent_id or category.id
-        mismatched_mats = [
-            m for m in direct_active
-            if m.main_category_id is not None and m.main_category_id != expected_main_id
-        ]
-
-        # Assess discipline for every active material linked to this category
-        sibling_supported = {
-            normalize_supported_discipline(m.discipline)
-            for m in active_mats
-            if normalize_supported_discipline(m.discipline)
-        }
-        sibling_supported.discard(None)  # type: ignore[arg-type]
+        mismatched_mat_ids = mismatched_ids_by_cat.get(category.id, [])
+        sibling_supported = sibling_supported_by_cat.get(category.id, set())
 
         mat_assessments: list[MaterialAssessment] = []
         safe_material_fixes: dict[str, str] = {}
@@ -688,8 +1122,10 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
         unsupported_count = 0
         ambiguous_count = 0
 
-        direct_ids = {m.id for m in direct_active}
-        for m in active_mats:
+        for mat_id, is_direct in bad_disc_by_cat.get(category.id, []):
+            m = bad_materials_by_id.get(mat_id)
+            if m is None:
+                continue
             leaf_cat = by_id.get(m.subcategory_id or m.category_id) or category
             leaf_parent = by_id.get(leaf_cat.parent_id) if leaf_cat.parent_id else None
             ma = _assess_material_discipline(
@@ -702,7 +1138,7 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
                 missing_count += 1
             else:
                 unsupported_count += 1
-            if ma.safe and ma.inferred_discipline and m.id in direct_ids:
+            if ma.safe and ma.inferred_discipline and is_direct:
                 safe_material_fixes[m.id] = ma.inferred_discipline
             else:
                 ambiguous_count += 1
@@ -711,6 +1147,12 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
         secondary: list[str] = []
         evidence: list[str] = []
         hierarchy_path, hierarchy_depth = _build_hierarchy_path(category, by_id)
+        h_plan = hierarchy_plans.get(category.id)
+        proposed_path: list[str] = list(h_plan.proposed_path) if h_plan else []
+        hierarchy_repair_action: str | None = h_plan.repair_action if h_plan else None
+        hierarchy_repair_safe: bool = bool(h_plan and h_plan.safe)
+        affected_capabilities_count = cap_counts_by_cat.get(category.id, 0)
+
         label_text = f'{category.name_en} {parent.name_en if parent else ""}'
         is_suspicious_label = bool(SUSPICIOUS_LABEL_RE.search(label_text))
         is_missing_parent = bool(category.parent_id and parent is None)
@@ -721,7 +1163,7 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
         is_broken_parent = is_missing_parent or is_archived_parent or is_hierarchy_depth_exceeded
         is_duplicate = category.id in dup_info
         has_active_children = bool(active_children_by_parent.get(category.id))
-        can_archive = (len(active_mats) == 0) and (not has_active_children)
+        can_archive = (active_count == 0) and (not has_active_children)
 
         # Determine primary issue_type & action
         issue_type: str | None = None
@@ -751,7 +1193,7 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
             reason = f'Category references missing parent ID ({category.parent_id}).'
             if is_duplicate:
                 secondary.append('duplicate_category')
-            if mismatched_mats:
+            if mismatched_mat_ids:
                 secondary.append('parent_mismatch')
             if missing_count:
                 secondary.append('missing_discipline')
@@ -769,7 +1211,7 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
             )
             if is_duplicate:
                 secondary.append('duplicate_category')
-            if mismatched_mats:
+            if mismatched_mat_ids:
                 secondary.append('parent_mismatch')
             if missing_count:
                 secondary.append('missing_discipline')
@@ -781,39 +1223,41 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
         elif is_hierarchy_depth_exceeded:
             issue_type = 'hierarchy_depth_exceeded'
             path_str = ' → '.join(hierarchy_path)
-            reason = (
-                f'Category sits at hierarchy level {hierarchy_depth} ({path_str}), '
-                'exceeding the two-level hierarchy (Main Category → Subcategory).'
-            )
+            if h_plan:
+                reason = h_plan.reason
+                proposed_action = h_plan.repair_action
+            else:
+                reason = (
+                    f'Category sits at hierarchy level {hierarchy_depth} ({path_str}), '
+                    'exceeding the two-level hierarchy (Main Category → Subcategory).'
+                )
+                proposed_action = 'manual_review'
             if is_duplicate:
                 secondary.append('duplicate_category')
-            if mismatched_mats:
+            if mismatched_mat_ids:
                 secondary.append('parent_mismatch')
             if missing_count:
                 secondary.append('missing_discipline')
             if unsupported_count:
                 secondary.append('unsupported_discipline')
-            proposed_action = 'manual_review'
-            evidence.append(f'Hierarchy path: {path_str}')
-            if hierarchy_path and hierarchy_path[0].strip().casefold() in SUPPORTED_DISCIPLINES:
-                evidence.append(
-                    f'Top-level ancestor "{hierarchy_path[0]}" is a discipline root rather than a Main Category.'
-                )
+            evidence.append(f'Current path: {path_str}')
+            if proposed_path:
+                evidence.append(f'Proposed path: {" → ".join(proposed_path)}')
 
         elif is_suspicious_label:
             issue_type = 'invalid_import_data'
             reason = 'Category label resembles test, QA, sample, or bulk data; review before public use.'
             if is_duplicate:
                 secondary.append('duplicate_category')
-            if mismatched_mats:
+            if mismatched_mat_ids:
                 secondary.append('parent_mismatch')
             # Admin can explicitly approve a false-positive suspicious label ONLY if no broken parent or bad materials
             can_approve = (
-                not mismatched_mats
+                not mismatched_mat_ids
                 and missing_count == 0
                 and unsupported_count == 0
                 and not is_duplicate
-                and len(active_mats) > 0
+                and active_count > 0
             )
             proposed_action = 'manual_review'
             evidence.append(reason)
@@ -838,11 +1282,11 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
             if missing_count or unsupported_count:
                 secondary.append('missing_discipline' if missing_count else 'unsupported_discipline')
 
-        elif mismatched_mats:
+        elif mismatched_mat_ids:
             issue_type = 'parent_mismatch'
-            reason = f'{len(mismatched_mats)} active material(s) reference a main category that disagrees with this subcategory parent.'
+            reason = f'{len(mismatched_mat_ids)} active material(s) reference a main category that disagrees with this subcategory parent.'
             if parent and parent.active and not parent.parent_id:
-                parent_fix_ids = [m.id for m in mismatched_mats]
+                parent_fix_ids = list(mismatched_mat_ids)
                 proposed_action = 'repair_parent'
                 safe_to_auto_fix = True
                 evidence.append(f'Align main_category_id to parent "{parent.name_en}" ({parent.id})')
@@ -887,10 +1331,10 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
                 safe_to_auto_fix = True
                 evidence.extend(sorted({ma.evidence for ma in mat_assessments if ma.issue != 'ok'})[:5])
 
-        elif len(active_mats) == 0:
-            if len(inactive_mats) > 0:
+        elif active_count == 0:
+            if inactive_count > 0:
                 issue_type = 'inactive_materials_only'
-                reason = f'Category has {len(inactive_mats)} archived material(s) and no active materials.'
+                reason = f'Category has {inactive_count} archived material(s) and no active materials.'
                 proposed_action = 'retain_empty'
                 can_retain_empty = True
                 evidence.append('Retain as valid empty category (hidden from buyer selection) or archive.')
@@ -916,13 +1360,17 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
         if current_decision:
             if current_decision.decision == 'retain_empty' and issue_type in {'empty_category', 'inactive_materials_only'}:
                 resolved_by_decision = True
-            elif current_decision.decision == 'approve' and issue_type == 'invalid_import_data' and is_suspicious_label and not is_broken_parent and not mismatched_mats and missing_count == 0 and unsupported_count == 0 and not is_duplicate:
+            elif current_decision.decision == 'approve' and issue_type == 'invalid_import_data' and is_suspicious_label and not is_broken_parent and not mismatched_mat_ids and missing_count == 0 and unsupported_count == 0 and not is_duplicate:
                 resolved_by_decision = True
 
         if resolved_by_decision and not include_resolved:
             continue
 
-        requires_manual = (not safe_to_auto_fix) and issue_type not in {'empty_category', 'inactive_materials_only', 'valid'}
+        requires_manual = (
+            (not safe_to_auto_fix)
+            and (not hierarchy_repair_safe)
+            and issue_type not in {'empty_category', 'inactive_materials_only', 'valid'}
+        )
 
         assessments.append(
             CategoryAssessment(
@@ -937,9 +1385,13 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
                 parent_id=category.parent_id,
                 parent_name_en=parent.name_en if parent else None,
                 hierarchy_path=hierarchy_path,
+                proposed_path=proposed_path,
+                hierarchy_repair_action=hierarchy_repair_action,
+                hierarchy_repair_safe=hierarchy_repair_safe,
+                affected_capabilities_count=affected_capabilities_count,
                 secondary_issues=secondary,
-                active_material_count=len(active_mats),
-                inactive_material_count=len(inactive_mats),
+                active_material_count=active_count,
+                inactive_material_count=inactive_count,
                 missing_discipline_count=missing_count,
                 unsupported_discipline_count=unsupported_count,
                 duplicate_ids=duplicate_ids,
@@ -1445,6 +1897,7 @@ def run_bulk_approve_valid(
             'total_eligible': total_eligible,
             'retained_empty': len(job_slice) if dry_run else 0,
             'approved': 0,
+            'approved_count': 0,
             'skipped_already_approved': 0,
             'remaining_valid': remaining_after_job if dry_run else 0,
             'excluded_count': excluded_count,
@@ -1563,6 +2016,7 @@ def run_bulk_approve_valid(
         'total_eligible': total_eligible,
         'retained_empty': retained_empty,
         'approved': 0,
+        'approved_count': retained_empty,
         'skipped_already_approved': skipped_already_approved,
         'remaining_valid': remaining_valid,
         'excluded_count': excluded_count,
@@ -1754,6 +2208,10 @@ def serialize_assessment(item: CategoryAssessment) -> dict:
         'parent_id': item.parent_id,
         'parent_name_en': item.parent_name_en,
         'hierarchy_path': item.hierarchy_path,
+        'proposed_path': item.proposed_path,
+        'hierarchy_repair_action': item.hierarchy_repair_action,
+        'hierarchy_repair_safe': item.hierarchy_repair_safe,
+        'affected_capabilities_count': item.affected_capabilities_count,
         'issue_type': item.issue_type,
         'issue_label': ISSUE_LABELS.get(item.issue_type, item.issue_type),
         'reason': item.reason,
@@ -1807,6 +2265,12 @@ def build_analysis_payload(
 
     total_pending = sum(1 for item in all_items if item.issue_type != 'valid')
     total_safe_auto_fix = sum(1 for item in all_items if item.safe_to_auto_fix)
+    total_safe_hierarchy_repairs = sum(
+        1 for item in all_items if item.issue_type == 'hierarchy_depth_exceeded' and item.hierarchy_repair_safe
+    )
+    total_hierarchy_conflicts = sum(
+        1 for item in all_items if item.issue_type in HIERARCHY_BLOCKING_ISSUES
+    )
     total_valid_approvable = sum(
         1 for item in all_items if item.can_retain_empty and item.issue_type in {'empty_category', 'inactive_materials_only'}
     )
@@ -1823,7 +2287,7 @@ def build_analysis_payload(
             item
             for item in filtered
             if term in normalize_text(
-                f'{item.category_name_en} {item.category_code} {item.parent_name_en or ""} {" ".join(item.hierarchy_path)} {item.reason}'
+                f'{item.category_name_en} {item.category_code} {item.parent_name_en or ""} {" ".join(item.hierarchy_path)} {" ".join(item.proposed_path)} {item.reason}'
             )
         ]
 
@@ -1836,6 +2300,8 @@ def build_analysis_payload(
         'total_pending': total_pending,
         'total_filtered': len(filtered),
         'total_safe_auto_fix': total_safe_auto_fix,
+        'total_safe_hierarchy_repairs': total_safe_hierarchy_repairs,
+        'total_hierarchy_conflicts': total_hierarchy_conflicts,
         'total_valid_approvable': total_valid_approvable,
         'total_conflicts': total_conflicts,
         'counts_by_issue_type': dict(counts_by_issue),
@@ -1847,3 +2313,522 @@ def build_analysis_payload(
         'offset': offset,
         'items': [serialize_assessment(item) for item in page_items],
     }
+
+
+def _serialize_hierarchy_plan(plan: HierarchyRepairPlan) -> dict:
+    return {
+        'category_id': plan.category_id,
+        'code': plan.code,
+        'name_en': plan.name_en,
+        'parent_id': plan.parent_id,
+        'parent_name_en': plan.parent_name_en,
+        'grandparent_id': plan.grandparent_id,
+        'grandparent_name_en': plan.grandparent_name_en,
+        'current_path': list(plan.current_path),
+        'proposed_path': list(plan.proposed_path),
+        'repair_action': plan.repair_action,
+        'target_parent_id': plan.target_parent_id,
+        'target_category_id': plan.target_category_id,
+        'affected_materials_count': plan.affected_materials_count,
+        'affected_capabilities_count': plan.affected_capabilities_count,
+        'safe': plan.safe,
+        'status': plan.status,
+        'reason': plan.reason,
+    }
+
+
+def _collect_hierarchy_plans(db: Session) -> list[HierarchyRepairPlan]:
+    """Compute all hierarchy repair plans in a single lightweight read pass."""
+    all_categories = list(db.scalars(select(Category).order_by(Category.name_en, Category.id)).all())
+    by_id = {c.id: c for c in all_categories}
+    active_categories = [c for c in all_categories if c.active]
+    active_ids = {c.id for c in active_categories}
+
+    active_children_by_parent: dict[str, list[Category]] = defaultdict(list)
+    for c in active_categories:
+        if c.parent_id:
+            active_children_by_parent[c.parent_id].append(c)
+
+    total_mat_counts: dict[str, int] = defaultdict(int)
+    sibling_supported_by_cat: dict[str, set[str]] = defaultdict(set)
+    for mat_active, cat_id, main_cat_id, sub_cat_id, disc_raw, row_cnt in db.execute(
+        select(
+            Material.active,
+            Material.category_id,
+            Material.main_category_id,
+            Material.subcategory_id,
+            Material.discipline,
+            func.count(Material.id),
+        ).group_by(
+            Material.active,
+            Material.category_id,
+            Material.main_category_id,
+            Material.subcategory_id,
+            Material.discipline,
+        )
+    ).all():
+        cnt = int(row_cnt or 0)
+        supported_disc = normalize_supported_discipline(disc_raw) if mat_active else None
+        for cid in {cat_id, main_cat_id, sub_cat_id}:
+            if cid and cid in active_ids:
+                total_mat_counts[cid] += cnt
+                if supported_disc:
+                    sibling_supported_by_cat[cid].add(supported_disc)
+
+    cap_keys_by_cat: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    cap_counts_by_cat: dict[str, int] = defaultdict(int)
+    for cap_cat_id, cap_org_id, cap_city in db.execute(
+        select(Capability.category_id, Capability.org_id, Capability.city)
+    ).all():
+        if cap_cat_id and cap_cat_id in active_ids:
+            cap_counts_by_cat[cap_cat_id] += 1
+            cap_keys_by_cat[cap_cat_id].add((cap_org_id, cap_city))
+
+    plans_map = _plan_hierarchy_repairs(
+        db,
+        by_id=by_id,
+        active_categories=active_categories,
+        active_children_by_parent=active_children_by_parent,
+        total_mat_counts=total_mat_counts,
+        sibling_supported_by_cat=sibling_supported_by_cat,
+        cap_keys_by_cat=cap_keys_by_cat,
+        cap_counts_by_cat=cap_counts_by_cat,
+    )
+    return sorted(plans_map.values(), key=lambda p: (not p.safe, ' / '.join(p.current_path), p.category_id))
+
+
+def build_hierarchy_repair_preview(
+    db: Session,
+    *,
+    category_ids: list[str] | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    """Analyze all depth > 2 hierarchy issues and return a safe vs manual-review preview."""
+    plans = _collect_hierarchy_plans(db)
+    if category_ids:
+        wanted = set(category_ids)
+        plans = [p for p in plans if p.category_id in wanted]
+
+    safe_plans = [p for p in plans if p.safe]
+    manual_plans = [p for p in plans if not p.safe]
+    action_counts = Counter(p.repair_action for p in plans)
+    page = plans[offset : offset + limit]
+    return {
+        'total_hierarchy_issues': len(plans),
+        'safe_repairs': len(safe_plans),
+        'manual_review_count': len(manual_plans),
+        'affected_materials': sum(p.affected_materials_count for p in safe_plans),
+        'affected_capabilities': sum(p.affected_capabilities_count for p in safe_plans),
+        'counts_by_action': dict(action_counts),
+        'batch_size': BATCH_SIZE,
+        'job_size': JOB_SIZE,
+        'items': [_serialize_hierarchy_plan(p) for p in page],
+    }
+
+
+def _apply_single_hierarchy_repair(
+    db: Session,
+    plan: dict,
+    actor: User | ReviewActor | None,
+) -> tuple[str, int, int]:
+    """Apply one verified safe hierarchy repair inside a batch transaction.
+
+    Returns (outcome, materials_updated, references_moved) where outcome is 'repaired' or 'skipped'.
+    """
+    action = plan['repair_action']
+    cat_id = plan['category_id']
+    target_parent_id = plan.get('target_parent_id')
+    target_category_id = plan.get('target_category_id')
+
+    lock_ids = sorted({i for i in (cat_id, target_parent_id, target_category_id) if i})
+    locked = {
+        c.id: c
+        for c in db.scalars(
+            select(Category).where(Category.id.in_(lock_ids)).order_by(Category.id).with_for_update()
+        ).all()
+    }
+    cat = locked.get(cat_id)
+    if not cat or not cat.active:
+        return 'skipped', 0, 0
+
+    if action == 'reparent_to_main':
+        target_main = locked.get(target_parent_id) if target_parent_id else None
+        if not target_main or not target_main.active or target_main.parent_id is not None:
+            return 'skipped', 0, 0
+        if cat.parent_id == target_main.id:
+            return 'skipped', 0, 0
+        # Verify no active sibling with same normalized name appeared concurrently
+        cat_norm = normalize_category_name(cat.name_en)
+        siblings = db.scalars(
+            select(Category).where(Category.parent_id == target_main.id, Category.active.is_(True), Category.id != cat.id)
+        ).all()
+        if any(normalize_category_name(s.name_en) == cat_norm for s in siblings):
+            return 'skipped', 0, 0
+        old_parent_id = cat.parent_id
+        cat.parent_id = target_main.id
+        mat_res = db.execute(
+            update(Material)
+            .where(or_(Material.category_id == cat.id, Material.subcategory_id == cat.id))
+            .values(main_category_id=target_main.id, subcategory_id=cat.id, category_id=cat.id)
+        )
+        mats_updated = mat_res.rowcount or 0
+        record_review_decision(
+            db,
+            category_id=cat.id,
+            decision='reclassify',
+            issue_type='hierarchy_depth_exceeded',
+            actor=actor,
+            notes=f'Reparented subcategory under main category "{target_main.name_en}" to restore two-level hierarchy.',
+            details={
+                'hierarchy_repair': True,
+                'repair_action': action,
+                'old_parent_id': old_parent_id,
+                'new_parent_id': target_main.id,
+                'materials_updated': mats_updated,
+            },
+        )
+        return 'repaired', mats_updated, 0
+
+    if action == 'merge_into_canonical_subcategory':
+        target_sub = locked.get(target_category_id) if target_category_id else None
+        if not target_sub or not target_sub.active or not target_sub.parent_id:
+            return 'skipped', 0, 0
+        # Ensure source has no active children
+        if db.scalar(select(Category.id).where(Category.parent_id == cat.id, Category.active.is_(True)).limit(1)):
+            return 'skipped', 0, 0
+        # Re-verify no capability overlap
+        src_caps = set(
+            db.execute(select(Capability.org_id, Capability.city).where(Capability.category_id == cat.id)).all()
+        )
+        if src_caps:
+            dst_caps = set(
+                db.execute(
+                    select(Capability.org_id, Capability.city).where(Capability.category_id == target_sub.id)
+                ).all()
+            )
+            if src_caps & dst_caps:
+                return 'skipped', 0, 0
+
+        cat.active = False
+        db.flush()
+
+        moved = 0
+        for tbl, col in category_references():
+            if tbl.name == 'category_review_decisions':
+                continue
+            res = db.execute(update(tbl).where(col == cat.id).values({col.name: target_sub.id}))
+            moved += res.rowcount or 0
+
+        mat_res = db.execute(
+            update(Material)
+            .where(
+                or_(Material.category_id == target_sub.id, Material.subcategory_id == target_sub.id),
+                Material.main_category_id != target_sub.parent_id,
+            )
+            .values(main_category_id=target_sub.parent_id)
+        )
+        mats_updated = mat_res.rowcount or 0
+        if not target_sub.name_ar and cat.name_ar:
+            target_sub.name_ar = cat.name_ar
+
+        record_review_decision(
+            db,
+            category_id=cat.id,
+            decision='merge_duplicate',
+            issue_type='hierarchy_depth_exceeded',
+            actor=actor,
+            merged_into_category_id=target_sub.id,
+            notes=f'Merged level-3 alias into canonical two-level subcategory "{target_sub.name_en}" ({target_sub.code}).',
+            details={
+                'hierarchy_repair': True,
+                'repair_action': action,
+                'canonical_id': target_sub.id,
+                'references_moved': moved,
+                'materials_updated': mats_updated,
+            },
+        )
+        return 'repaired', mats_updated, moved
+
+    if action == 'promote_parent_to_main':
+        parent = locked.get(target_parent_id) if target_parent_id else None
+        if not parent or not parent.active:
+            return 'skipped', 0, 0
+        if parent.parent_id is None:
+            return 'skipped', 0, 0
+        p_norm = normalize_category_name(parent.name_en)
+        existing_roots = db.scalars(
+            select(Category).where(Category.parent_id.is_(None), Category.active.is_(True), Category.id != parent.id)
+        ).all()
+        if any(normalize_category_name(r.name_en) == p_norm for r in existing_roots):
+            return 'skipped', 0, 0
+
+        old_gp_id = parent.parent_id
+        parent.parent_id = None
+        child_ids = list(db.scalars(select(Category.id).where(Category.parent_id == parent.id)).all())
+        target_ids = [parent.id, *child_ids]
+        mat_res = db.execute(
+            update(Material)
+            .where(
+                or_(Material.category_id.in_(target_ids), Material.subcategory_id.in_(target_ids)),
+                Material.main_category_id == old_gp_id,
+            )
+            .values(main_category_id=parent.id)
+        )
+        mats_updated = mat_res.rowcount or 0
+        record_review_decision(
+            db,
+            category_id=cat.id,
+            decision='reclassify',
+            issue_type='hierarchy_depth_exceeded',
+            actor=actor,
+            notes=f'Promoted "{parent.name_en}" to top-level Main Category, restoring two-level hierarchy.',
+            details={
+                'hierarchy_repair': True,
+                'repair_action': action,
+                'promoted_parent_id': parent.id,
+                'old_grandparent_id': old_gp_id,
+                'materials_updated': mats_updated,
+            },
+        )
+        return 'repaired', mats_updated, 0
+
+    return 'skipped', 0, 0
+
+
+def _serialize_repair_job(batch: ImportBatch) -> dict:
+    meta = dict(batch.preview_metadata or {})
+    return {
+        'job_id': batch.id,
+        'status': batch.status,
+        'total_records': int(batch.rows or 0),
+        'completed_records': int(batch.completed_rows or 0),
+        'repaired_count': int(batch.updated_count or 0),
+        'skipped_count': int(batch.unchanged_count or 0),
+        'failed_count': int(batch.errors or 0),
+        'batches_executed': int(meta.get('batches_executed', 0)),
+        'materials_updated': int(meta.get('materials_updated', 0)),
+        'references_moved': int(meta.get('references_moved', 0)),
+        'remaining_safe': int(meta.get('remaining_safe', 0)),
+        'has_more': bool(meta.get('has_more', False)),
+        'errors': list(meta.get('errors', []))[:50],
+        'failure_reason': batch.failure_reason,
+    }
+
+
+def _execute_hierarchy_repair_job(
+    job_id: str,
+    plans: list[dict],
+    actor: User | ReviewActor | None,
+    batch_size: int,
+    remaining_after_job: int,
+    session_factory: Callable[[], Session],
+) -> None:
+    """Run a persisted hierarchy repair job in independent committed batches of 30."""
+    batches_executed = 0
+    completed = 0
+    repaired = 0
+    skipped = 0
+    failed = 0
+    materials_updated = 0
+    references_moved = 0
+    errors: list[dict] = []
+
+    with session_factory() as init_db:
+        job = init_db.get(ImportBatch, job_id)
+        if not job:
+            return
+        job.status = 'processing'
+        job.stage = 'applying'
+        init_db.commit()
+
+    for start in range(0, len(plans), batch_size):
+        chunk = plans[start : start + batch_size]
+        batches_executed += 1
+        batch_repaired_ids: list[str] = []
+        batch_repaired = 0
+        batch_skipped = 0
+        batch_mats = 0
+        batch_refs = 0
+        with session_factory() as batch_db:
+            try:
+                for plan in chunk:
+                    outcome, m_upd, r_mov = _apply_single_hierarchy_repair(batch_db, plan, actor)
+                    if outcome == 'repaired':
+                        batch_repaired += 1
+                        batch_repaired_ids.append(plan['category_id'])
+                        batch_mats += m_upd
+                        batch_refs += r_mov
+                    else:
+                        batch_skipped += 1
+                if batch_repaired_ids:
+                    audit(
+                        batch_db,
+                        actor,
+                        'category.hierarchy_repaired_batch',
+                        entity_id=job_id,
+                        count=len(batch_repaired_ids),
+                        category_ids=batch_repaired_ids,
+                        materials_updated=batch_mats,
+                        references_moved=batch_refs,
+                    )
+                batch_db.commit()
+                completed += len(chunk)
+                repaired += batch_repaired
+                skipped += batch_skipped
+                materials_updated += batch_mats
+                references_moved += batch_refs
+            except Exception as exc:
+                batch_db.rollback()
+                logger.exception('Hierarchy repair batch failed job_id=%s batch=%s', job_id, batches_executed)
+                failed += len(chunk)
+                completed += len(chunk)
+                errors.append({'batch': batches_executed, 'error': str(exc)[:300]})
+
+        # Persist progress after every committed batch
+        with session_factory() as prog_db:
+            job = prog_db.get(ImportBatch, job_id)
+            if job:
+                job.completed_rows = completed
+                job.updated_count = repaired
+                job.unchanged_count = skipped
+                job.errors = failed
+                job.preview_metadata = {
+                    'batches_executed': batches_executed,
+                    'materials_updated': materials_updated,
+                    'references_moved': references_moved,
+                    'errors': errors[:50],
+                }
+                prog_db.commit()
+
+    if repaired:
+        catalog_cache.invalidate()
+
+    with session_factory() as verify_db:
+        remaining_plans = _collect_hierarchy_plans(verify_db)
+        remaining_safe = sum(1 for p in remaining_plans if p.safe)
+        job = verify_db.get(ImportBatch, job_id)
+        if job:
+            job.completed_rows = completed
+            job.updated_count = repaired
+            job.unchanged_count = skipped
+            job.errors = failed
+            job.stage = 'completed'
+            job.status = 'completed_with_errors' if failed else 'completed'
+            job.preview_metadata = {
+                'batches_executed': batches_executed,
+                'materials_updated': materials_updated,
+                'references_moved': references_moved,
+                'remaining_safe': remaining_safe,
+                'has_more': remaining_after_job > 0 and remaining_safe > 0,
+                'errors': errors[:50],
+            }
+            verify_db.commit()
+
+
+def start_hierarchy_repair_job(
+    *,
+    actor: User | ReviewActor | None,
+    category_ids: list[str] | None = None,
+    job_limit: int = JOB_SIZE,
+    batch_size: int = BATCH_SIZE,
+    async_mode: bool = True,
+    session_factory: Callable[[], Session] = SessionLocal,
+) -> dict:
+    """Create and run (async or sync) a durable batched hierarchy repair job (30/batch, up to 300/job)."""
+    job_limit = max(1, min(job_limit, JOB_SIZE))
+    batch_size = max(1, min(batch_size, BATCH_SIZE))
+    actor_id = actor.id if actor else None
+
+    with session_factory() as db:
+        # Prevent duplicate concurrent hierarchy repair jobs
+        cutoff = utcnow() - timedelta(minutes=10)
+        active_job = db.scalar(
+            select(ImportBatch)
+            .where(
+                ImportBatch.kind == 'hierarchy_repair',
+                ImportBatch.status.in_(['queued', 'processing']),
+                ImportBatch.updated_at >= cutoff,
+            )
+            .order_by(ImportBatch.created_at.desc())
+            .limit(1)
+        )
+        if active_job:
+            return _serialize_repair_job(active_job)
+
+        all_plans = _collect_hierarchy_plans(db)
+        if category_ids:
+            wanted = set(category_ids)
+            all_plans = [p for p in all_plans if p.category_id in wanted]
+        safe_plans = [_serialize_hierarchy_plan(p) for p in all_plans if p.safe]
+        job_slice = safe_plans[:job_limit]
+        remaining_after_job = max(0, len(safe_plans) - len(job_slice))
+
+        if not job_slice:
+            return {
+                'job_id': None,
+                'status': 'completed',
+                'total_records': 0,
+                'completed_records': 0,
+                'repaired_count': 0,
+                'skipped_count': 0,
+                'failed_count': 0,
+                'batches_executed': 0,
+                'materials_updated': 0,
+                'references_moved': 0,
+                'remaining_safe': 0,
+                'has_more': False,
+                'errors': [],
+                'failure_reason': None,
+            }
+
+        job = ImportBatch(
+            kind='hierarchy_repair',
+            filename='category_hierarchy_repair',
+            status='queued',
+            stage='queued',
+            rows=len(job_slice),
+            completed_rows=0,
+            updated_count=0,
+            unchanged_count=0,
+            errors=0,
+            initiated_by=actor_id,
+            import_options={'batch_size': batch_size, 'job_limit': job_limit},
+            preview_metadata={
+                'batches_executed': 0,
+                'materials_updated': 0,
+                'references_moved': 0,
+                'remaining_safe': len(safe_plans),
+                'has_more': remaining_after_job > 0,
+                'errors': [],
+            },
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        initial_payload = _serialize_repair_job(job)
+
+    if async_mode:
+        worker = threading.Thread(
+            target=_execute_hierarchy_repair_job,
+            args=(job_id, job_slice, actor, batch_size, remaining_after_job, session_factory),
+            daemon=True,
+            name=f'hierarchy-repair-{job_id[:8]}',
+        )
+        worker.start()
+        return initial_payload
+
+    _execute_hierarchy_repair_job(job_id, job_slice, actor, batch_size, remaining_after_job, session_factory)
+    with session_factory() as verify_db:
+        done_job = verify_db.get(ImportBatch, job_id)
+        return _serialize_repair_job(done_job) if done_job else initial_payload
+
+
+def get_hierarchy_repair_job(db: Session, job_id: str) -> dict:
+    """Fetch persisted progress of a hierarchy repair job."""
+    job = db.scalar(
+        select(ImportBatch).where(ImportBatch.id == job_id, ImportBatch.kind == 'hierarchy_repair')
+    )
+    if not job:
+        raise HTTPException(404, 'Hierarchy repair job not found')
+    return _serialize_repair_job(job)

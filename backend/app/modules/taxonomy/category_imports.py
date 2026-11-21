@@ -181,9 +181,11 @@ def _category_resolver(db: Session):
     for item in categories:
         if item.active:
             by_parent_label.setdefault((item.parent_id, _normal(item.name_en)), []).append(item)
-    pending: list[list[Category]] = [[], [], []]
+    pending: list[list[Category]] = [[], []]
 
     def resolve(label: str, parent: Category | None, discipline: str) -> tuple[Category, bool]:
+        if parent is not None and parent.parent_id is not None:
+            raise HTTPException(422, 'Only two category levels are supported (Main Category → Subcategory); cannot create a third level.')
         normalized = _normal(label)
         parent_id = parent.id if parent else None
         key = (parent_id, normalized)
@@ -198,7 +200,7 @@ def _category_resolver(db: Session):
             if existing.parent_id != parent_id or _normal(existing.name_en) != normalized:
                 raise HTTPException(409, f'Generated category identity conflicts with an existing record: {label}')
             return existing, False
-        depth = 0 if parent is None else 1 if parent.parent_id is None else 2
+        depth = 0 if parent is None else 1
         category = Category(id=str(uuid4()), code=code, name_en=label[:180], normalized_name=normalized, name_ar='',
                             parent_id=parent_id, active=True)
         pending[depth].append(category)
@@ -294,6 +296,8 @@ def preview_categories(file: UploadFile = File(...), discipline: str | None = Fo
             issue = 'Discipline must be Civil, Electrical, or Mechanical.'
         elif not main:
             issue = 'Missing main category name.'
+        elif sub and _normal(main) in DISCIPLINES and _normal(sub) in DISCIPLINES:
+            issue = 'Do not nest discipline names as both main category and subcategory; store Discipline in the discipline column.'
         elif len(main) > 180 or len(sub) > 180:
             issue = 'Category name exceeds the 180-character limit.'
         status = 'invalid' if issue else 'create'

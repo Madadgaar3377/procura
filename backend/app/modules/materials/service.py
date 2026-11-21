@@ -71,6 +71,8 @@ def resolve_category(db: Session, name: str, parent: Category | None, *, create:
     normalized = normalize_category_name(label)
     if not normalized or len(label) > 180:
         raise HTTPException(422, 'Category name must contain 1 to 180 characters')
+    if parent is not None and parent.parent_id is not None:
+        raise HTTPException(422, 'Only two category levels are supported (Main Category → Subcategory); cannot create a third level.')
     parent_id = parent.id if parent else None
     key = (parent_id, normalized)
     if cache is not None and key in cache:

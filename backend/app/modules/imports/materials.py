@@ -366,6 +366,8 @@ def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str) -> lis
             issue = 'Material description must contain 3 to 250 characters'
         elif not main:
             issue = 'Missing main category; a subcategory alone cannot safely establish its parent.'
+        elif sub and _normal(main) in DISCIPLINES and _normal(sub) in DISCIPLINES:
+            issue = 'Do not nest discipline names as both main category and subcategory; keep Discipline in its own column.'
         elif not unit:
             issue = 'Missing unit of measurement'
         elif any(len(v) > cap for v, cap in ((name, 250), (main, 180), (sub, 180), (unit, 30), (source, 120), (expenditure, 120))):

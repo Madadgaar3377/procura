@@ -841,3 +841,438 @@ def test_distinct_hierarchy_and_review_issue_classification():
                 assert exc_info.value.status_code == 422
     finally:
         engine.dispose()
+
+
+def test_hierarchy_repair_electrical_civil_capabilities_matching_and_typos():
+    """Verify Electrical -> Electrical -> Accessories, Civil -> Architectural Insulation -> Acoustic Products,
+    brand-new promoted main category, near-duplicate typo manual_review, buyer RFQ selection, and supplier matching."""
+    from app.modules.taxonomy.review_service import (
+        build_hierarchy_repair_preview,
+        start_hierarchy_repair_job,
+    )
+
+    engine, SessionFactory = _make_session_factory()
+    try:
+        with SessionFactory() as db:
+            admin = _seed_admin(db)
+
+            # Discipline roots
+            elec_root = Category(code='CAT-ELEC-ROOT', name_en='Electrical', normalized_name='electrical', active=True)
+            civil_root = Category(code='CAT-CIVIL-ROOT', name_en='Civil', normalized_name='civil', active=True)
+            # Canonical two-level roots
+            arch_root = Category(
+                code='CAT-ARCH-ROOT',
+                name_en='Architectural Insulation & Air/Vapor Control',
+                normalized_name='architectural insulation & air/vapor control',
+                active=True,
+            )
+            data_net_root = Category(
+                code='CAT-DATANET-ROOT',
+                name_en='Data Network System',
+                normalized_name='data network system',
+                active=True,
+            )
+            db.add_all([elec_root, civil_root, arch_root, data_net_root])
+            db.flush()
+
+            # Canonical two-level subcategories
+            canon_elec_acc = Category(
+                code='CAT-ELEC-ACC',
+                name_en='Accessories',
+                normalized_name='accessories',
+                parent_id=elec_root.id,
+                active=True,
+            )
+            canon_acoustic = Category(
+                code='CAT-ARCH-ACOUSTIC',
+                name_en='Acoustic Products',
+                normalized_name='acoustic products',
+                parent_id=arch_root.id,
+                active=True,
+            )
+            db.add_all([canon_elec_acc, canon_acoustic])
+            db.flush()
+
+            # Level-2 wrong wrappers
+            elec_dup_lvl2 = Category(
+                code='IMP-ELEC-LVL2',
+                name_en='Electrical',
+                normalized_name='electrical',
+                parent_id=elec_root.id,
+                active=True,
+            )
+            arch_dup_lvl2 = Category(
+                code='IMP-ARCH-LVL2',
+                name_en='Architectural Insulation & Air/Vapor Control',
+                normalized_name='architectural insulation & air/vapor control',
+                parent_id=civil_root.id,
+                active=True,
+            )
+            brand_new_lvl2 = Category(
+                code='IMP-NEW-LVL2',
+                name_en='Precast Structural Systems',
+                normalized_name='precast structural systems',
+                parent_id=civil_root.id,
+                active=True,
+            )
+            typo_lvl2 = Category(
+                code='IMP-TYPO-LVL2',
+                name_en='Data Netowrk System',
+                normalized_name='data netowrk system',
+                parent_id=elec_root.id,
+                active=True,
+            )
+            db.add_all([elec_dup_lvl2, arch_dup_lvl2, brand_new_lvl2, typo_lvl2])
+            db.flush()
+
+            # Level-3 broken categories
+            # 1) Electrical -> Electrical -> Accessories (merge into canon_elec_acc, preserving capability)
+            imp_elec_acc = Category(
+                code='IMP-ELEC-ACC',
+                name_en='Accessories',
+                normalized_name='accessories',
+                parent_id=elec_dup_lvl2.id,
+                active=True,
+            )
+            # 2) Electrical -> Electrical -> Cable Lugs (no canonical match yet -> reparent directly under Electrical!)
+            imp_elec_lugs = Category(
+                code='IMP-ELEC-LUGS',
+                name_en='Cable Lugs',
+                normalized_name='cable lugs',
+                parent_id=elec_dup_lvl2.id,
+                active=True,
+            )
+            # 3) Civil -> Architectural Insulation -> Acoustic Products (merge into canon_acoustic)
+            imp_acoustic = Category(
+                code='IMP-ARCH-ACOUSTIC',
+                name_en='Acoustic Products',
+                normalized_name='acoustic products',
+                parent_id=arch_dup_lvl2.id,
+                active=True,
+            )
+            # 4) Civil -> Precast Structural Systems -> Hollow Core Slabs (promote parent to root!)
+            imp_precast_sub = Category(
+                code='IMP-PRECAST-SUB',
+                name_en='Hollow Core Slabs',
+                normalized_name='hollow core slabs',
+                parent_id=brand_new_lvl2.id,
+                active=True,
+            )
+            # 5) Electrical -> Data Netowrk System -> Passive Components (typo -> manual_review!)
+            imp_typo_sub = Category(
+                code='IMP-TYPO-SUB',
+                name_en='Passive Components',
+                normalized_name='passive components',
+                parent_id=typo_lvl2.id,
+                active=True,
+            )
+            db.add_all([imp_elec_acc, imp_elec_lugs, imp_acoustic, imp_precast_sub, imp_typo_sub])
+            db.flush()
+
+            # Materials & capabilities to verify full preservation
+            mat_canon_acc = Material(
+                code='MAT-CANON-ACC',
+                category_id=canon_elec_acc.id,
+                main_category_id=elec_root.id,
+                subcategory_id=canon_elec_acc.id,
+                name_en='Brass Cable Gland M25',
+                unit='PCS',
+                discipline='Electrical',
+                active=True,
+            )
+            mat_lug = Material(
+                code='MAT-LUG-1',
+                category_id=imp_elec_lugs.id,
+                main_category_id=elec_dup_lvl2.id,
+                subcategory_id=imp_elec_lugs.id,
+                name_en='Copper Compression Lug 35mm2',
+                unit='PCS',
+                discipline='Electrical',
+                active=True,
+            )
+            mat_precast = Material(
+                code='MAT-PRECAST-1',
+                category_id=imp_precast_sub.id,
+                main_category_id=civil_root.id,
+                subcategory_id=imp_precast_sub.id,
+                name_en='Prestressed Hollow Core Slab 200mm',
+                unit='M2',
+                discipline='Civil',
+                active=True,
+            )
+            supplier = Organization(name='Riyadh MEP Co', name_normalized='riyadh mep co', is_supplier=True, is_active=True, verified_status='verified')
+            buyer = Organization(name='Kingdom Projects', name_normalized='kingdom projects', is_buyer=True, is_active=True, verified_status='verified')
+            db.add_all([mat_canon_acc, mat_lug, mat_precast, supplier, buyer])
+            db.flush()
+
+            # Supplier capability on level-3 Accessories must migrate to canon_elec_acc!
+            cap_acc = Capability(
+                org_id=supplier.id,
+                category_id=imp_elec_acc.id,
+                city='Riyadh',
+                confirmed=True,
+                accepts_rfqs=True,
+                eligibility_status='enabled',
+            )
+            rfq = RFQ(
+                reference='RFQ-HIER-001',
+                buyer_org_id=buyer.id,
+                title='Electrical Accessories RFQ',
+                city='Riyadh',
+                response_deadline=datetime.now(UTC) + timedelta(days=5),
+                status='published',
+            )
+            db.add_all([cap_acc, rfq])
+            db.flush()
+            db.add(
+                RFQItem(
+                    rfq_id=rfq.id,
+                    material_id=mat_canon_acc.id,
+                    main_category_id=elec_root.id,
+                    subcategory_id=canon_elec_acc.id,
+                    description=mat_canon_acc.name_en,
+                    specifications='',
+                    unit='PCS',
+                    quantity=Decimal('20'),
+                )
+            )
+            db.commit()
+
+            ids = {
+                'elec_root': elec_root.id,
+                'canon_elec_acc': canon_elec_acc.id,
+                'canon_acoustic': canon_acoustic.id,
+                'imp_elec_acc': imp_elec_acc.id,
+                'imp_elec_lugs': imp_elec_lugs.id,
+                'imp_acoustic': imp_acoustic.id,
+                'brand_new_lvl2': brand_new_lvl2.id,
+                'imp_precast_sub': imp_precast_sub.id,
+                'imp_typo_sub': imp_typo_sub.id,
+                'mat_lug': mat_lug.id,
+                'mat_precast': mat_precast.id,
+                'cap_acc': cap_acc.id,
+                'rfq': rfq.id,
+                'supplier': supplier.id,
+            }
+
+        # Step 1: Preview hierarchy repairs
+        with SessionFactory() as db:
+            preview = build_hierarchy_repair_preview(db, limit=100)
+            assert preview['total_hierarchy_issues'] == 5
+            assert preview['safe_repairs'] == 4
+            assert preview['manual_review_count'] == 1
+            by_cat = {item['category_id']: item for item in preview['items']}
+            assert by_cat[ids['imp_elec_acc']]['repair_action'] == 'merge_into_canonical_subcategory'
+            assert by_cat[ids['imp_elec_acc']]['proposed_path'] == ['Electrical', 'Accessories']
+            assert by_cat[ids['imp_elec_acc']]['affected_capabilities_count'] == 1
+            assert by_cat[ids['imp_elec_lugs']]['repair_action'] == 'reparent_to_main'
+            assert by_cat[ids['imp_elec_lugs']]['proposed_path'] == ['Electrical', 'Cable Lugs']
+            assert by_cat[ids['imp_acoustic']]['repair_action'] == 'merge_into_canonical_subcategory'
+            assert by_cat[ids['imp_acoustic']]['proposed_path'] == ['Architectural Insulation & Air/Vapor Control', 'Acoustic Products']
+            assert by_cat[ids['imp_precast_sub']]['repair_action'] == 'promote_parent_to_main'
+            assert by_cat[ids['imp_precast_sub']]['proposed_path'] == ['Precast Structural Systems', 'Hollow Core Slabs']
+            assert by_cat[ids['imp_typo_sub']]['safe'] is False
+            assert by_cat[ids['imp_typo_sub']]['status'] == 'manual_review'
+
+        # Step 2: Apply safe hierarchy repairs (sync mode for deterministic test)
+        job = start_hierarchy_repair_job(
+            actor=admin,
+            batch_size=30,
+            async_mode=False,
+            session_factory=SessionFactory,
+        )
+        assert job['status'] == 'completed'
+        assert job['repaired_count'] == 4
+        assert job['failed_count'] == 0
+        assert job['remaining_safe'] == 0
+
+        # Step 3: Verify database integrity, preserved IDs, buyer selection & supplier matching
+        with SessionFactory() as db:
+            # Merged aliases archived; canonical subcategories active
+            assert db.get(Category, ids['imp_elec_acc']).active is False
+            assert db.get(Category, ids['imp_acoustic']).active is False
+            assert db.get(Category, ids['canon_elec_acc']).active is True
+            assert db.get(Category, ids['canon_acoustic']).active is True
+
+            # Reparented Cable Lugs preserved its ID and moved directly under Electrical
+            lugs = db.get(Category, ids['imp_elec_lugs'])
+            assert lugs.active is True
+            assert lugs.parent_id == ids['elec_root']
+            assert db.get(Material, ids['mat_lug']).main_category_id == ids['elec_root']
+
+            # Promoted Precast Structural Systems became a root Main Category
+            precast_main = db.get(Category, ids['brand_new_lvl2'])
+            assert precast_main.parent_id is None
+            assert db.get(Material, ids['mat_precast']).main_category_id == ids['brand_new_lvl2']
+
+            # Ambiguous typo subcategory left untouched!
+            assert db.get(Category, ids['imp_typo_sub']).active is True
+
+            # Supplier capability migrated to canonical Accessories -> supplier now matches RFQ!
+            assert db.get(Capability, ids['cap_acc']).category_id == ids['canon_elec_acc']
+            rfq_obj = db.get(RFQ, ids['rfq'])
+            matches = eligible_supplier_ids(db, rfq_obj, [ids['supplier']])
+            assert ids['supplier'] in matches
+
+            # Buyer RFQ category selection returns canonical two-level categories
+            buyer_cats = list_categories_endpoint(limit=None, offset=0, with_active_materials=True, db=db)
+            buyer_cat_ids = {c['id'] for c in buyer_cats}
+            assert ids['canon_elec_acc'] in buyer_cat_ids
+            assert ids['imp_elec_lugs'] in buyer_cat_ids
+            assert ids['imp_precast_sub'] in buyer_cat_ids
+
+        # Step 4: Idempotent retry produces 0 repairs
+        retry_job = start_hierarchy_repair_job(
+            actor=admin,
+            batch_size=30,
+            async_mode=False,
+            session_factory=SessionFactory,
+        )
+        assert retry_job['total_records'] == 0
+        assert retry_job['repaired_count'] == 0
+    finally:
+        engine.dispose()
+
+
+def test_124_hierarchy_repairs_batched_30_concurrent_guard_zero_eligible_and_import_validation():
+    """Verify 124 hierarchy repair candidates in batches of 30, duplicate concurrent job prevention,
+    zero-eligible approve-valid immediate return, and Excel import 2-level hierarchy guard."""
+    from app.modules.imports.materials import _prepared
+    from app.modules.materials.service import resolve_category
+    from app.modules.taxonomy.review_service import (
+        build_hierarchy_repair_preview,
+        start_hierarchy_repair_job,
+    )
+
+    engine, SessionFactory = _make_session_factory()
+    try:
+        with SessionFactory() as db:
+            admin = _seed_admin(db)
+            civil_root = Category(code='CIV-ROOT', name_en='Civil', normalized_name='civil', active=True)
+            canon_main = Category(code='CANON-MAIN', name_en='Concrete Works', normalized_name='concrete works', active=True)
+            db.add_all([civil_root, canon_main])
+            db.flush()
+
+            imp_main = Category(
+                code='IMP-MAIN',
+                name_en='Concrete Works',
+                normalized_name='concrete works',
+                parent_id=civil_root.id,
+                active=True,
+            )
+            db.add(imp_main)
+            db.flush()
+
+            # Create 124 level-3 subcategories under Civil -> Concrete Works
+            for i in range(124):
+                canon_sub = Category(
+                    code=f'CAT-SUB-{i:03d}',
+                    name_en=f'Concrete Sub {i:03d}',
+                    normalized_name=f'concrete sub {i:03d}',
+                    parent_id=canon_main.id,
+                    active=True,
+                )
+                imp_sub = Category(
+                    code=f'IMP-SUB-{i:03d}',
+                    name_en=f'Concrete Sub {i:03d}',
+                    normalized_name=f'concrete sub {i:03d}',
+                    parent_id=imp_main.id,
+                    active=True,
+                )
+                db.add_all([canon_sub, imp_sub])
+            db.flush()
+
+            # Add an active material to canon_main so zero empty categories are eligible for approve-valid
+            db.add(
+                Material(
+                    code='MAT-BLOCK-EMPTY',
+                    category_id=canon_main.id,
+                    main_category_id=canon_main.id,
+                    name_en='Ready Mix C40',
+                    unit='M3',
+                    discipline='Civil',
+                    active=True,
+                )
+            )
+            db.commit()
+            imp_main_id = imp_main.id
+
+        # 1. Zero eligible approvals returns immediately with approved_count=0 when requested category_ids has none
+        zero_res = run_bulk_approve_valid(
+            actor=admin,
+            dry_run=False,
+            include_empty=False,
+            session_factory=SessionFactory,
+        )
+        assert zero_res['approved_count'] == 0
+        assert zero_res['retained_empty'] == 0
+        assert zero_res['batches_executed'] == 0
+
+        # 2. Preview shows all 124 safe hierarchy repairs
+        with SessionFactory() as db:
+            prev = build_hierarchy_repair_preview(db, limit=200)
+            assert prev['total_hierarchy_issues'] == 124
+            assert prev['safe_repairs'] == 124
+
+        # 3. Duplicate concurrent job guard: seed an active 'processing' job -> start_hierarchy_repair_job returns it instead of spawning another
+        with SessionFactory() as db:
+            existing_job = ImportBatch(
+                kind='hierarchy_repair',
+                filename='category_hierarchy_repair',
+                status='processing',
+                stage='applying',
+                rows=124,
+                completed_rows=30,
+                initiated_by=admin.id,
+            )
+            db.add(existing_job)
+            db.commit()
+            existing_job_id = existing_job.id
+
+        deduped = start_hierarchy_repair_job(actor=admin, async_mode=False, session_factory=SessionFactory)
+        assert deduped['job_id'] == existing_job_id
+        assert deduped['status'] == 'processing'
+
+        # Mark existing_job completed and run the real 124-item repair job -> 5 batches of 30 (30+30+30+30+4)
+        with SessionFactory() as db:
+            db.get(ImportBatch, existing_job_id).status = 'completed'
+            db.commit()
+
+        done = start_hierarchy_repair_job(
+            actor=admin,
+            batch_size=30,
+            job_limit=300,
+            async_mode=False,
+            session_factory=SessionFactory,
+        )
+        assert done['status'] == 'completed'
+        assert done['total_records'] == 124
+        assert done['repaired_count'] == 124
+        assert done['batches_executed'] == 5
+        assert done['remaining_safe'] == 0
+
+        # 4. Prevent future 3rd-level categories in resolve_category & Excel bulk import _prepared
+        with SessionFactory() as db:
+            lvl2 = db.get(Category, imp_main_id)
+            assert lvl2 is not None and lvl2.parent_id is not None
+            with pytest.raises(HTTPException) as exc_info:
+                resolve_category(db, 'Forbidden Level 3', lvl2, create=True)
+            assert exc_info.value.status_code == 422
+
+        prepared = _prepared(
+            [
+                {
+                    '_row': 2,
+                    'main': 'Electrical',
+                    'sub': 'Electrical',
+                    'desc': 'Cable Tie 200mm',
+                    'unit': 'PCS',
+                }
+            ],
+            {'main_category': 'main', 'subcategory': 'sub', 'material_name': 'desc', 'unit': 'unit'},
+            'Electrical',
+        )
+        assert prepared[0]['status'] == 'invalid'
+        assert 'discipline' in prepared[0]['issue'].casefold()
+    finally:
+        engine.dispose()
