@@ -300,6 +300,46 @@ def _category_discipline(main_category: str) -> str | None:
     return DISCIPLINES[match.group(1)] if match else None
 
 
+def _category_discipline_map(db: Session) -> dict[tuple[str, str], set[str]]:
+    categories = {c.id: c for c in db.scalars(select(Category).where(Category.active.is_(True)))}
+    result = {}
+    for leaf in categories.values():
+        main = categories.get(leaf.parent_id) if leaf.parent_id else leaf
+        if main and not main.parent_id and (known := _category_discipline(main.name_en)):
+            result.setdefault((_normal(main.name_en), _normal(leaf.name_en) if leaf.parent_id else ''), set()).add(known)
+    # One entry per category/discipline, rather than loading every material.
+    mappings = db.execute(select(Material.category_id, Material.main_category_id,
+        Material.subcategory_id, Material.discipline).where(Material.active.is_(True)).distinct())
+    for category_id, main_id, sub_id, discipline in mappings:
+        leaf = categories.get(category_id)
+        main = categories.get(main_id) or (categories.get(leaf.parent_id) if leaf and leaf.parent_id else leaf)
+        sub = categories.get(sub_id) or (leaf if leaf and leaf.parent_id else None)
+        known = DISCIPLINES.get(_clean(discipline).casefold())
+        if main and not main.parent_id and known:
+            result.setdefault((_normal(main.name_en), _normal(sub.name_en) if sub else ''), set()).add(known)
+            result.setdefault((_normal(main.name_en), ''), set()).add(known)
+    return result
+
+
+def _row_discipline(explicit: str, main: str, sub: str, fallback: str,
+                    category_disciplines: dict | None = None) -> str:
+    mappings = category_disciplines or {}
+    candidates = mappings.get((_normal(main), _normal(sub))) or mappings.get((_normal(main), ''), set())
+    if explicit:
+        value = DISCIPLINES.get(explicit.strip().casefold())
+        if not value:
+            raise HTTPException(422, f'Unsupported discipline "{explicit}"; use Civil, Electrical or Mechanical.')
+        if candidates and candidates != {value}:
+            raise HTTPException(409, 'Explicit discipline conflicts with the existing category mapping; review this row.')
+        return value
+    value = (_category_discipline(main) or
+             (next(iter(candidates)) if len(candidates) == 1 else None) or
+             DISCIPLINES.get(_clean(fallback).casefold()))
+    if not value:
+        raise HTTPException(422, 'Discipline unknown; review this row: enter Civil, Electrical or Mechanical, use a recognized Main Category prefix, or select an upload fallback.')
+    return value
+
+
 def _category_code(parent_id: str | None, label: str, discipline: str) -> str:
     return 'IMP-' + _digest(discipline.casefold(), parent_id or 'root', _normal(label))[:28].upper()
 
@@ -399,19 +439,15 @@ def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str, catego
         if mapping.get('main_category'):row[mapping['main_category']]=main
         if mapping.get('subcategory'):row[mapping['subcategory']]=sub
         explicit_discipline = _row_value(row, mapping, 'discipline')
-        row_discipline = (DISCIPLINES.get(explicit_discipline.casefold()) if explicit_discipline
-                          else _category_discipline(main) or DISCIPLINES.get(_clean(discipline).casefold()))
-        if explicit_discipline and not row_discipline:
-            output.append({'row': row['_row'], 'status': 'invalid', 'issue': f'Unsupported discipline "{explicit_discipline}"; use Civil, Electrical or Mechanical.', 'raw': row})
+        try:
+            row_discipline = _row_discipline(explicit_discipline, main, sub, discipline, category_disciplines)
+        except HTTPException as exc:
+            output.append({'row': row['_row'], 'status': 'conflict' if exc.status_code == 409 else 'invalid',
+                           'issue': exc.detail, 'raw': row})
             continue
-        if not row_discipline:
-            candidates = (category_disciplines or {}).get((_normal(main), _normal(sub)), set())
-            row_discipline = next(iter(candidates)) if len(candidates) == 1 else None
         row['_discipline'] = row_discipline
         issue = ''
-        if not row_discipline:
-            issue = 'Discipline unknown; review this row: enter Civil, Electrical or Mechanical, use a recognized Main Category prefix, or select an upload fallback.'
-        elif not name:
+        if not name:
             issue = 'Missing material description'
         elif len(_normal(name)) < 3:
             issue = 'Material description must contain 3 to 250 characters'
@@ -501,8 +537,12 @@ def batch_kind_discipline(rows: Sequence[ImportedRow]) -> str | None:
 
 
 def _apply_row(db: Session, item: ImportedRow, identity_map: dict[str, Material],
-               category_cache: dict[tuple[str | None, str], Category], unit_cache:dict[str,str],batch_id: str) -> tuple[str, int]:
+               category_cache: dict[tuple[str | None, str], Category], unit_cache:dict[str,str],batch_id: str, discipline_map: dict | None = None) -> tuple[str, int]:
     raw = item.raw
+    resolved = _row_discipline(_row_value(raw, raw.get('_mapping', {}), 'discipline'),
+        raw.get('_category', ''), raw.get('_subcategory', ''), raw.get('_discipline') or '', discipline_map)
+    if resolved != raw.get('_discipline'):
+        raise HTTPException(409, 'Category discipline changed since preview; review this row before importing.')
     identity = raw.get('_identity')
     if not identity:
         item.status, item.issue = 'invalid', 'Import identity could not be resolved'
@@ -607,15 +647,7 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
     metadata.update({'headers':selected['headers'],'mapping':mapping,
         'selected_sheet':'__all__' if selected_name=='__all__' else selected['name'],'discipline':discipline})
     discipline = discipline or ''
-    category_disciplines = {}
-    category_records = {c.id: c for c in db.scalars(select(Category))}
-    for material in db.scalars(select(Material).where(Material.active.is_(True))):
-        leaf = category_records.get(material.category_id)
-        main = category_records.get(material.main_category_id) or (category_records.get(leaf.parent_id) if leaf and leaf.parent_id else leaf)
-        sub = category_records.get(material.subcategory_id) or (leaf if leaf and leaf.parent_id else None)
-        known = DISCIPLINES.get(_clean(material.discipline).casefold())
-        if main and known:
-            category_disciplines.setdefault((_normal(main.name_en), _normal(sub.name_en) if sub else ''), set()).add(known)
+    category_disciplines = _category_discipline_map(db)
     prepared=_prepared(selected['_rows'],mapping,discipline,category_disciplines)
     # Map source group labels to approved IDs before calculating material identity.
     approved={c.id:c for c in db.scalars(select(Category).where(Category.active.is_(True)))}
@@ -829,6 +861,7 @@ def process_queued_material_imports(db: Session, batch_limit: int = 1, chunk_siz
                     for code in (m.source_sn,m.source_material_code):
                         if code:owners.setdefault(code,set()).add(m.id)
                 category_cache,unit_cache=_preload_maps(db)
+                discipline_map=_category_discipline_map(db)
                 apply_started=perf_counter()
                 for row in pending:
                     if row.status in {'invalid','duplicate','conflict','created','updated','unchanged'}:continue
@@ -838,7 +871,7 @@ def process_queued_material_imports(db: Session, batch_limit: int = 1, chunk_siz
                             owned=owners.get(row.raw.get('_source_code'),set())
                             if owned and (not expected or owned!={expected.id}):
                                 raise HTTPException(409,'Source code changed since preview; review required')
-                            result,made=_apply_row(db,row,identity_map,category_cache,unit_cache,batch.id)
+                            result,made=_apply_row(db,row,identity_map,category_cache,unit_cache,batch.id,discipline_map=discipline_map)
                             db.flush()
                         if row.raw.get('_source_code') and identity_map.get(row.raw.get('_identity')):
                             owners.setdefault(row.raw['_source_code'],set()).add(identity_map[row.raw['_identity']].id)

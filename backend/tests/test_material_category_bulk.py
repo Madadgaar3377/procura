@@ -484,3 +484,93 @@ def test_prefix_inference_does_not_flatten_duplicate_category_levels(main, sub):
            'Description/Pacification': 'Valid material description', 'UNIT': 'PCS'}
     result = imports._prepared([row], mapping, '')[0]
     assert result['status'] == 'invalid' and 'must be distinct' in result['issue']
+
+
+SUPPLIED_HEADERS = ['SN', 'Main Category', 'Sub Category', 'Description/Pacification', 'UNIT', 'Expenditures']
+
+
+def supplied_workbook(rows, explicit=False):
+    book=Workbook(); page=book.active; page.title='Materials'
+    page.append(SUPPLIED_HEADERS + (['Discipline'] if explicit else []))
+    for row in rows: page.append(row)
+    out=BytesIO();book.save(out);return out.getvalue()
+
+
+def upload_supplied(s, rows, fallback='', explicit=False):
+    response=s.client.post('/imports/materials/preview',
+        files={'file':('materials.xlsx',supplied_workbook(rows,explicit))},data={'discipline':fallback})
+    assert response.status_code==202,response.text
+    return response.json()['batch_id']
+
+
+def test_exact_supplied_six_headers_fresh_database_pcs_pkt_and_reuse(system):
+    s=system
+    rows=[['1','Electrical','Accessories','Tape Cartridge Casio','PCS',''],
+          ['2','Electrical','Consumable Material','3way Female Plug','PKT',''],
+          ['3','Civil','Concrete','Concrete mix 30MPa','M3',''],
+          ['4','Mechanical','Pipes','Steel pipe 20mm','M','']]
+    with s.db() as db:
+        assert db.scalar(select(func.count()).select_from(Category))==0
+        assert db.scalar(select(func.count()).select_from(Material))==0
+    def run():
+        key=upload_supplied(s,rows,'Civil');preview=parse(s,key)
+        assert preview['valid']==4 and preview['invalid']==preview['conflicts']==0
+        s.client.post(f'/imports/materials/{key}/confirm')
+        with s.db() as db:imports.process_queued_material_imports(db)
+        return s.client.get('/imports/materials/'+key).json()
+    state=run();assert state['created']==4 and state['errors']==0
+    with s.db() as db:
+        categories={c.id:c for c in db.scalars(select(Category))}
+        materials={m.name_en:m for m in db.scalars(select(Material))}
+        original_ids={m.id for m in materials.values()}
+        assert materials['3way Female Plug'].unit=='PKT'
+        assert db.scalar(select(MeasurementUnit).where(MeasurementUnit.code=='PKT')) is not None
+        assert materials['Tape Cartridge Casio'].discipline=='Electrical'
+        for m in materials.values():
+            assert categories[m.subcategory_id].parent_id==m.main_category_id
+            assert categories[m.main_category_id].parent_id is None
+            assert m.category_id==m.subcategory_id
+        assert len(categories)==7
+    state=run();assert state['created']==0 and state['unchanged_count']==4
+    with s.db() as db:
+        assert {m.id for m in db.scalars(select(Material))}==original_ids
+        assert db.scalar(select(func.count()).select_from(Category))==7
+
+
+def test_mapping_precedes_upload_fallback_and_explicit_conflict_is_row_specific(system):
+    s=system
+    key=upload_supplied(s,[['1','Utilities','Pipes','Seed pipe 20mm','M','','Mechanical']],explicit=True)
+    assert parse(s,key)['valid']==1
+    s.client.post(f'/imports/materials/{key}/confirm')
+    with s.db() as db:imports.process_queued_material_imports(db)
+    key=upload_supplied(s,[['2','Utilities','Pipes','New pipe 30mm','M','']],fallback='Civil')
+    preview=parse(s,key);assert preview['valid']==1
+    assert preview['sample'][0]['discipline']=='Mechanical'
+    assert imports._row_discipline('', 'Utilities', 'Fittings', 'Civil',
+        {('utilities', ''): {'Mechanical'}}) == 'Mechanical'
+    key=upload_supplied(s,[['3','Utilities','Pipes','Conflicting pipe 40mm','M','','Civil'],
+                           ['4','Electrical','Accessories','Tape Cartridge Casio','PCS','','Electrical']],explicit=True)
+    preview=parse(s,key)
+    assert preview['valid']==1 and preview['conflicts']==1
+    assert 'existing category mapping' in preview['issues'][0]['reason']
+    s.client.post(f'/imports/materials/{key}/confirm')
+    with s.db() as db:imports.process_queued_material_imports(db)
+    state=s.client.get('/imports/materials/'+key).json()
+    assert state['created']==1 and state['errors']==1 and state['completed_rows']==2
+    with s.db() as db:
+        assert db.scalar(select(Material).where(Material.name_en=='Conflicting pipe 40mm')) is None
+
+
+def test_worker_rechecks_explicit_mapping_conflict_after_preview(system):
+    s=system
+    key=upload_supplied(s,[['1','Utilities','Pipes','Preview pipe 20mm','M','','Civil']],explicit=True)
+    assert parse(s,key)['valid']==1
+    seed=upload_supplied(s,[['2','Utilities','Pipes','Concurrent pipe 30mm','M','','Mechanical']],explicit=True)
+    assert parse(s,seed)['valid']==1
+    s.client.post(f'/imports/materials/{seed}/confirm')
+    with s.db() as db:imports.process_queued_material_imports(db)
+    s.client.post(f'/imports/materials/{key}/confirm')
+    with s.db() as db:imports.process_queued_material_imports(db)
+    state=s.client.get('/imports/materials/'+key).json()
+    assert state['created']==0 and state['conflicts']==1 and state['errors']==1
+    assert 'existing category mapping' in state['issues'][0]['reason']
