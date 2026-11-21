@@ -540,3 +540,304 @@ def test_batched_processing_30_per_batch_with_continuation_and_matching_guard():
         assert job2['has_more'] is False
     finally:
         engine.dispose()
+
+
+def test_approve_valid_and_auto_fix_router_no_detached_instance_error(monkeypatch):
+    """Regression test for production HTTP 500 DetachedInstanceError in review_router.py."""
+    from app.models import AuditEvent
+    from app.modules.taxonomy import review_router
+
+    engine, SessionFactory = _make_session_factory()
+    monkeypatch.setattr(review_router, 'SessionLocal', SessionFactory)
+    try:
+        with SessionFactory() as db:
+            admin = _seed_admin(db)
+            main_cat = Category(
+                code='IMP-ROUTER-MAIN',
+                name_en='Concrete Constituents & Supplied Concrete',
+                normalized_name='concrete constituents & supplied concrete',
+                active=True,
+            )
+            db.add(main_cat)
+            db.flush()
+            empty_cat = Category(
+                code='IMP-ROUTER-EMPTY',
+                name_en='Specialty Grouts',
+                normalized_name='specialty grouts',
+                parent_id=main_cat.id,
+                active=True,
+            )
+            qa_cat = Category(
+                code='IMP-ROUTER-QA',
+                name_en='Bulk QA Test Category',
+                normalized_name='bulk qa test category',
+                active=True,
+            )
+            db.add_all([empty_cat, qa_cat])
+            db.commit()
+            admin_id = admin.id
+
+        # Simulate FastAPI dependency: load ORM User from request Session, then call router handler
+        with SessionFactory() as req_db:
+            orm_admin = req_db.get(User, admin_id)
+            assert orm_admin is not None
+            preview = review_router.approve_all_valid(
+                payload=review_router.BulkApproveValidIn(dry_run=True, include_empty=True, batch_size=30),
+                user=orm_admin,
+                db=req_db,
+            )
+            assert preview['dry_run'] is True
+            assert preview['total_eligible'] == 2  # main_cat + empty_cat
+            assert preview['retained_empty'] == 2
+            assert preview['excluded_count'] == 1  # qa_cat
+            assert preview['excluded_by_issue_type'] == {'invalid_import_data': 1}
+            assert len(preview['preview_items']) == 2
+            assert len(preview['excluded_preview_items']) == 1
+
+        # Apply via router with a fresh ORM User (must not raise DetachedInstanceError)
+        with SessionFactory() as req_db:
+            orm_admin = req_db.get(User, admin_id)
+            assert orm_admin is not None
+            applied = review_router.approve_all_valid(
+                payload=review_router.BulkApproveValidIn(dry_run=False, include_empty=True, batch_size=30),
+                user=orm_admin,
+                db=req_db,
+            )
+            assert applied['dry_run'] is False
+            assert applied['retained_empty'] == 2
+            assert applied['remaining_valid'] == 0
+            assert applied['batches_executed'] == 1
+
+        # Auto-fix router handler also must not raise DetachedInstanceError
+        with SessionFactory() as req_db:
+            orm_admin = req_db.get(User, admin_id)
+            assert orm_admin is not None
+            fix_preview = review_router.auto_fix_safe_records(
+                payload=review_router.BulkCategoryFixIn(dry_run=True, batch_size=30),
+                user=orm_admin,
+                db=req_db,
+            )
+            assert fix_preview['dry_run'] is True
+
+        # Verify audit log written once
+        with SessionFactory() as verify_db:
+            audits = verify_db.scalars(
+                select(AuditEvent).where(AuditEvent.action == 'category.bulk_retained_empty')
+            ).all()
+            assert len(audits) == 1
+            assert audits[0].metadata_json['count'] == 2
+    finally:
+        engine.dispose()
+
+
+def test_bulk_approve_valid_batches_of_30_and_strict_idempotency():
+    """Verify batches of 30, live remaining counts, and zero duplicate decisions or audits on retry."""
+    from app.models import AuditEvent
+
+    engine, SessionFactory = _make_session_factory()
+    try:
+        with SessionFactory() as db:
+            admin = _seed_admin(db)
+            parent = Category(
+                code='IMP-IDEM-ROOT',
+                name_en='Architectural Finishes',
+                normalized_name='architectural finishes',
+                active=True,
+            )
+            db.add(parent)
+            db.flush()
+            # 34 empty subcategories + 1 empty root = 35 valid empty categories -> 2 batches (30 + 5)
+            created_ids = [parent.id]
+            for i in range(34):
+                sub = Category(
+                    code=f'IMP-IDEM-SUB-{i:03d}',
+                    name_en=f'Valid Empty Subcategory {i:03d}',
+                    normalized_name=f'valid empty subcategory {i:03d}',
+                    parent_id=parent.id,
+                    active=True,
+                )
+                db.add(sub)
+                db.flush()
+                created_ids.append(sub.id)
+            db.commit()
+
+        # First execution: 2 batches (30 + 5)
+        res1 = run_bulk_approve_valid(
+            actor=admin,
+            dry_run=False,
+            include_empty=True,
+            batch_size=30,
+            session_factory=SessionFactory,
+        )
+        assert res1['batches_executed'] == 2
+        assert res1['total_eligible'] == 35
+        assert res1['retained_empty'] == 35
+        assert res1['skipped_already_approved'] == 0
+        assert res1['remaining_valid'] == 0
+        assert res1['has_more'] is False
+
+        # Second execution (retry): must be completely idempotent
+        res2 = run_bulk_approve_valid(
+            actor=admin,
+            dry_run=False,
+            include_empty=True,
+            batch_size=30,
+            session_factory=SessionFactory,
+        )
+        assert res2['retained_empty'] == 0
+        assert res2['batches_executed'] == 0
+        assert res2['remaining_valid'] == 0
+
+        # Verify exact decision & audit counts (no duplicates)
+        with SessionFactory() as verify_db:
+            decisions = verify_db.scalars(select(CategoryReviewDecision)).all()
+            audits = verify_db.scalars(
+                select(AuditEvent).where(AuditEvent.action == 'category.bulk_retained_empty')
+            ).all()
+            assert len(decisions) == 35
+            assert len(audits) == 2
+            assert sum(a.metadata_json['count'] for a in audits) == 35
+    finally:
+        engine.dispose()
+
+
+def test_distinct_hierarchy_and_review_issue_classification():
+    """Verify missing_parent, archived_parent, hierarchy_depth_exceeded, duplicate, empty,
+    missing_discipline, unsupported_discipline, and suspicious label are all distinguished."""
+    engine, SessionFactory = _make_session_factory()
+    try:
+        with SessionFactory() as db:
+            admin = _seed_admin(db)
+
+            # 1. Hierarchy depth > 2 (Discipline -> Main Category -> Subcategory)
+            civil_root = Category(code='ROOT-CIV', name_en='Civil', normalized_name='civil', active=True)
+            elec_root = Category(code='ROOT-ELC', name_en='Electrical', normalized_name='electrical', active=True)
+            archived_parent = Category(code='ARCH-PAR', name_en='Old Archived Parent', normalized_name='old archived parent', active=False)
+            valid_main = Category(code='VALID-MAIN', name_en='Structural Works', normalized_name='structural works', active=True)
+            qa_cat = Category(code='QA-CAT', name_en='Bulk QA Sample', normalized_name='bulk qa sample', active=True)
+            db.add_all([civil_root, elec_root, archived_parent, valid_main, qa_cat])
+            db.flush()
+
+            arch_ins = Category(
+                code='LVL2-ARCH',
+                name_en='Architectural Insulation & Air/Vapor Control',
+                normalized_name='architectural insulation & air/vapor control',
+                parent_id=civil_root.id,
+                active=True,
+            )
+            elec_lvl2 = Category(
+                code='LVL2-ELC',
+                name_en='Electrical',
+                normalized_name='electrical',
+                parent_id=elec_root.id,
+                active=True,
+            )
+            db.add_all([arch_ins, elec_lvl2])
+            db.flush()
+
+            acoustic_lvl3 = Category(
+                code='LVL3-ACOUSTIC',
+                name_en='Acoustic Products',
+                normalized_name='acoustic products',
+                parent_id=arch_ins.id,
+                active=True,
+            )
+            acc_lvl3 = Category(
+                code='LVL3-ACC',
+                name_en='Accessories',
+                normalized_name='accessories',
+                parent_id=elec_lvl2.id,
+                active=True,
+            )
+            child_of_archived = Category(
+                code='SUB-ARCH-PAR',
+                name_en='Orphan Under Archived Parent',
+                normalized_name='orphan under archived parent',
+                parent_id=archived_parent.id,
+                active=True,
+            )
+            # Missing parent (dangling FK simulated by disabling FK checks or using non-existent id if allowed)
+            # SQLite in-memory has FK off by default unless PRAGMA foreign_keys=ON
+            child_missing_parent = Category(
+                code='SUB-MISS-PAR',
+                name_en='Orphan Missing Parent',
+                normalized_name='orphan missing parent',
+                parent_id='non-existent-parent-uuid',
+                active=True,
+            )
+            # Valid empty category
+            valid_empty = Category(
+                code='VALID-EMPTY',
+                name_en='Precast Concrete Elements',
+                normalized_name='precast concrete elements',
+                parent_id=valid_main.id,
+                active=True,
+            )
+            # Duplicate categories under valid_main
+            dup1 = Category(code='DUP-1', name_en='Waterproofing Membranes', normalized_name='waterproofing membranes', parent_id=valid_main.id, active=True)
+            dup2 = Category(code='DUP-2', name_en='Waterproofing Membranes', normalized_name='waterproofing membranes', parent_id=valid_main.id, active=True)
+            # Missing discipline & unsupported discipline categories
+            miss_disc_cat = Category(code='MISS-DISC', name_en='Reinforcing Steel', normalized_name='reinforcing steel', parent_id=valid_main.id, active=True)
+            unsup_disc_cat = Category(code='UNSUP-DISC', name_en='Specialty Coatings', normalized_name='specialty coatings', parent_id=valid_main.id, active=True)
+            db.add_all([
+                acoustic_lvl3, acc_lvl3, child_of_archived, child_missing_parent,
+                valid_empty, dup1, dup2, miss_disc_cat, unsup_disc_cat,
+            ])
+            db.flush()
+
+            db.add_all([
+                Material(
+                    code='MAT-MISS-1',
+                    category_id=miss_disc_cat.id,
+                    main_category_id=valid_main.id,
+                    subcategory_id=miss_disc_cat.id,
+                    name_en='Deformed Rebar 16mm',
+                    unit='TON',
+                    discipline=None,
+                    active=True,
+                ),
+                Material(
+                    code='MAT-UNSUP-1',
+                    category_id=unsup_disc_cat.id,
+                    main_category_id=valid_main.id,
+                    subcategory_id=unsup_disc_cat.id,
+                    name_en='Specialty Coating Product',
+                    unit='L',
+                    discipline='MarineSpecial',
+                    active=True,
+                ),
+            ])
+            db.commit()
+
+            payload = build_analysis_payload(db, limit=100)
+            by_id = {item['id']: item for item in payload['items']}
+
+            assert by_id[child_missing_parent.id]['issue_type'] == 'missing_parent'
+            assert by_id[child_missing_parent.id]['issue_label'] == 'Missing parent'
+
+            assert by_id[child_of_archived.id]['issue_type'] == 'archived_parent'
+            assert by_id[child_of_archived.id]['issue_label'] == 'Archived parent'
+
+            assert by_id[acoustic_lvl3.id]['issue_type'] == 'hierarchy_depth_exceeded'
+            assert by_id[acoustic_lvl3.id]['issue_label'] == 'Exceeds two-level hierarchy'
+            assert by_id[acoustic_lvl3.id]['hierarchy_path'] == [
+                'Civil',
+                'Architectural Insulation & Air/Vapor Control',
+                'Acoustic Products',
+            ]
+            assert by_id[acc_lvl3.id]['issue_type'] == 'hierarchy_depth_exceeded'
+            assert by_id[acc_lvl3.id]['hierarchy_path'] == ['Electrical', 'Electrical', 'Accessories']
+
+            assert by_id[qa_cat.id]['issue_type'] == 'invalid_import_data'
+            assert by_id[dup1.id]['issue_type'] == 'duplicate_category'
+            assert by_id[valid_empty.id]['issue_type'] == 'empty_category'
+            assert by_id[miss_disc_cat.id]['issue_type'] == 'missing_discipline'
+            assert by_id[unsup_disc_cat.id]['issue_type'] == 'unsupported_discipline'
+
+            # Guard: cannot approve or retain_empty categories with hierarchy_depth_exceeded / archived_parent / missing_parent
+            for blocked_id in (acoustic_lvl3.id, child_of_archived.id, child_missing_parent.id):
+                with pytest.raises(HTTPException) as exc_info:
+                    apply_single_category_decision(db, category_id=blocked_id, decision='retain_empty', actor=admin)
+                assert exc_info.value.status_code == 422
+    finally:
+        engine.dispose()

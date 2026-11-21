@@ -131,6 +131,9 @@ UNAMBIGUOUS_HIERARCHY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 ISSUE_LABELS: dict[str, str] = {
+    'missing_parent': 'Missing parent',
+    'archived_parent': 'Archived parent',
+    'hierarchy_depth_exceeded': 'Exceeds two-level hierarchy',
     'invalid_import_data': 'Invalid import data',
     'duplicate_category': 'Duplicate category',
     'parent_mismatch': 'Parent category mismatch',
@@ -140,6 +143,20 @@ ISSUE_LABELS: dict[str, str] = {
     'inactive_materials_only': 'Inactive materials only',
     'empty_category': 'Empty category',
 }
+
+HIERARCHY_BLOCKING_ISSUES: frozenset[str] = frozenset({
+    'missing_parent',
+    'archived_parent',
+    'hierarchy_depth_exceeded',
+})
+
+
+@dataclass(frozen=True)
+class ReviewActor:
+    """Detached scalar actor snapshot safe to pass across short batch sessions."""
+
+    id: str
+    username: str = ''
 
 
 @dataclass
@@ -160,6 +177,13 @@ class CategoryAssessment:
     parent: Category | None
     issue_type: str
     reason: str
+    category_id: str = ''
+    category_code: str = ''
+    category_name_en: str = ''
+    category_name_ar: str = ''
+    parent_id: str | None = None
+    parent_name_en: str | None = None
+    hierarchy_path: list[str] = field(default_factory=list)
     secondary_issues: list[str] = field(default_factory=list)
     active_material_count: int = 0
     inactive_material_count: int = 0
@@ -179,6 +203,7 @@ class CategoryAssessment:
     requires_manual_review: bool = False
     evidence: list[str] = field(default_factory=list)
     current_decision: CategoryReviewDecision | None = None
+    current_decision_value: str | None = None
     material_assessments: list[MaterialAssessment] = field(default_factory=list)
     safe_material_fixes: dict[str, str] = field(default_factory=dict)  # material_id -> discipline
     parent_fix_material_ids: list[str] = field(default_factory=list)
@@ -546,6 +571,25 @@ def _duplicate_group_safety(
     return canonical, not reasons, reasons
 
 
+def _build_hierarchy_path(category: Category, by_id: dict[str, Category]) -> tuple[list[str], int]:
+    """Return (root-to-leaf category name chain, hierarchy depth) with cycle protection."""
+    chain: list[str] = [category.name_en]
+    visited: set[str] = {category.id}
+    cur = category
+    while cur.parent_id:
+        if cur.parent_id in visited:
+            chain.append('(cycle)')
+            break
+        visited.add(cur.parent_id)
+        ancestor = by_id.get(cur.parent_id)
+        if ancestor is None:
+            break
+        chain.append(ancestor.name_en)
+        cur = ancestor
+    chain.reverse()
+    return chain, len(chain)
+
+
 def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[CategoryAssessment]:
     """Analyze all active categories and return structured assessments."""
     all_categories = list(db.scalars(select(Category).order_by(Category.name_en, Category.id)).all())
@@ -666,9 +710,15 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
         # Determine issues
         secondary: list[str] = []
         evidence: list[str] = []
+        hierarchy_path, hierarchy_depth = _build_hierarchy_path(category, by_id)
         label_text = f'{category.name_en} {parent.name_en if parent else ""}'
         is_suspicious_label = bool(SUSPICIOUS_LABEL_RE.search(label_text))
-        is_broken_parent = bool(category.parent_id and (parent is None or not parent.active or parent.parent_id is not None))
+        is_missing_parent = bool(category.parent_id and parent is None)
+        is_archived_parent = bool(category.parent_id and parent is not None and not parent.active)
+        is_hierarchy_depth_exceeded = bool(
+            category.parent_id and parent is not None and parent.active and parent.parent_id is not None
+        )
+        is_broken_parent = is_missing_parent or is_archived_parent or is_hierarchy_depth_exceeded
         is_duplicate = category.id in dup_info
         has_active_children = bool(active_children_by_parent.get(category.id))
         can_archive = (len(active_mats) == 0) and (not has_active_children)
@@ -696,20 +746,70 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
             duplicate_blockers = blockers
             can_merge = d_safe
 
-        if is_broken_parent or is_suspicious_label:
+        if is_missing_parent:
+            issue_type = 'missing_parent'
+            reason = f'Category references missing parent ID ({category.parent_id}).'
+            if is_duplicate:
+                secondary.append('duplicate_category')
+            if mismatched_mats:
+                secondary.append('parent_mismatch')
+            if missing_count:
+                secondary.append('missing_discipline')
+            if unsupported_count:
+                secondary.append('unsupported_discipline')
+            proposed_action = 'manual_review'
+            evidence.append(reason)
+
+        elif is_archived_parent:
+            issue_type = 'archived_parent'
+            reason = (
+                f'Parent category "{parent.name_en}" ({parent.code}) is archived while this subcategory remains active.'
+                if parent
+                else 'Parent category is archived while this subcategory remains active.'
+            )
+            if is_duplicate:
+                secondary.append('duplicate_category')
+            if mismatched_mats:
+                secondary.append('parent_mismatch')
+            if missing_count:
+                secondary.append('missing_discipline')
+            if unsupported_count:
+                secondary.append('unsupported_discipline')
+            proposed_action = 'manual_review'
+            evidence.append(reason)
+
+        elif is_hierarchy_depth_exceeded:
+            issue_type = 'hierarchy_depth_exceeded'
+            path_str = ' → '.join(hierarchy_path)
+            reason = (
+                f'Category sits at hierarchy level {hierarchy_depth} ({path_str}), '
+                'exceeding the two-level hierarchy (Main Category → Subcategory).'
+            )
+            if is_duplicate:
+                secondary.append('duplicate_category')
+            if mismatched_mats:
+                secondary.append('parent_mismatch')
+            if missing_count:
+                secondary.append('missing_discipline')
+            if unsupported_count:
+                secondary.append('unsupported_discipline')
+            proposed_action = 'manual_review'
+            evidence.append(f'Hierarchy path: {path_str}')
+            if hierarchy_path and hierarchy_path[0].strip().casefold() in SUPPORTED_DISCIPLINES:
+                evidence.append(
+                    f'Top-level ancestor "{hierarchy_path[0]}" is a discipline root rather than a Main Category.'
+                )
+
+        elif is_suspicious_label:
             issue_type = 'invalid_import_data'
-            if is_broken_parent:
-                reason = 'Category parent is missing, archived, or exceeds the two-level hierarchy.'
-            else:
-                reason = 'Category label resembles test, QA, sample, or bulk data; review before public use.'
+            reason = 'Category label resembles test, QA, sample, or bulk data; review before public use.'
             if is_duplicate:
                 secondary.append('duplicate_category')
             if mismatched_mats:
                 secondary.append('parent_mismatch')
             # Admin can explicitly approve a false-positive suspicious label ONLY if no broken parent or bad materials
             can_approve = (
-                not is_broken_parent
-                and not mismatched_mats
+                not mismatched_mats
                 and missing_count == 0
                 and unsupported_count == 0
                 and not is_duplicate
@@ -830,6 +930,13 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
                 parent=parent,
                 issue_type=issue_type,
                 reason=reason,
+                category_id=category.id,
+                category_code=category.code,
+                category_name_en=category.name_en,
+                category_name_ar=category.name_ar or '',
+                parent_id=category.parent_id,
+                parent_name_en=parent.name_en if parent else None,
+                hierarchy_path=hierarchy_path,
                 secondary_issues=secondary,
                 active_material_count=len(active_mats),
                 inactive_material_count=len(inactive_mats),
@@ -849,6 +956,7 @@ def analyze_categories(db: Session, *, include_resolved: bool = False) -> list[C
                 requires_manual_review=requires_manual,
                 evidence=evidence,
                 current_decision=current_decision,
+                current_decision_value=current_decision.decision if current_decision else None,
                 material_assessments=[ma for ma in mat_assessments if ma.issue != 'ok'][:10],
                 safe_material_fixes=safe_material_fixes,
                 parent_fix_material_ids=parent_fix_ids,
@@ -1080,9 +1188,27 @@ def _merge_duplicate_group_in_session(
     return canonical.id, source_ids, moved
 
 
+def _preview_item_from_assessment(item: CategoryAssessment, *, proposed_action_override: str | None = None) -> dict:
+    """Build a plain scalar preview DTO while the session is active."""
+    return {
+        'category_id': item.category_id,
+        'code': item.category_code,
+        'name_en': item.category_name_en,
+        'parent_name_en': item.parent_name_en,
+        'issue_type': item.issue_type,
+        'proposed_action': proposed_action_override or item.proposed_action,
+        'proposed_discipline': None if proposed_action_override else item.proposed_discipline,
+        'materials_to_update': 0
+        if proposed_action_override
+        else len(item.safe_material_fixes) + len(item.parent_fix_material_ids),
+        'duplicate_count': 0 if proposed_action_override else len(item.duplicate_ids),
+        'reason': item.reason,
+    }
+
+
 def run_bulk_auto_fix(
     *,
-    actor: User | None,
+    actor: User | ReviewActor | None,
     dry_run: bool = False,
     category_ids: list[str] | None = None,
     cursor_after_id: str | None = None,
@@ -1094,57 +1220,53 @@ def run_bulk_auto_fix(
 
     Opens and closes a fresh session per batch so no PostgreSQL transaction is ever held
     idle between batches and the Material Master is never globally locked.
+    All DTOs and scalar work items are materialized while the read session is active.
     """
     job_limit = max(1, min(job_limit, JOB_SIZE))
     batch_size = max(1, min(batch_size, BATCH_SIZE))
-
-    # Step 1: Read-only analysis snapshot in a short session
-    with session_factory() as read_db:
-        all_assessments = analyze_categories(read_db, include_resolved=False)
-
     requested_set = set(category_ids) if category_ids else None
-    safe_candidates: list[CategoryAssessment] = []
+
+    # Step 1: Read-only analysis snapshot in a short session — extract pure scalar DTOs before closing
+    safe_candidates: list[dict] = []
     skipped_ambiguous = 0
     seen_dup_groups: set[tuple[str, ...]] = set()
 
-    for item in sorted(all_assessments, key=lambda a: a.category.id):
-        if requested_set is not None and item.category.id not in requested_set:
-            continue
-        if not item.safe_to_auto_fix:
-            if item.requires_manual_review:
-                skipped_ambiguous += 1
-            continue
-        if item.proposed_action == 'merge_duplicate':
-            key = tuple(sorted(item.duplicate_ids))
-            if key in seen_dup_groups:
+    with session_factory() as read_db:
+        all_assessments = analyze_categories(read_db, include_resolved=False)
+        for item in sorted(all_assessments, key=lambda a: a.category_id):
+            if requested_set is not None and item.category_id not in requested_set:
                 continue
-            seen_dup_groups.add(key)
-        safe_candidates.append(item)
+            if not item.safe_to_auto_fix:
+                if item.requires_manual_review:
+                    skipped_ambiguous += 1
+                continue
+            if item.proposed_action == 'merge_duplicate':
+                key = tuple(sorted(item.duplicate_ids))
+                if key in seen_dup_groups:
+                    continue
+                seen_dup_groups.add(key)
+            safe_candidates.append(
+                {
+                    'category_id': item.category_id,
+                    'issue_type': item.issue_type,
+                    'proposed_action': item.proposed_action,
+                    'proposed_discipline': item.proposed_discipline,
+                    'duplicate_ids': list(item.duplicate_ids),
+                    'safe_material_fixes': dict(item.safe_material_fixes),
+                    'parent_fix_material_ids': list(item.parent_fix_material_ids),
+                    'preview': _preview_item_from_assessment(item),
+                }
+            )
 
     if cursor_after_id:
-        eligible = [item for item in safe_candidates if item.category.id > cursor_after_id]
+        eligible = [item for item in safe_candidates if item['category_id'] > cursor_after_id]
     else:
         eligible = safe_candidates
 
     job_slice = eligible[:job_limit]
     remaining_after_job = max(0, len(eligible) - len(job_slice))
-    next_cursor = job_slice[-1].category.id if (remaining_after_job > 0 and job_slice) else None
-
-    preview_items = [
-        {
-            'category_id': item.category.id,
-            'code': item.category.code,
-            'name_en': item.category.name_en,
-            'parent_name_en': item.parent.name_en if item.parent else None,
-            'issue_type': item.issue_type,
-            'proposed_action': item.proposed_action,
-            'proposed_discipline': item.proposed_discipline,
-            'materials_to_update': len(item.safe_material_fixes) + len(item.parent_fix_material_ids),
-            'duplicate_count': len(item.duplicate_ids),
-            'reason': item.reason,
-        }
-        for item in job_slice
-    ]
+    next_cursor = job_slice[-1]['category_id'] if (remaining_after_job > 0 and job_slice) else None
+    preview_items = [item['preview'] for item in job_slice]
 
     if dry_run or not job_slice:
         return {
@@ -1154,9 +1276,13 @@ def run_bulk_auto_fix(
             'batches_executed': 0,
             'categories_processed': len(job_slice) if dry_run else 0,
             'categories_resolved': 0,
-            'materials_updated': sum(len(i.safe_material_fixes) for i in job_slice) if dry_run else 0,
-            'duplicates_merged': sum(max(0, len(i.duplicate_ids) - 1) for i in job_slice if i.proposed_action == 'merge_duplicate') if dry_run else 0,
-            'parent_links_repaired': sum(len(i.parent_fix_material_ids) for i in job_slice) if dry_run else 0,
+            'materials_updated': sum(len(i['safe_material_fixes']) for i in job_slice) if dry_run else 0,
+            'duplicates_merged': sum(
+                max(0, len(i['duplicate_ids']) - 1) for i in job_slice if i['proposed_action'] == 'merge_duplicate'
+            )
+            if dry_run
+            else 0,
+            'parent_links_repaired': sum(len(i['parent_fix_material_ids']) for i in job_slice) if dry_run else 0,
             'skipped_ambiguous': skipped_ambiguous,
             'remaining_safe': remaining_after_job if dry_run else 0,
             'has_more': remaining_after_job > 0,
@@ -1180,44 +1306,44 @@ def run_bulk_auto_fix(
             try:
                 for item in chunk:
                     categories_processed += 1
-                    if item.proposed_action == 'merge_duplicate' and item.duplicate_ids:
+                    if item['proposed_action'] == 'merge_duplicate' and item['duplicate_ids']:
                         canonical_id, archived_ids, _ = _merge_duplicate_group_in_session(
-                            batch_db, item.duplicate_ids, actor
+                            batch_db, item['duplicate_ids'], actor
                         )
                         if canonical_id and archived_ids:
                             duplicates_merged += len(archived_ids)
                             categories_resolved += len(archived_ids)
-                    elif item.proposed_action == 'repair_parent' and item.parent_fix_material_ids:
+                    elif item['proposed_action'] == 'repair_parent' and item['parent_fix_material_ids']:
                         repaired = _apply_parent_link_repairs(
-                            batch_db, item.category.id, item.parent_fix_material_ids, actor
+                            batch_db, item['category_id'], item['parent_fix_material_ids'], actor
                         )
                         parent_links_repaired += repaired
                         if repaired:
                             record_review_decision(
                                 batch_db,
-                                category_id=item.category.id,
+                                category_id=item['category_id'],
                                 decision='reclassify',
-                                issue_type=item.issue_type,
+                                issue_type=item['issue_type'],
                                 actor=actor,
                                 notes=f'Auto-repaired main_category_id for {repaired} material(s).',
                                 details={'materials_repaired': repaired, 'auto_fix': True},
                             )
                             categories_resolved += 1
-                    elif item.proposed_action == 'assign_discipline' and item.safe_material_fixes:
+                    elif item['proposed_action'] == 'assign_discipline' and item['safe_material_fixes']:
                         updated = _apply_material_discipline_updates(
-                            batch_db, item.safe_material_fixes, actor, action_label='auto_fix_discipline'
+                            batch_db, item['safe_material_fixes'], actor, action_label='auto_fix_discipline'
                         )
                         materials_updated += updated
                         if updated:
-                            fully_resolved = item.issue_type != 'ambiguous_classification'
+                            fully_resolved = item['issue_type'] != 'ambiguous_classification'
                             if fully_resolved:
                                 record_review_decision(
                                     batch_db,
-                                    category_id=item.category.id,
+                                    category_id=item['category_id'],
                                     decision='reclassify',
-                                    issue_type=item.issue_type,
+                                    issue_type=item['issue_type'],
                                     actor=actor,
-                                    discipline=item.proposed_discipline,
+                                    discipline=item['proposed_discipline'],
                                     notes=f'Auto-assigned supported discipline to {updated} material(s).',
                                     details={'materials_updated': updated, 'auto_fix': True},
                                 )
@@ -1257,7 +1383,7 @@ def run_bulk_auto_fix(
 
 def run_bulk_approve_valid(
     *,
-    actor: User | None,
+    actor: User | ReviewActor | None,
     dry_run: bool = False,
     include_empty: bool = True,
     category_ids: list[str] | None = None,
@@ -1266,45 +1392,49 @@ def run_bulk_approve_valid(
     batch_size: int = BATCH_SIZE,
     session_factory: Callable[[], Session] = SessionLocal,
 ) -> dict:
-    """Explicitly retain valid empty categories (and approve valid items) in short batches of 30."""
+    """Explicitly retain valid empty categories in idempotent, short committed batches of 30.
+
+    All response DTOs and candidate identifiers are extracted while the read session is active
+    so no SQLAlchemy ORM instances are ever accessed after session close.
+    """
     job_limit = max(1, min(job_limit, JOB_SIZE))
     batch_size = max(1, min(batch_size, BATCH_SIZE))
+    requested_set = set(category_ids) if category_ids else None
+
+    valid_candidates: list[dict] = []
+    excluded_by_issue: Counter[str] = Counter()
+    excluded_preview_items: list[dict] = []
+    excluded_count = 0
 
     with session_factory() as read_db:
         all_assessments = analyze_categories(read_db, include_resolved=False)
-
-    requested_set = set(category_ids) if category_ids else None
-    valid_candidates: list[CategoryAssessment] = []
-    for item in sorted(all_assessments, key=lambda a: a.category.id):
-        if requested_set is not None and item.category.id not in requested_set:
-            continue
-        if include_empty and item.can_retain_empty and item.issue_type in {'empty_category', 'inactive_materials_only'}:
-            valid_candidates.append(item)
+        for item in sorted(all_assessments, key=lambda a: a.category_id):
+            if requested_set is not None and item.category_id not in requested_set:
+                continue
+            if include_empty and item.can_retain_empty and item.issue_type in {'empty_category', 'inactive_materials_only'}:
+                valid_candidates.append(
+                    {
+                        'category_id': item.category_id,
+                        'issue_type': item.issue_type,
+                        'preview': _preview_item_from_assessment(item, proposed_action_override='retain_empty'),
+                    }
+                )
+            else:
+                excluded_count += 1
+                excluded_by_issue[item.issue_type] += 1
+                if len(excluded_preview_items) < 25:
+                    excluded_preview_items.append(_preview_item_from_assessment(item))
 
     if cursor_after_id:
-        eligible = [item for item in valid_candidates if item.category.id > cursor_after_id]
+        eligible = [item for item in valid_candidates if item['category_id'] > cursor_after_id]
     else:
         eligible = valid_candidates
 
+    total_eligible = len(eligible)
     job_slice = eligible[:job_limit]
-    remaining_after_job = max(0, len(eligible) - len(job_slice))
-    next_cursor = job_slice[-1].category.id if (remaining_after_job > 0 and job_slice) else None
-
-    preview_items = [
-        {
-            'category_id': item.category.id,
-            'code': item.category.code,
-            'name_en': item.category.name_en,
-            'parent_name_en': item.parent.name_en if item.parent else None,
-            'issue_type': item.issue_type,
-            'proposed_action': 'retain_empty',
-            'proposed_discipline': None,
-            'materials_to_update': 0,
-            'duplicate_count': 0,
-            'reason': item.reason,
-        }
-        for item in job_slice
-    ]
+    remaining_after_job = max(0, total_eligible - len(job_slice))
+    next_cursor = job_slice[-1]['category_id'] if (remaining_after_job > 0 and job_slice) else None
+    preview_items = [item['preview'] for item in job_slice]
 
     if dry_run or not job_slice:
         return {
@@ -1312,54 +1442,136 @@ def run_bulk_approve_valid(
             'job_size': job_limit,
             'batch_size': batch_size,
             'batches_executed': 0,
+            'total_eligible': total_eligible,
             'retained_empty': len(job_slice) if dry_run else 0,
             'approved': 0,
+            'skipped_already_approved': 0,
             'remaining_valid': remaining_after_job if dry_run else 0,
+            'excluded_count': excluded_count,
+            'excluded_by_issue_type': dict(excluded_by_issue),
             'has_more': remaining_after_job > 0,
             'next_cursor': next_cursor,
             'preview_items': preview_items[:100],
+            'excluded_preview_items': excluded_preview_items,
+            'errors': [],
         }
 
     batches_executed = 0
     retained_empty = 0
+    skipped_already_approved = 0
+    errors: list[dict] = []
 
     for start in range(0, len(job_slice), batch_size):
         chunk = job_slice[start : start + batch_size]
+        chunk_ids = [item['category_id'] for item in chunk]
         batches_executed += 1
         with session_factory() as batch_db:
-            for item in chunk:
-                record_review_decision(
-                    batch_db,
-                    category_id=item.category.id,
-                    decision='retain_empty',
-                    issue_type=item.issue_type,
-                    actor=actor,
-                    notes='Explicitly retained as a valid empty category; hidden from buyer selection until active materials exist.',
-                    details={'bulk_approve_valid': True},
+            try:
+                # Lock candidate categories in deterministic order to prevent concurrent double-approval
+                locked_cats = {
+                    c.id: c
+                    for c in batch_db.scalars(
+                        select(Category).where(Category.id.in_(chunk_ids)).order_by(Category.id).with_for_update()
+                    ).all()
+                }
+                already_retained_ids = set(
+                    batch_db.scalars(
+                        select(CategoryReviewDecision.category_id).where(
+                            CategoryReviewDecision.category_id.in_(chunk_ids),
+                            CategoryReviewDecision.is_current.is_(True),
+                            CategoryReviewDecision.decision == 'retain_empty',
+                        )
+                    ).all()
                 )
-                retained_empty += 1
-            audit(
-                batch_db,
-                actor,
-                'category.bulk_retained_empty',
-                count=len(chunk),
-            )
-            batch_db.commit()
+                cats_with_active_mats = set(
+                    batch_db.scalars(
+                        select(Material.category_id).where(
+                            Material.active.is_(True),
+                            Material.category_id.in_(chunk_ids),
+                        )
+                    ).all()
+                ) | set(
+                    batch_db.scalars(
+                        select(Material.main_category_id).where(
+                            Material.active.is_(True),
+                            Material.main_category_id.in_(chunk_ids),
+                        )
+                    ).all()
+                ) | set(
+                    batch_db.scalars(
+                        select(Material.subcategory_id).where(
+                            Material.active.is_(True),
+                            Material.subcategory_id.in_(chunk_ids),
+                        )
+                    ).all()
+                )
+
+                batch_retained_ids: list[str] = []
+                for item in chunk:
+                    cid = item['category_id']
+                    cat = locked_cats.get(cid)
+                    if not cat or not cat.active:
+                        continue
+                    if cid in already_retained_ids:
+                        skipped_already_approved += 1
+                        continue
+                    if cid in cats_with_active_mats:
+                        continue
+                    record_review_decision(
+                        batch_db,
+                        category_id=cid,
+                        decision='retain_empty',
+                        issue_type=item['issue_type'],
+                        actor=actor,
+                        notes='Explicitly retained as a valid empty category; hidden from buyer selection until active materials exist.',
+                        details={'bulk_approve_valid': True},
+                    )
+                    batch_retained_ids.append(cid)
+
+                if batch_retained_ids:
+                    audit(
+                        batch_db,
+                        actor,
+                        'category.bulk_retained_empty',
+                        count=len(batch_retained_ids),
+                        category_ids=batch_retained_ids,
+                    )
+                batch_db.commit()
+                retained_empty += len(batch_retained_ids)
+            except Exception as exc:
+                batch_db.rollback()
+                logger.exception('Bulk approve-valid batch failed')
+                errors.append({'batch': batches_executed, 'error': str(exc)})
 
     if retained_empty:
         catalog_cache.invalidate()
+
+    # Re-verify live remaining valid count after commit
+    with session_factory() as verify_db:
+        post_assessments = analyze_categories(verify_db, include_resolved=False)
+        remaining_valid = sum(
+            1
+            for a in post_assessments
+            if include_empty and a.can_retain_empty and a.issue_type in {'empty_category', 'inactive_materials_only'}
+        )
 
     return {
         'dry_run': False,
         'job_size': job_limit,
         'batch_size': batch_size,
         'batches_executed': batches_executed,
+        'total_eligible': total_eligible,
         'retained_empty': retained_empty,
         'approved': 0,
-        'remaining_valid': remaining_after_job,
-        'has_more': remaining_after_job > 0,
-        'next_cursor': next_cursor,
+        'skipped_already_approved': skipped_already_approved,
+        'remaining_valid': remaining_valid,
+        'excluded_count': excluded_count,
+        'excluded_by_issue_type': dict(excluded_by_issue),
+        'has_more': remaining_after_job > 0 and remaining_valid > 0,
+        'next_cursor': next_cursor if remaining_valid > 0 else None,
         'preview_items': preview_items[:100],
+        'excluded_preview_items': excluded_preview_items,
+        'errors': errors,
     }
 
 
@@ -1394,7 +1606,7 @@ def apply_single_category_decision(
                 422,
                 'Cannot approve category while active materials have missing or unsupported disciplines. Reclassify materials first.',
             )
-        if assessment.issue_type in {'duplicate_category', 'parent_mismatch'}:
+        if assessment.issue_type in {'duplicate_category', 'parent_mismatch'} | HIERARCHY_BLOCKING_ISSUES:
             raise HTTPException(422, f'Resolve {assessment.issue_type.replace("_", " ")} before approving.')
         if assessment.active_material_count == 0:
             raise HTTPException(422, 'Empty categories cannot be approved as populated; use Retain Empty Category instead.')
@@ -1411,8 +1623,8 @@ def apply_single_category_decision(
     elif decision == 'retain_empty':
         if assessment.active_material_count > 0:
             raise HTTPException(422, 'Only categories with zero active materials can be retained as empty.')
-        if assessment.issue_type == 'duplicate_category':
-            raise HTTPException(422, 'Merge or resolve duplicate category before retaining as empty.')
+        if assessment.issue_type in {'duplicate_category'} | HIERARCHY_BLOCKING_ISSUES:
+            raise HTTPException(422, f'Resolve {assessment.issue_type.replace("_", " ")} before retaining as empty.')
         record_review_decision(
             db,
             category_id=category.id,
@@ -1521,10 +1733,11 @@ def apply_single_category_decision(
     else:
         raise HTTPException(422, f'Unsupported review decision: {decision}')
 
+    resolved_category_id = category.id
     db.commit()
     catalog_cache.invalidate()
     return {
-        'category_id': category.id,
+        'category_id': resolved_category_id,
         'decision': decision,
         'materials_updated': materials_updated,
         'merged_into_category_id': merged_into,
@@ -1534,12 +1747,13 @@ def apply_single_category_decision(
 
 def serialize_assessment(item: CategoryAssessment) -> dict:
     return {
-        'id': item.category.id,
-        'code': item.category.code,
-        'name_en': item.category.name_en,
-        'name_ar': item.category.name_ar or '',
-        'parent_id': item.category.parent_id,
-        'parent_name_en': item.parent.name_en if item.parent else None,
+        'id': item.category_id,
+        'code': item.category_code,
+        'name_en': item.category_name_en,
+        'name_ar': item.category_name_ar,
+        'parent_id': item.parent_id,
+        'parent_name_en': item.parent_name_en,
+        'hierarchy_path': item.hierarchy_path,
         'issue_type': item.issue_type,
         'issue_label': ISSUE_LABELS.get(item.issue_type, item.issue_type),
         'reason': item.reason,
@@ -1560,7 +1774,7 @@ def serialize_assessment(item: CategoryAssessment) -> dict:
         'can_archive': item.can_archive,
         'requires_manual_review': item.requires_manual_review,
         'evidence': item.evidence,
-        'current_decision': item.current_decision.decision if item.current_decision else None,
+        'current_decision': item.current_decision_value,
         'materials_preview': [
             {
                 'id': ma.material_id,
@@ -1608,11 +1822,13 @@ def build_analysis_payload(
         filtered = [
             item
             for item in filtered
-            if term in normalize_text(f'{item.category.name_en} {item.category.code} {item.parent.name_en if item.parent else ""} {item.reason}')
+            if term in normalize_text(
+                f'{item.category_name_en} {item.category_code} {item.parent_name_en or ""} {" ".join(item.hierarchy_path)} {item.reason}'
+            )
         ]
 
     token = sha256(
-        repr([(i.category.id, i.issue_type, i.proposed_action, i.proposed_discipline, i.active_material_count) for i in all_items]).encode()
+        repr([(i.category_id, i.issue_type, i.proposed_action, i.proposed_discipline, i.active_material_count) for i in all_items]).encode()
     ).hexdigest()[:24]
 
     page_items = filtered[offset : offset + limit]

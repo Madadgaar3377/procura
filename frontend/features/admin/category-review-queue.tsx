@@ -27,6 +27,7 @@ type CategoryReviewItem = {
   name_ar: string;
   parent_id: string | null;
   parent_name_en: string | null;
+  hierarchy_path?: string[];
   issue_type: string;
   issue_label: string;
   reason: string;
@@ -103,15 +104,24 @@ type BulkApproveResponse = {
   job_size: number;
   batch_size: number;
   batches_executed: number;
+  total_eligible: number;
   retained_empty: number;
   approved: number;
+  skipped_already_approved: number;
   remaining_valid: number;
+  excluded_count: number;
+  excluded_by_issue_type: Record<string, number>;
   has_more: boolean;
   next_cursor: string | null;
   preview_items: PreviewItem[];
+  excluded_preview_items: PreviewItem[];
+  errors: Array<Record<string, unknown>>;
 };
 
 const ISSUE_LABELS: Record<string, string> = {
+  missing_parent: 'Missing parent',
+  archived_parent: 'Archived parent',
+  hierarchy_depth_exceeded: 'Exceeds two-level hierarchy',
   missing_discipline: 'Missing discipline',
   unsupported_discipline: 'Unsupported discipline',
   empty_category: 'Empty category',
@@ -268,23 +278,29 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
       } else {
         let cursor: string | null = null;
         let totalRetained = 0;
+        let totalSkipped = 0;
+        let totalBatches = 0;
         let jobsRun = 0;
         while (jobsRun < 20) {
           jobsRun += 1;
-          setProgressNote(t(`Retaining valid empty categories (job ${jobsRun}, 30 per batch)...`));
+          setProgressNote(t(`Approving valid categories (job ${jobsRun}, 30 per batch)...`));
           const res: BulkApproveResponse = await api<BulkApproveResponse>('taxonomy/review/approve-valid', {
             method: 'POST',
             body: json({ dry_run: false, include_empty: true, cursor_after_id: cursor, job_limit: 300, batch_size: 30 }),
           });
           totalRetained += res.retained_empty;
-          if (!res.has_more || !res.next_cursor || res.retained_empty === 0) break;
+          totalSkipped += res.skipped_already_approved || 0;
+          totalBatches += res.batches_executed || 0;
+          if (!res.has_more || !res.next_cursor || (res.retained_empty === 0 && (res.skipped_already_approved || 0) === 0)) break;
           cursor = res.next_cursor;
         }
         setPreviewKind(null);
         setApprovePreview(null);
         toast.success(
           t('Valid categories updated'),
-          t(`${totalRetained} valid empty categories retained (hidden from buyer selection until active materials exist).`),
+          totalSkipped > 0
+            ? t(`${totalRetained} valid empty categories retained (${totalSkipped} already approved skipped, ${totalBatches} batch(es)).`)
+            : t(`${totalRetained} valid empty categories retained in ${totalBatches} batch(es) (hidden from buyer selection until active materials exist).`),
         );
       }
       refreshAll();
@@ -492,7 +508,14 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
                     <br />
                     <small>{item.code}</small>
                   </td>
-                  <td>{item.parent_name_en || t('Top level')}</td>
+                  <td>
+                    {item.parent_name_en || t('Top level')}
+                    {item.hierarchy_path && item.hierarchy_path.length > 2 && (
+                      <div>
+                        <small>{item.hierarchy_path.join(' → ')}</small>
+                      </div>
+                    )}
+                  </td>
                   <td>
                     <span className={`status ${item.safe_to_auto_fix ? 'verified' : item.requires_manual_review ? 'rejected' : 'pending'}`}>
                       {t(item.issue_label)}
@@ -680,13 +703,87 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
             )}
 
             {previewKind === 'approve-valid' && approvePreview && (
-              <div>
-                <p>
-                  {t('Valid empty categories will be explicitly retained without deleting them, without fabricating materials, and without assigning fake disciplines. They will stay out of buyer RFQ selection until active materials exist.')}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                <p style={{ margin: 0 }}>
+                  {t('Eligible valid empty categories will be recorded with an explicit retain decision in batches of 30. Categories are not deleted, no fake materials or disciplines are created, and retained empty categories remain hidden from buyer RFQ selection until active materials exist.')}
                 </p>
-                <ul>
-                  <li><strong>{t('Valid empty categories to retain')}:</strong> {approvePreview.retained_empty}{approvePreview.has_more ? '+' : ''}</li>
+                <ul style={{ margin: 0 }}>
+                  <li>
+                    <strong>{t('Eligible valid records to approve')}:</strong>{' '}
+                    {approvePreview.total_eligible} ({Math.max(1, Math.ceil(approvePreview.total_eligible / Math.max(1, approvePreview.batch_size)))}{' '}
+                    {t('batch(es) of')} {approvePreview.batch_size})
+                  </li>
+                  <li>
+                    <strong>{t('Excluded invalid or conflicting records')}:</strong>{' '}
+                    {approvePreview.excluded_count} ({t('will remain pending for manual review')})
+                  </li>
                 </ul>
+
+                {approvePreview.preview_items.length > 0 && (
+                  <div>
+                    <p style={{ margin: '0 0 0.35rem', fontWeight: 600 }}>
+                      {t('Records that will change')} ({approvePreview.preview_items.length}
+                      {approvePreview.total_eligible > approvePreview.preview_items.length ? ` / ${approvePreview.total_eligible}` : ''})
+                    </p>
+                    <div className="table-wrap" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>{t('Category')}</th>
+                            <th>{t('Current status')}</th>
+                            <th>{t('Change')}</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {approvePreview.preview_items.slice(0, 30).map(p => (
+                            <tr key={p.category_id}>
+                              <td>{p.parent_name_en ? `${p.parent_name_en} → ` : ''}{p.name_en}</td>
+                              <td>{t(ISSUE_LABELS[p.issue_type] || p.issue_type)}</td>
+                              <td>{t('Retain as valid empty category')}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {approvePreview.excluded_count > 0 && (
+                  <details>
+                    <summary style={{ cursor: 'pointer', fontWeight: 600 }}>
+                      {t('Excluded invalid / conflicting records')} ({approvePreview.excluded_count})
+                    </summary>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem', margin: '0.5rem 0' }}>
+                      {Object.entries(approvePreview.excluded_by_issue_type).map(([key, count]) => (
+                        <span key={key} className="status rejected">
+                          {t(ISSUE_LABELS[key] || key)}: {count}
+                        </span>
+                      ))}
+                    </div>
+                    {approvePreview.excluded_preview_items.length > 0 && (
+                      <div className="table-wrap" style={{ maxHeight: '180px', overflowY: 'auto' }}>
+                        <table className="data-table">
+                          <thead>
+                            <tr>
+                              <th>{t('Category')}</th>
+                              <th>{t('Issue')}</th>
+                              <th>{t('Reason excluded')}</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {approvePreview.excluded_preview_items.slice(0, 20).map(p => (
+                              <tr key={p.category_id}>
+                                <td>{p.parent_name_en ? `${p.parent_name_en} → ` : ''}{p.name_en}</td>
+                                <td>{t(ISSUE_LABELS[p.issue_type] || p.issue_type)}</td>
+                                <td>{p.reason}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </details>
+                )}
               </div>
             )}
 
@@ -696,8 +793,16 @@ export function CategoryReviewQueue({ onChanged }: { onChanged: () => void }) {
               <Button type="button" variant="outline" disabled={busy} onClick={() => setPreviewKind(null)}>
                 {t('Cancel')}
               </Button>
-              <Button type="button" disabled={busy} onClick={() => void confirmBulkAction()}>
-                {busy ? t('Processing...') : t('Apply Changes')}
+              <Button
+                type="button"
+                disabled={busy || (previewKind === 'approve-valid' && (approvePreview?.total_eligible ?? 0) === 0)}
+                onClick={() => void confirmBulkAction()}
+              >
+                {busy
+                  ? t('Processing...')
+                  : previewKind === 'approve-valid'
+                    ? t(`Confirm & Approve (${approvePreview?.total_eligible ?? 0})`)
+                    : t('Apply Changes')}
               </Button>
             </footer>
           </div>

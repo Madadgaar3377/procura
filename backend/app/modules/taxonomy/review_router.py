@@ -14,6 +14,7 @@ from app.models import CategoryReviewDecision, User
 from app.modules.taxonomy.review_service import (
     BATCH_SIZE,
     JOB_SIZE,
+    ReviewActor,
     apply_single_category_decision,
     build_analysis_payload,
     run_bulk_approve_valid,
@@ -42,6 +43,7 @@ class CategoryReviewItemOut(BaseModel):
     name_ar: str = ''
     parent_id: str | None = None
     parent_name_en: str | None = None
+    hierarchy_path: list[str] = Field(default_factory=list)
     issue_type: str
     issue_label: str
     reason: str
@@ -135,12 +137,18 @@ class BulkApproveValidOut(BaseModel):
     job_size: int
     batch_size: int
     batches_executed: int
+    total_eligible: int = 0
     retained_empty: int
     approved: int
+    skipped_already_approved: int = 0
     remaining_valid: int
+    excluded_count: int = 0
+    excluded_by_issue_type: dict[str, int] = Field(default_factory=dict)
     has_more: bool
     next_cursor: str | None = None
     preview_items: list[CategoryFixPreviewItemOut] = Field(default_factory=list)
+    excluded_preview_items: list[CategoryFixPreviewItemOut] = Field(default_factory=list)
+    errors: list[dict] = Field(default_factory=list)
 
 
 class CategoryReviewDecisionIn(BaseModel):
@@ -197,6 +205,14 @@ def analyze_review_queue(
     )
 
 
+def _detach_actor(user: User, db: Session) -> ReviewActor:
+    """Extract scalar actor fields before releasing the request session."""
+    actor = ReviewActor(id=user.id, username=user.username or '')
+    db.rollback()
+    db.close()
+    return actor
+
+
 @router.post('/auto-fix', response_model=BulkCategoryFixOut)
 def auto_fix_safe_records(
     payload: BulkCategoryFixIn,
@@ -206,12 +222,9 @@ def auto_fix_safe_records(
     """Preview or apply safe category review fixes in short committed batches of 30 (up to 300/job)."""
     # Release the auth session before running batched short transactions so no
     # PostgreSQL session is ever held idle-in-transaction between batches.
-    actor_id = user.id
-    db.rollback()
-    db.close()
-    actor_stub = User(id=actor_id, username=user.username, phone=user.phone, phone_e164=user.phone_e164, password_hash='', is_admin=True)
+    actor_snapshot = _detach_actor(user, db)
     return run_bulk_auto_fix(
-        actor=actor_stub,
+        actor=actor_snapshot,
         dry_run=payload.dry_run,
         category_ids=payload.category_ids,
         cursor_after_id=payload.cursor_after_id,
@@ -228,12 +241,9 @@ def approve_all_valid(
     db: Session = Depends(get_db),
 ):
     """Preview or explicitly retain valid empty categories in short committed batches of 30."""
-    actor_id = user.id
-    db.rollback()
-    db.close()
-    actor_stub = User(id=actor_id, username=user.username, phone=user.phone, phone_e164=user.phone_e164, password_hash='', is_admin=True)
+    actor_snapshot = _detach_actor(user, db)
     return run_bulk_approve_valid(
-        actor=actor_stub,
+        actor=actor_snapshot,
         dry_run=payload.dry_run,
         include_empty=payload.include_empty,
         category_ids=payload.category_ids,
