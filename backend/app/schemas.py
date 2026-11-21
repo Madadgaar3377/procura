@@ -282,6 +282,21 @@ class MaterialMasterIn(Model):
     arabic_description:str=Field(default='',max_length=250)
     metadata:dict[str,Any]=Field(default_factory=dict)
 
+class MaterialGroupRow(Model):
+    description:str=Field(min_length=3,max_length=250)
+    unit:str=Field(min_length=1,max_length=30)
+
+class MaterialGroupIn(Model):
+    main_category_id:str
+    subcategory_id:str|None=None
+    discipline:Literal['Civil','Mechanical','Electrical']|None=None
+    rows:list[MaterialGroupRow]=Field(min_length=1,max_length=30)
+
+class MaterialGroupOut(Model):
+    materials:list[dict[str,Any]]
+    created:int
+    reused:int
+
 class MeasurementUnitIn(Model):
     code:str=Field(min_length=1,max_length=30)
     name_en:str=Field(min_length=1,max_length=80)
@@ -335,6 +350,7 @@ class MaterialImportPreview(Model):
     stage: str | None = None
     failure_reason: str | None = None
     new_categories: list[dict[str,Any]] = Field(default_factory=list)
+    detected_groups: list[dict[str,Any]] = Field(default_factory=list)
     upload_duration_ms: int = 0
     parse_duration_ms: int = 0
     apply_duration_ms: int = 0
@@ -466,6 +482,12 @@ class PriceIn(Model):
             raise ValueError('valid_until must include a timezone')
         return value
 
+class PriceGroupIn(Model):
+    org_id:str
+    main_category_id:str
+    subcategory_id:str|None=None
+    rows:list[PriceIn]=Field(min_length=1,max_length=30)
+
 class RateStatus(Model):
     active:bool
     expected_version:int|None=Field(default=None,ge=1)
@@ -506,11 +528,19 @@ class RFQIn(Model):
     title:str=Field(min_length=3,max_length=250)
     city:str=Field(default='',max_length=120)
     response_deadline:datetime
-    items:list[RFQLineIn]=Field(min_length=1,max_length=100)
+    items:list[RFQLineIn]=Field(min_length=1,max_length=500)
     required_qualifications:list[str]=Field(default_factory=list,max_length=50)
     project_name:str=Field(default='',max_length=250)
     required_delivery_date:date|None=None
     additional_instructions:str=Field(default='',max_length=10000)
+
+    @field_validator('city',mode='wrap')
+    @classmethod
+    def allow_optional_city(cls,value,handler):
+        # The RFQ form permits an undecided delivery city. The shared text
+        # validator otherwise rejects an explicitly supplied empty string.
+        if isinstance(value,str) and not value.strip():return ''
+        return handler(value)
 
     @model_validator(mode='after')
     def validate_delivery_date(self):

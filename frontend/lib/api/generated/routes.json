@@ -695,5 +695,38 @@
   ],
   "files/admin/summary": [
     "GET"
+  ],
+  "rfqs/imports/template": [
+    "GET"
+  ],
+  "rfqs/imports/recent": [
+    "GET"
+  ],
+  "rfqs/imports": [
+    "POST"
+  ],
+  "rfqs/imports/{batch_id}": [
+    "GET"
+  ],
+  "rfqs/imports/{batch_id}/options": [
+    "PUT"
+  ],
+  "rfqs/imports/{batch_id}/rows/{row_id}": [
+    "PUT"
+  ],
+  "rfqs/imports/{batch_id}/review": [
+    "POST"
+  ],
+  "rfqs/imports/{batch_id}/retry": [
+    "POST"
+  ],
+  "rfqs/imports/{batch_id}/confirm": [
+    "POST"
+  ],
+  "taxonomy/materials/group": [
+    "POST"
+  ],
+  "pricebooks/group": [
+    "POST"
   ]
 }

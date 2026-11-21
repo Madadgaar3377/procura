@@ -17,23 +17,41 @@ router=APIRouter(prefix='/matching',tags=['Supplier Matching'])
 
 @router.get('/admin/rfqs/{rfq_id}/diagnostics',response_model=MatchingDiagnosticOut)
 def admin_diagnostics(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    """Explain persisted match outcomes and queue state to authorized administrators."""
+    """Explain persisted match outcomes, item classification, AI candidates, exclusions, and delivery state to admins."""
     if not user.is_admin:raise HTTPException(403,'Admin required')
     rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
-    items=db.execute(select(RFQItem,Material).outerjoin(Material,Material.id==RFQItem.material_id).where(RFQItem.rfq_id==rfq.id)).all()
+    items=db.execute(select(RFQItem,Material).outerjoin(Material,Material.id==RFQItem.material_id).where(RFQItem.rfq_id==rfq.id).order_by(RFQItem.created_at,RFQItem.id)).all()
+    all_cat_ids={cid for item,mat in items for cid in (item.main_category_id,item.subcategory_id,mat.main_category_id if mat else None,mat.subcategory_id if mat else None,mat.category_id if mat else None) if cid}
+    cats={c.id:c for c in db.scalars(select(Category).where(Category.id.in_(all_cat_ids))).all()} if all_cat_ids else {}
     scopes=set()
+    main_ids=set()
+    sub_ids=set()
+    classified_count=0
+    unclassified_count=0
+    item_meta=[]
     for item,material in items:
         main=item.main_category_id or (material.main_category_id if material else None)
         sub=item.subcategory_id or (material.subcategory_id if material else None)
         if not main and material:
-            leaf=db.get(Category,material.category_id)
-            if leaf:main=leaf.parent_id or leaf.id;sub=leaf.id if leaf.parent_id else None
-        if main:scopes.update(x for x in (main,sub) if x)
+            leaf=cats.get(material.category_id) or db.get(Category,material.category_id)
+            if leaf:
+                main=leaf.parent_id or leaf.id
+                sub=leaf.id if leaf.parent_id else None
+        is_classified=bool(main)
+        if is_classified:
+            classified_count+=1
+            main_ids.add(main)
+            if sub:sub_ids.add(sub)
+            scopes.update(x for x in (main,sub) if x)
+        else:
+            unclassified_count+=1
+        item_meta.append((item,main,sub,is_classified))
+
     active_checked=int(db.scalar(select(func.count()).select_from(Organization).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id)) or 0)
-    sub_ids={item.subcategory_id or (material.subcategory_id if material else None) for item,material in items}
-    sub_ids.discard(None)
-    relevant=capability_scope(db,{item.material_id for item,_ in items if item.material_id},sub_ids)
+    from app.modules.rfqs.material_matching import extract_keywords
+    all_kw={kw for item,_ in items for kw in extract_keywords(f'{item.description} {item.specifications or ""}')}
+    relevant=capability_scope(db,{item.material_id for item,_ in items if item.material_id},sub_ids,main_ids=main_ids,keywords=all_kw)
     candidate_query=select(Capability.org_id).join(Organization,Organization.id==Capability.org_id).where(
         relevant,Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id).distinct()
     candidate_count=int(db.scalar(select(func.count()).select_from(candidate_query.subquery())) or 0)
@@ -41,18 +59,87 @@ def admin_diagnostics(rfq_id:str,user:User=Depends(current_user),db:Session=Depe
         Capability.org_id.in_(candidate_query),relevant,Capability.confirmed.is_(True),
         Capability.accepts_rfqs.is_(True),Capability.eligibility_status=='enabled')) or 0)
     statuses={status:int(count) for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
+
+    inv_map={}
+    inv_statuses:dict[str,int]={}
+    for inv,quote_status in db.execute(select(Invitation,Quotation.status).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id)).all():
+        inv_map[inv.supplier_org_id]=(inv.status,quote_status)
+        inv_statuses[inv.status]=inv_statuses.get(inv.status,0)+1
+
+    internal=('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:','keyword_item:','ai_semantic_item:')
     reasons=[]
+    eligible_suppliers=[]
+    excluded_suppliers=[]
     recorded=set()
-    for match,org in db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id).order_by(Organization.name).limit(100)).all():
-        readable=[reason for reason in (match.reasons or []) if not reason.startswith(
-            ('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:'))]
+    exact_matches=0
+    category_matches=0
+    ai_assisted_candidates=0
+    item_match_counts:dict[str,int]={item.id:0 for item,_ in items}
+
+    for match,org in db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id).order_by(RFQMatch.score.desc(),Organization.name).limit(200)).all():
+        raw_reasons=match.reasons or []
+        readable=[reason for reason in raw_reasons if not reason.startswith(internal)]
         reasons.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'reasons':readable})
         recorded.add(org.id)
+        if match.status in {'eligible','partial'}:
+            covered_ids=[r[5:] for r in raw_reasons if r.startswith('item:')]
+            for iid in covered_ids:
+                if iid in item_match_counts:item_match_counts[iid]+=1
+            has_exact=any('exact material' in r.lower() for r in readable if r.startswith('Approved '))
+            has_ai=any(r.startswith('ai_semantic_item:') for r in raw_reasons)
+            has_cat=any(r.startswith(('exact_subcategory_item:','main_category_item:','keyword_item:')) for r in raw_reasons) or (not has_exact and not has_ai)
+            if has_exact:exact_matches+=1
+            if has_cat:category_matches+=1
+            if has_ai:ai_assisted_candidates+=1
+            levels=[]
+            if has_exact:levels.append('exact material')
+            if any(r.startswith('exact_subcategory_item:') for r in raw_reasons):levels.append('exact subcategory')
+            if any(r.startswith('keyword_item:') for r in raw_reasons):levels.append('keyword/catalog match')
+            if any(r.startswith('main_category_item:') for r in raw_reasons):levels.append('main category')
+            if has_ai:levels.append('AI-assisted semantic match')
+            inv_status,quote_status=inv_map.get(org.id,(None,None))
+            eligible_suppliers.append({
+                'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'score':match.score,
+                'match_levels':levels,'coverage':next((r[9:] for r in raw_reasons if r.startswith('coverage:')),'Not recorded'),
+                'invitation_status':inv_status,'quotation_status':quote_status,'ai_assisted':has_ai,'reasons':readable,
+            })
+        else:
+            excluded_suppliers.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'reasons':readable})
+
     for org in db.scalars(select(Organization).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id,Organization.id.not_in(candidate_query),Organization.id.not_in(recorded)).order_by(Organization.name).limit(100)).all():
         if org.id not in recorded:
-            reasons.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':'no_capability','reasons':['No supplier capability found for the RFQ category or subcategory.']})
+            entry={'supplier_org_id':org.id,'supplier_name':org.name,'status':'no_capability','reasons':['No supplier capability, keyword, or catalog match found for the RFQ items.']}
+            reasons.append(entry)
+            excluded_suppliers.append(entry)
+
+    item_diagnostics=[{
+        'item_id':item.id,'description':item.description,'material_id':item.material_id,
+        'main_category_id':main,'main_category_name':cats[main].name_en if main in cats else None,
+        'subcategory_id':sub,'subcategory_name':cats[sub].name_en if sub in cats else None,
+        'classified':is_classified,'matched_supplier_count':item_match_counts.get(item.id,0),
+    } for item,main,sub,is_classified in item_meta]
+
+    from types import SimpleNamespace
+    from app.modules.notifications.router import display_delivery_status
+    delivery_summary:dict[str,int]={}
+    for status,provider,count in db.execute(select(Outbox.status,Outbox.delivery_status,func.count()).where(Outbox.event=='notification.delivery',Outbox.payload['context']['rfq_id'].as_string()==rfq.id).group_by(Outbox.status,Outbox.delivery_status)).all():
+        label=display_delivery_status(SimpleNamespace(status=status,delivery_status=provider))
+        delivery_summary[label]=delivery_summary.get(label,0)+int(count)
+
     jobs=[{**record(job)} for job in db.scalars(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc())).all()]
-    return {'rfq_id':rfq.id,'rfq_items':len(items),'active_suppliers_checked':active_checked,'category_candidate_organizations':candidate_count,'approved_matching_capabilities':capabilities,'rejected_by_location':statuses.get('location_mismatch',0),'rejected_by_verification_or_eligibility':sum(statuses.get(k,0) for k in ('inactive','unverified','pending_approval','ineligible','rejected','suspended')),'matches_created':statuses.get('eligible',0)+statuses.get('partial',0),'invitations_created':int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0),'job_status':jobs,'supplier_reasons':reasons}
+    return {
+        'rfq_id':rfq.id,'rfq_items':len(items),'classified_items':classified_count,'unclassified_items':unclassified_count,
+        'active_suppliers_checked':active_checked,'category_candidate_organizations':candidate_count,
+        'approved_matching_capabilities':capabilities,'exact_matches':exact_matches,'category_matches':category_matches,
+        'ai_assisted_candidates':ai_assisted_candidates,
+        'rejected_by_location':statuses.get('location_mismatch',0)+statuses.get('coverage_unknown',0),
+        'rejected_by_verification_or_eligibility':sum(statuses.get(k,0) for k in ('inactive','unverified','pending_approval','ineligible','rejected','suspended')),
+        'matches_created':statuses.get('eligible',0)+statuses.get('partial',0),
+        'invitations_created':int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0),
+        'delivery_summary':delivery_summary,'invitation_statuses':inv_statuses,
+        'item_diagnostics':item_diagnostics,'eligible_suppliers':eligible_suppliers,'excluded_suppliers':excluded_suppliers,
+        'job_status':jobs,'supplier_reasons':reasons,
+    }
 
 @router.post('/admin/rfqs/{rfq_id}/rerun',response_model=MatchingRerunOut)
 def admin_rerun(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -109,10 +196,16 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         public=published_details(db,org.id)
         invitation_status,quotation_status=invitation_by_supplier.get(org.id,(None,None))
         # Internal markers remain persisted for legacy consumers, never display them.
-        internal=('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:')
+        internal=('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:','keyword_item:','ai_semantic_item:')
         display_reasons=[reason for reason in (match.reasons or []) if not reason.startswith(internal)]
-        approved_labels=[reason for reason in display_reasons if reason.startswith('Approved exact')]
-        levels=sorted({'exact material' if 'exact material' in label.lower() else 'exact subcategory' for label in approved_labels})
+        approved_labels=[reason for reason in display_reasons if reason.startswith('Approved ')]
+        levels=sorted({
+            'exact material' if 'exact material' in label.lower()
+            else ('exact subcategory' if 'exact subcategory' in label.lower()
+                  else ('keyword/catalog match' if 'keyword/catalog' in label.lower()
+                        else ('AI-assisted semantic match' if 'ai-assisted' in label.lower() else 'main category')))
+            for label in approved_labels
+        })
         historical_review=bool(invitation_status and match.status not in {'eligible','partial'})
         if historical_review:
             display_reasons.append('Historical invitation retained; current eligibility requires administrative review. No invitation was revoked.')

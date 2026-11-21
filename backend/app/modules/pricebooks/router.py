@@ -5,7 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import PriceBookItem,Material,Category,User,AuditEvent
-from app.schemas import PriceIn,RateStatus,QuoteAutomationIn
+from app.schemas import PriceIn,RateStatus,QuoteAutomationIn,PriceGroupIn
 from app.response_contracts import PriceOut,PricePage,QuoteAutomationOut,RateHistory,PricePolicyOut
 from app.security import current_user,audit
 from app.serializers import record
@@ -33,6 +33,31 @@ def commit(db):
 def create(payload:PriceIn,request:Request,user:User=Depends(current_user),db:Session=Depends(get_db)):
     write_limit(request,user)
     item=save_rate(db,user,payload);commit(db);return rate_record(db,item)
+
+@router.post('/group',response_model=dict[str,int])
+def create_group(payload:PriceGroupIn,request:Request,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Atomic private rates for one approved category pair; exact retries reuse rates."""
+    write_limit(request,user);supplier(db,user,payload.org_id,lock=True)
+    ids={row.material_id for row in payload.rows}
+    materials={m.id:m for m in db.scalars(select(Material).where(Material.id.in_(ids)))}
+    categories={c.id:c for c in db.scalars(select(Category).where(Category.id.in_({m.category_id for m in materials.values()})))}
+    existing=db.scalars(select(PriceBookItem).where(PriceBookItem.org_id==payload.org_id,PriceBookItem.material_id.in_(ids),PriceBookItem.active.is_(True))).all()
+    rates={(r.material_id,r.price_basis):r for r in existing};created=0
+    for row in payload.rows:
+        material=materials.get(row.material_id)
+        if row.org_id!=payload.org_id:raise HTTPException(422,'All rates must belong to the selected organization')
+        leaf=categories.get(material.category_id) if material else None
+        main_id=(material.main_category_id or (leaf.parent_id if leaf else None) or material.category_id) if material else None
+        sub_id=(material.subcategory_id or (leaf.id if leaf and leaf.parent_id else None)) if material else None
+        if not material or not material.active or main_id!=payload.main_category_id or sub_id!=payload.subcategory_id:
+            raise HTTPException(422,'Select existing materials in the selected category group')
+        key=(material.id,row.price_basis);rate=rates.get(key)
+        if rate:
+            if rate.unit_price!=row.unit_price or rate.unit!=row.unit:raise HTTPException(409,'An existing rate differs. Edit that rate separately.')
+            continue
+        rate=save_rate(db,user,row);rates[key]=rate;created+=1
+    commit(db)
+    return {'created':created,'reused':len(payload.rows)-created}
 
 def listing(db,user,org_id,q,main_category_id,subcategory_id,status,limit,offset):
     supplier(db,user,org_id)

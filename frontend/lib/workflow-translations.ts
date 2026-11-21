@@ -1,4 +1,7 @@
 export const workflowArabic:Record<string,string>={
+ 'Add materials by category':'إضافة المواد حسب الفئة',
+ 'Choose an .xlsx or .csv file.':'اختر ملفاً بصيغة Excel أو CSV.',
+ 'Save the material group before continuing.':'احفظ مجموعة المواد قبل المتابعة.',
  'Bulk Upload':'رفع جماعي',
  'Upload once, preview, then import all materials in the background.':'ارفع الملف مرة واحدة، ثم راجع المعاينة واستورد جميع المواد في الخلفية.',
  'Download Excel Template':'تنزيل نموذج Excel',
@@ -739,5 +742,16 @@ Object.assign(workflowArabic, {
  "Remove": "إزالة",
  "Download": "تنزيل",
  "Upload failed": "فشل الرفع",
- "Unsupported file type": "نوع الملف غير مدعوم"
+ "Unsupported file type": "نوع الملف غير مدعوم",
+ "Grouped materials": "المواد المصنفة",
+ "Hide materials": "إخفاء المواد",
+ "Export PDF": "تصدير PDF",
+ "Export Excel": "تصدير Excel",
+ "Bulk paste multiple rows by category": "لصق صفوف متعددة حسب الفئة",
+ "Hide bulk entry by category": "إخفاء الإدخال الجماعي حسب الفئة",
+ "Add materials above or import from Excel to build your RFQ.": "أضف المواد أعلاه أو استوردها من Excel لإنشاء طلب عرض الأسعار.",
+ "Suppliers are matched by category, subcategory, material catalog and verified capabilities. Technical compliance is reviewed separately.": "تتم مطابقة الموردين حسب الفئة والفئة الفرعية ودليل المواد والقدرات المعتمدة، بينما تُراجع المطابقة الفنية بشكل منفصل.",
+ "Deadline": "الموعد النهائي",
+ "items": "عناصر",
+ "materials": "مواد"
 });

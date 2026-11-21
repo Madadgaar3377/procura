@@ -559,3 +559,17 @@ def test_quotation_prefill_and_no_implicit_auto_submission(env):
         assert line.brand == 'Saudi Cement'
         assert line.model == 'OPC-I'
         assert line.lead_days == 4
+
+
+def test_group_private_rates_atomic_retry_and_tenant_boundaries(env):
+    e=env;client=e['client']
+    body={'org_id':e['sup1_org'],'main_category_id':e['main'].id,'subcategory_id':e['sub'].id,'rows':[{'org_id':e['sup1_org'],'material_id':e['m1'].id,'unit':'BAG','unit_price':'25.00'},{'org_id':e['sup1_org'],'material_id':e['m2'].id,'unit':'TON','unit_price':'2500.00'}]}
+    response=client.post('/api/v1/pricebooks/group',json=body,headers=e['sup1_headers']);assert response.status_code==200,response.text
+    assert response.json()=={'created':2,'reused':0}
+    retry=client.post('/api/v1/pricebooks/group',json=body,headers=e['sup1_headers']);assert retry.json()=={'created':0,'reused':2},retry.text
+    assert client.post('/api/v1/pricebooks/group',json=body,headers=e['sup2_headers']).status_code in {403,404}
+    assert client.post('/api/v1/pricebooks/group',json=body,headers=e['buyer_headers']).status_code in {403,404}
+    assert client.post('/api/v1/pricebooks/group',json=body).status_code==401
+    with e['Session']() as db:
+        assert db.scalar(select(func.count()).select_from(Material))==2
+        assert db.scalar(select(func.count()).select_from(PriceBookItem))==2

@@ -7,15 +7,49 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import RFQ, Category, Invitation, Material, Member, Organization, Outbox, RFQItem, User
+from app.models import RFQ, Category, Invitation, Material, MeasurementUnit, Member, Organization, Outbox, RFQItem, User
 from app.response_contracts import RFQAttachmentOut, RFQAttachmentRemovalOut, RFQDetail, RFQOut
 from app.schemas import RFQIn, RFQReminderIn
 from app.search import ListSearch
 from app.security import as_utc, audit, current_user, org_member
 from app.serializers import record
 
+from pydantic import BaseModel, Field
+
 router=APIRouter(prefix='/rfqs',tags=['Buyer RFQs'])
+from .imports import router as material_imports
+from .exports import router as rfq_exports
+router.include_router(material_imports)
+router.include_router(rfq_exports)
 log=logging.getLogger(__name__)
+
+
+class MaterialClassifyIn(BaseModel):
+    description: str = Field(min_length=2, max_length=250)
+    specifications: str = Field(default='', max_length=2000)
+    unit: str | None = Field(default=None, max_length=40)
+    ai_enabled: bool = True
+
+
+@router.post('/classify-material')
+def classify_material(
+    payload: MaterialClassifyIn,
+    request: Request,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Hybrid material classification for buyer RFQ entry (deterministic first, Gemini only if unresolved/ambiguous)."""
+    from app.rate_limit import enforce_rate_limit
+    from .material_matching import classify_material_description
+
+    enforce_rate_limit(request, scope='rfq-classify', identity=user.id, limit=120, window_seconds=60)
+    return classify_material_description(
+        db,
+        payload.description,
+        specifications=payload.specifications,
+        unit=payload.unit,
+        ai_enabled=payload.ai_enabled,
+    )
 
 def contents(db,rfq):
     data=record(rfq)
@@ -27,7 +61,7 @@ def contents(db,rfq):
     return {'rfq':data,'items':[record(i) for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id).order_by(RFQItem.created_at,RFQItem.id)).all()],
             'attachments':[{key:entry[key] for key in ('id','filename','content_type','size')} for entry in attachments]}
 
-def prepare_line(db, entry):
+def prepare_line(db, entry, *, unit_cache=None, parents_with_children=None):
     """Snapshot classification; buyer text belongs only to the RFQ item."""
     from app.modules.materials.service import ensure_unit
     mat=db.get(Material,entry.material_id) if entry.material_id else None
@@ -38,7 +72,8 @@ def prepare_line(db, entry):
     main=db.get(Category,main_id) if main_id else None
     sub=db.get(Category,sub_id) if sub_id else None
     if not main or not main.active or main.parent_id:raise HTTPException(422,'Choose an active main category')
-    if not mat and not sub_id and db.scalar(select(Category.id).where(Category.parent_id==main.id,Category.active.is_(True)).limit(1)):
+    has_children=(main.id in parents_with_children) if parents_with_children is not None else (not mat and not sub_id and db.scalar(select(Category.id).where(Category.parent_id==main.id,Category.active.is_(True)).limit(1)))
+    if not mat and not sub_id and has_children:
         raise HTTPException(422,'Choose a subcategory for this main category')
     if sub_id and (not sub or not sub.active or sub.parent_id!=main.id):raise HTTPException(422,'Subcategory must belong to the main category')
     if mat:
@@ -46,9 +81,27 @@ def prepare_line(db, entry):
         expected_sub=mat.subcategory_id or (leaf.id if leaf and leaf.parent_id else None)
         if (main_id,sub_id)!=(expected_main,expected_sub):raise HTTPException(422,'Selected material does not belong to this category and subcategory')
     if not entry.description.strip():raise HTTPException(422,'Enter a description')
-    ensure_unit(db,entry.unit,create_unknown=False)
+    ensure_unit(db,entry.unit,create_unknown=False,cache=unit_cache)
     # Existing clients may send legacy unit spelling; retain the RFQ snapshot.
     return {**entry.model_dump(),'main_category_id':main_id,'subcategory_id':sub_id}
+
+
+def prepare_lines(db,entries):
+    """Keep reference records in the identity map for large RFQ POST/PUT bodies."""
+    from app.modules.materials.service import normalize_unit
+    materials=list(db.scalars(select(Material).where(Material.id.in_({e.material_id for e in entries}-{None}))))
+    ids={value for e in entries for value in (e.main_category_id,e.subcategory_id) if value}
+    ids.update(value for m in materials for value in (m.category_id,m.main_category_id,m.subcategory_id) if value)
+    categories=list(db.scalars(select(Category).where(Category.id.in_(ids))))
+    parent_ids={c.parent_id for c in categories if c.parent_id}-ids
+    if parent_ids:categories.extend(db.scalars(select(Category).where(Category.id.in_(parent_ids))))
+    roots={c.id for c in categories if not c.parent_id}
+    parents=set(db.scalars(select(Category.parent_id).where(Category.parent_id.in_(roots),Category.active.is_(True))))
+    codes={normalize_unit(e.unit) for e in entries}
+    units=list(db.scalars(select(MeasurementUnit).where(MeasurementUnit.code.in_(codes))))
+    if any(not unit.active for unit in units):raise HTTPException(422,'Choose an active approved unit')
+    cache={unit.code:unit.code for unit in units}
+    return [prepare_line(db,entry,unit_cache=cache,parents_with_children=parents) for entry in entries]
 
 
 @router.post('',status_code=201,response_model=RFQDetail)
@@ -57,7 +110,7 @@ def create(payload:RFQIn,user:User=Depends(current_user),db:Session=Depends(get_
     org=db.get(Organization,payload.buyer_org_id)
     if not org or not org.is_buyer:raise HTTPException(422,'Organization cannot buy')
     if payload.response_deadline.astimezone(UTC)<datetime.now(UTC):raise HTTPException(422,'Deadline must be in the future')
-    lines=[prepare_line(db,entry) for entry in payload.items]
+    lines=prepare_lines(db,payload.items)
     rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions)
     db.add(rfq);db.flush()
     for entry in lines:db.add(RFQItem(rfq_id=rfq.id,**entry))
@@ -159,7 +212,7 @@ def update_draft(rfq_id:str,payload:RFQIn,user:User=Depends(current_user),db:Ses
     if rfq.status!='draft':raise HTTPException(409,'Only drafts may be edited')
     if payload.buyer_org_id!=rfq.buyer_org_id:raise HTTPException(422,'Cannot change RFQ organization')
     if payload.response_deadline.astimezone(UTC)<=datetime.now(UTC):raise HTTPException(422,'Deadline must be in the future')
-    lines=[prepare_line(db,line) for line in payload.items]
+    lines=prepare_lines(db,payload.items)
     for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all():db.delete(item)
     db.flush()
     for line in lines:db.add(RFQItem(rfq_id=rfq.id,**line))

@@ -61,6 +61,8 @@ def _process_import_queue_once() -> None:
         process_supplier_jobs(db)
         from app.modules.pricebooks.worker import process_pricing_jobs
         process_pricing_jobs(db)
+        from app.modules.rfqs.imports import process_rfq_import_jobs
+        process_rfq_import_jobs(db)
 
 
 async def _development_import_worker() -> None:

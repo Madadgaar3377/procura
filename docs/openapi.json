@@ -13855,6 +13855,600 @@
           }
         }
       }
+    },
+    "/api/v1/rfqs/imports/template": {
+      "get": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Template",
+        "operationId": "template_api_v1_rfqs_imports_template_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/recent": {
+      "get": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Recent",
+        "operationId": "recent_api_v1_rfqs_imports_recent_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "draft_key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RFQImportJob"
+                  },
+                  "title": "Response Recent Api V1 Rfqs Imports Recent Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Upload Job",
+        "operationId": "upload_job_api_v1_rfqs_imports_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_job_api_v1_rfqs_imports_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}": {
+      "get": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job_api_v1_rfqs_imports__batch_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "include_rows",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Rows"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/options": {
+      "put": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Options",
+        "operationId": "options_api_v1_rfqs_imports__batch_id__options_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportOptions"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/rows/{row_id}": {
+      "put": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Edit Row",
+        "operationId": "edit_row_api_v1_rfqs_imports__batch_id__rows__row_id__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "row_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Row Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportEdit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportRow"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/review": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Review",
+        "operationId": "review_api_v1_rfqs_imports__batch_id__review_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportReview"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/retry": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Retry",
+        "operationId": "retry_api_v1_rfqs_imports__batch_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportRetry"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/confirm": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Confirm",
+        "operationId": "confirm_api_v1_rfqs_imports__batch_id__confirm_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportConfirmation"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/taxonomy/materials/group": {
+      "post": {
+        "tags": [
+          "Material Master"
+        ],
+        "summary": "Save Material Group",
+        "description": "Save at most 30 definitions atomically. Exact retries reuse stable master IDs.\n\nNo quantities or supplier rates are accepted. Category IDs must already exist.",
+        "operationId": "save_material_group_api_v1_taxonomy_materials_group_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialGroupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialGroupOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/pricebooks/group": {
+      "post": {
+        "tags": [
+          "Private Supplier Rates"
+        ],
+        "summary": "Create Group",
+        "description": "Atomic private rates for one approved category pair; exact retries reuse rates.",
+        "operationId": "create_group_api_v1_pricebooks_group_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriceGroupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object",
+                  "title": "Response Create Group Api V1 Pricebooks Group Post"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -14692,6 +15286,11 @@
               }
             ],
             "title": "Column Mapping"
+          },
+          "approved_only": {
+            "type": "boolean",
+            "title": "Approved Only",
+            "default": false
           }
         },
         "type": "object",
@@ -14781,6 +15380,17 @@
               }
             ],
             "title": "Column Mapping"
+          },
+          "group_mapping": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group Mapping"
           }
         },
         "type": "object",
@@ -18566,6 +19176,14 @@
             },
             "type": "array",
             "title": "New Categories"
+          },
+          "detected_groups": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Detected Groups"
           },
           "upload_duration_ms": {
             "type": "integer",
@@ -22802,7 +23420,7 @@
               "$ref": "#/components/schemas/RFQLineIn"
             },
             "type": "array",
-            "maxItems": 100,
+            "maxItems": 500,
             "minItems": 1,
             "title": "Items"
           },
@@ -25521,6 +26139,686 @@
           "org_id"
         ],
         "title": "WorkspaceSelectionIn"
+      },
+      "Body_upload_job_api_v1_rfqs_imports_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "org_id": {
+            "type": "string",
+            "title": "Org Id"
+          },
+          "draft_key": {
+            "type": "string",
+            "title": "Draft Key"
+          },
+          "rfq_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rfq Id"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "org_id",
+          "draft_key"
+        ],
+        "title": "Body_upload_job_api_v1_rfqs_imports_post"
+      },
+      "MaterialGroupIn": {
+        "properties": {
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "discipline": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "Civil",
+                  "Mechanical",
+                  "Electrical"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialGroupRow"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "minItems": 1,
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "main_category_id",
+          "rows"
+        ],
+        "title": "MaterialGroupIn"
+      },
+      "MaterialGroupOut": {
+        "properties": {
+          "materials": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Materials"
+          },
+          "created": {
+            "type": "integer",
+            "title": "Created"
+          },
+          "reused": {
+            "type": "integer",
+            "title": "Reused"
+          }
+        },
+        "type": "object",
+        "required": [
+          "materials",
+          "created",
+          "reused"
+        ],
+        "title": "MaterialGroupOut"
+      },
+      "MaterialGroupRow": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 250,
+            "minLength": 3,
+            "title": "Description"
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Unit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "unit"
+        ],
+        "title": "MaterialGroupRow"
+      },
+      "PriceGroupIn": {
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "title": "Org Id"
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/PriceIn"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "minItems": 1,
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "org_id",
+          "main_category_id",
+          "rows"
+        ],
+        "title": "PriceGroupIn"
+      },
+      "RFQImportCandidate": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "description",
+          "main_category_id",
+          "category",
+          "unit",
+          "score"
+        ],
+        "title": "RFQImportCandidate"
+      },
+      "RFQImportConfirmation": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/RFQImportConfirmedLine"
+            },
+            "type": "array",
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "lines"
+        ],
+        "title": "RFQImportConfirmation"
+      },
+      "RFQImportConfirmedLine": {
+        "properties": {
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "main_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 3,
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "maxLength": 10000,
+            "title": "Specifications",
+            "default": ""
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Unit"
+          },
+          "quantity": {
+            "type": "string",
+            "title": "Quantity"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "unit",
+          "quantity",
+          "key"
+        ],
+        "title": "RFQImportConfirmedLine"
+      },
+      "RFQImportEdit": {
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Version"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 3,
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "maxLength": 10000,
+            "title": "Specifications",
+            "default": ""
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Unit"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted",
+            "default": false
+          },
+          "removed": {
+            "type": "boolean",
+            "title": "Removed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "expected_version",
+          "description",
+          "unit",
+          "quantity",
+          "main_category_id"
+        ],
+        "title": "RFQImportEdit"
+      },
+      "RFQImportJob": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "matched": {
+            "type": "integer",
+            "title": "Matched"
+          },
+          "needs_review": {
+            "type": "integer",
+            "title": "Needs Review"
+          },
+          "unmatched": {
+            "type": "integer",
+            "title": "Unmatched"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "headers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Headers"
+          },
+          "column_mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Column Mapping"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/RFQImportRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "stage",
+          "total",
+          "processed",
+          "matched",
+          "needs_review",
+          "unmatched",
+          "failed",
+          "ai_enabled"
+        ],
+        "title": "RFQImportJob"
+      },
+      "RFQImportOptions": {
+        "properties": {
+          "column_mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "maxProperties": 8,
+            "title": "Column Mapping"
+          }
+        },
+        "type": "object",
+        "title": "RFQImportOptions"
+      },
+      "RFQImportRetry": {
+        "properties": {
+          "row_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 300,
+            "title": "Row Ids"
+          }
+        },
+        "type": "object",
+        "title": "RFQImportRetry"
+      },
+      "RFQImportReview": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "accept_high_confidence",
+              "remove"
+            ],
+            "title": "Action"
+          },
+          "row_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 300,
+            "title": "Row Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "RFQImportReview"
+      },
+      "RFQImportRow": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "row_number": {
+            "type": "integer",
+            "title": "Row Number"
+          },
+          "original_description": {
+            "type": "string",
+            "title": "Original Description"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "title": "Specifications",
+            "default": ""
+          },
+          "main_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "quantity": {
+            "type": "string",
+            "title": "Quantity"
+          },
+          "group": {
+            "type": "string",
+            "title": "Group",
+            "default": ""
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attributes"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/RFQImportCandidate"
+            },
+            "type": "array",
+            "title": "Candidates"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 0
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted",
+            "default": false
+          },
+          "removed": {
+            "type": "boolean",
+            "title": "Removed",
+            "default": false
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue"
+          },
+          "ai_fallback": {
+            "type": "boolean",
+            "title": "Ai Fallback",
+            "default": false
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "row_number",
+          "original_description",
+          "description",
+          "unit",
+          "quantity",
+          "status"
+        ],
+        "title": "RFQImportRow"
       }
     },
     "securitySchemes": {

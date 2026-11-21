@@ -47,13 +47,14 @@ MAX_COLUMNS = 120
 MAX_CELL_LENGTH = 10_000
 DISCIPLINES = {'civil': 'Civil', 'electrical': 'Electrical', 'mechanical': 'Mechanical'}
 FIELD_ALIASES: dict[str, set[str]] = {
+    'quantity': {'quantity','qty','الكمية','كمية'},
     'material_name': {'material name', 'description', 'description/pacification', 'description / pacification',
-                      'description/specification', 'description / specification', 'item description', 'material description', 'name', 'item name'},
-    'main_category': {'main category', 'category', 'main', 'category name', 'level 1', 'division'},
-    'subcategory': {'subcategory', 'sub category', 'sub-category', 'sub category name', 'level 2', 'group'},
+                      'description/specification', 'description / specification', 'item description', 'material description', 'name', 'item name','material','item','الوصف','وصف المادة','الوصف / المواصفات'},
+    'main_category': {'main category', 'category', 'main', 'category name', 'level 1', 'division','الفئة الرئيسية','الفئة'},
+    'subcategory': {'subcategory', 'sub category', 'sub-category', 'sub category name', 'level 2', 'group','الفئة الفرعية'},
     'source_code': {'sn', 's no', 'serial no', 'serial number', 'material id', 'material code', 'source material id', 'source material code', 'material source id', 'item code', 'source code', 'item number', 'material number'},
     'expenditure_code': {'expenditure', 'expenditures', 'expenditure code', 'expenditure classification', 'expenditure classification code', 'classification code'},
-    'unit': {'unit', 'uom', 'unit of measure', 'unit of measurement'},
+    'unit': {'unit', 'uom', 'unit of measure', 'unit of measurement','الوحدة','وحدة'},
     'specifications': {'technical specifications', 'technical specification', 'specifications', 'specification', 'technical description'},
     'discipline': {'discipline', 'trade', 'material discipline'},
 }
@@ -97,7 +98,12 @@ def _column_map(headers: list[str], explicit: dict[str, str] | None = None) -> d
                 raise HTTPException(422, f'Column mapping for {field} does not match a workbook header')
             result[field] = normalized[_header(chosen)]
             continue
-        match = next((h for h in headers if _header(h) in aliases), None)
+        candidates=[h for h in headers if _header(h) in aliases]
+        if field=='material_name':
+            # An Item serial-number column must not hide a real Description.
+            preferred=['description / specification','description/specification','description/pacification','description / pacification','material description','item description','description','الوصف / المواصفات','وصف المادة','الوصف','material name','item name','material','item','name']
+            candidates.sort(key=lambda h:preferred.index(_header(h)) if _header(h) in preferred else len(preferred))
+        match = candidates[0] if candidates else None
         if match:
             result[field] = match
     return result
@@ -115,7 +121,7 @@ class _XlsSheetAdapter:
 
 
 def _read_xlsx(content: bytes, selected_name: str | None = None, explicit: dict[str, str] | None = None,
-               progress=None, legacy_xls: bool = False) -> tuple[list[dict], list[dict]]:
+               progress=None, legacy_xls: bool = False, require_categories: bool = True) -> tuple[list[dict], list[dict]]:
     if legacy_xls:
         try:
             import xlrd
@@ -157,7 +163,7 @@ def _read_xlsx(content: bytes, selected_name: str | None = None, explicit: dict[
                 used_columns=max((index+1 for index,value in enumerate(candidate) if value),default=1)
                 if used_columns>MAX_COLUMNS:
                     raise HTTPException(413,f'Worksheet {sheet.title} exceeds the {MAX_COLUMNS}-column import limit')
-                if 'material_name' in mapping and ('main_category' in mapping or 'subcategory' in mapping):
+                if 'material_name' in mapping and ((not require_categories and {'unit','quantity'}<=mapping.keys()) or (require_categories and ('main_category' in mapping or 'subcategory' in mapping))):
                     header_row, headers, selected_map = row_number, candidate, mapping
                     column_count=used_columns
                     break
@@ -190,7 +196,7 @@ def _read_xlsx(content: bytes, selected_name: str | None = None, explicit: dict[
             for item in targets:
                 sheet=next(sheet for sheet in worksheets if sheet.title==item['name'])
                 max_row=sheet.max_row;mapping=_column_map(item['headers'],explicit)
-                if 'material_name' not in mapping or not ({'main_category','subcategory'}&mapping.keys()):continue
+                if 'material_name' not in mapping or require_categories and not ({'main_category','subcategory'}&mapping.keys()):continue
                 source_headers.extend(header for header in item['headers'] if header and header not in source_headers)
                 if max_row and max_row-item['header_row']>MAX_ROWS:
                     raise HTTPException(413,f'Worksheet {sheet.title} exceeds the {MAX_ROWS:,} row limit')
@@ -236,14 +242,20 @@ def _read_xlsx(content: bytes, selected_name: str | None = None, explicit: dict[
     return sheets, details
 
 
-def _read_csv(content: bytes, explicit: dict[str,str] | None = None) -> tuple[list[dict], list[dict]]:
+def _read_csv(content: bytes, explicit: dict[str,str] | None = None, auto_delimiter: bool = False) -> tuple[list[dict], list[dict]]:
     try:
         text = content.decode('utf-8-sig')
-        reader = csv.DictReader(StringIO(text))
+        dialect=csv.excel
+        if auto_delimiter:
+            try:dialect=csv.Sniffer().sniff(text[:8192],delimiters=',;\t')
+            except csv.Error:pass
+        reader = csv.DictReader(StringIO(text),dialect=dialect)
         headers = [h for h in (reader.fieldnames or []) if h]
         mapping = _column_map(headers,explicit)
         rows: list[dict[str, Any]] = []
         for number, row in enumerate(reader, start=2):
+            if auto_delimiter and any(str(value).strip() for value in row.get(None,[])):
+                raise HTTPException(422,'CSV rows contain extra columns. Quote descriptions or quantities containing delimiters.')
             if number - 1 > MAX_ROWS:
                 raise HTTPException(413, f'CSV exceeds the {MAX_ROWS:,} row limit')
             cleaned: dict[str, Any] = {_clean(k): '' if v is None else str(v) for k, v in row.items() if k}
@@ -257,18 +269,18 @@ def _read_csv(content: bytes, explicit: dict[str,str] | None = None) -> tuple[li
 
 
 def _discover(content: bytes, filename: str, sheet_name: str | None = None,
-              explicit: dict[str,str] | None = None, progress=None) -> list[dict]:
+              explicit: dict[str,str] | None = None, progress=None, require_categories: bool = True) -> list[dict]:
     if filename.casefold().endswith(('.xlsx','.xls')):
-        sheets, _ = _read_xlsx(content,sheet_name,explicit,progress,filename.casefold().endswith('.xls'))
+        sheets, _ = _read_xlsx(content,sheet_name,explicit,progress,filename.casefold().endswith('.xls'),require_categories)
         return sheets
     if filename.casefold().endswith('.csv'):
-        sheets, _ = _read_csv(content,explicit)
+        sheets, _ = _read_csv(content,explicit,auto_delimiter=not require_categories)
         return sheets
     raise HTTPException(415, 'Upload an .xlsx, .xls, or UTF-8 .csv file')
 
 
 def _resolve_discipline(value: str | None, filename: str, sheet_name: str | None) -> str | None:
-    if value:
+    if value and value.strip():
         found = DISCIPLINES.get(value.strip().casefold())
         if not found:
             raise HTTPException(422, 'Discipline must be Civil, Electrical, or Mechanical')
@@ -319,7 +331,13 @@ def _materials_by_identity(db: Session, identities: list[str], descriptions: lis
                 continue
             identity = material_identity(main_category=main.name_en, subcategory=sub.name_en if sub else '',
                                          description=material.name_en, unit=normalize_unit(material.unit), specifications='')
-            if identity in wanted:
+            identities_for_material = [identity] if not material.discipline else []
+            for label in ([DISCIPLINES.get(_clean(material.discipline).casefold())] if material.discipline else DISCIPLINES.values()):
+                if label:
+                    identities_for_material.append(material_identity(main_category=main.name_en, subcategory=sub.name_en if sub else '', description=material.name_en, unit=normalize_unit(material.unit), specifications='', discipline=label))
+            for identity in identities_for_material:
+                if identity not in wanted:
+                    continue
                 if identity in found and found[identity] is not None and found[identity].id != material.id:
                     found[identity] = None
                 elif identity not in found:
@@ -340,9 +358,12 @@ def _row_value(row: dict, mapping: dict[str, str], key: str) -> str:
     return _clean(row.get(mapping.get(key, ''), ''))
 
 
-def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str) -> list[dict]:
+def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str, category_disciplines: dict | None = None) -> list[dict]:
     output = []
+    current_main='';current_sub='';sheet=None;grouped=False
     for row in rows:
+        if row.get('_sheet')!=sheet:
+            current_main='';current_sub='';sheet=row.get('_sheet');grouped=False
         name = str(row.get(mapping.get('material_name',''), '') or '')
         main = _row_value(row, mapping, 'main_category')
         sub = _row_value(row, mapping, 'subcategory')
@@ -350,17 +371,36 @@ def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str) -> lis
         expenditure = _row_value(row, mapping, 'expenditure_code')
         unit = _row_value(row, mapping, 'unit')
         specs = _row_value(row, mapping, 'specifications')
-        row_discipline = _row_value(row, mapping, 'discipline')
-        if row_discipline:
-            inferred = _resolve_discipline(row_discipline, '', '')
-            if not inferred:
-                output.append({'row': row['_row'], 'status': 'invalid', 'issue': 'Unrecognized discipline value on this row', 'raw': row})
-                continue
-            if inferred != discipline:
-                output.append({'row': row['_row'], 'status': 'invalid', 'issue': 'Row discipline conflicts with the selected import discipline', 'raw': row})
-                continue
+        # A standalone label is grouping context, never a material or new category.
+        standalone_heading=bool(name and not main and not sub and name.strip().isupper() and not any(char.isdigit() for char in name) and not name.startswith(('=','+','-','@')))
+        if not unit and not source and not expenditure and not specs and ((not name and (main or sub)) or standalone_heading):
+            grouped=True
+            if main:current_main=main;current_sub=sub
+            elif sub:current_sub=sub
+            else:current_sub=name.strip()
+            continue
+        if main:
+            if current_main and normalize_category_name(main)!=normalize_category_name(current_main):current_sub=''
+            current_main=main
+        if sub:current_sub=sub
+        main=main or current_main;sub=sub or current_sub
+        row=dict(row)
+        row['_grouped']=grouped
+        if mapping.get('main_category'):row[mapping['main_category']]=main
+        if mapping.get('subcategory'):row[mapping['subcategory']]=sub
+        explicit_discipline = _row_value(row, mapping, 'discipline')
+        row_discipline = DISCIPLINES.get(explicit_discipline.casefold()) if explicit_discipline else discipline
+        if explicit_discipline and not row_discipline:
+            output.append({'row': row['_row'], 'status': 'invalid', 'issue': f'Unsupported discipline "{explicit_discipline}"; use Civil, Electrical or Mechanical.', 'raw': row})
+            continue
+        if not row_discipline:
+            candidates = (category_disciplines or {}).get((_normal(main), _normal(sub)), set())
+            row_discipline = next(iter(candidates)) if len(candidates) == 1 else None
+        row['_discipline'] = row_discipline
         issue = ''
-        if not name:
+        if not row_discipline:
+            issue = 'Discipline unknown; enter Civil, Electrical or Mechanical on this row or select an upload fallback.'
+        elif not name:
             issue = 'Missing material description'
         elif len(_normal(name)) < 3:
             issue = 'Material description must contain 3 to 250 characters'
@@ -376,11 +416,13 @@ def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str) -> lis
         if not issue and (not canonical_unit or not re.fullmatch(r'[\w./%-]+',canonical_unit,flags=re.UNICODE)):
             issue='Unit contains unsupported characters; preserve/correct the unit value before importing.'
         if issue:
-            output.append({'row': row['_row'], 'status': 'invalid', 'issue': issue, 'raw': row})
+            output.append({'row': row['_row'], 'status': 'invalid', 'issue': issue, 'raw': row,
+                           'name':name,'main':main,'subcategory':sub,'unit':canonical_unit,'source_unit':unit,
+                           'specs':specs,'source_code':source or None,'expenditure_code':expenditure or None})
             continue
         parent_name = main
         category_name = sub or main
-        identity = material_identity(main_category=parent_name,subcategory=sub,description=name,unit=canonical_unit,specifications=specs)
+        identity = material_identity(main_category=parent_name,subcategory=sub,description=name,unit=canonical_unit,specifications=specs,discipline=row_discipline)
         duplicate_fingerprint = identity
         output.append({'row': row['_row'], 'status': 'valid', 'issue': '', 'raw': row, 'name': name, 'main': parent_name,
                        'subcategory': sub, 'category_name': category_name, 'source_code': source or None,
@@ -408,7 +450,7 @@ def _preview_view(batch: ImportBatch, rows: Sequence[ImportedRow], status_counts
         if len(sample) < 30:
             sample.append({'row': item.row_number, 'status': 'unchanged' if item.status == 'skip' else item.status, 'name': raw.get('_name', ''),
                            'category': raw.get('_category', ''), 'subcategory': raw.get('_subcategory', ''),
-                           'unit': raw.get('_unit', ''), 'issue': item.issue})
+                           'unit': raw.get('_unit', ''), 'discipline': raw.get('_discipline'), 'issue': item.issue})
     for item in issue_rows if issue_rows is not None else rows:
         if item.issue and len(issues) < 500:
             issues.append({'row': item.row_number, 'reason': item.issue})
@@ -427,6 +469,7 @@ def _preview_view(batch: ImportBatch, rows: Sequence[ImportedRow], status_counts
             'sheets':metadata.get('sheets',[]),'headers':metadata.get('headers',[]),
             'selected_sheet': sheet_name or metadata.get('selected_sheet'),
             'mapping': mapping or metadata.get('mapping',{}), 'new_categories':metadata.get('new_categories',[]),
+            'detected_groups':metadata.get('detected_groups',[]),
             'upload_duration_ms':batch.upload_duration_ms,'parse_duration_ms':batch.parse_duration_ms,'apply_duration_ms':batch.apply_duration_ms,
             'rows': batch.rows, 'valid': sum(status_counts[k] for k in ('valid', 'create', 'update', 'skip', 'created', 'updated', 'unchanged')),
             'invalid': status_counts['invalid'], 'create': status_counts['create'], 'update': status_counts['update'],
@@ -442,7 +485,8 @@ def _preview_view(batch: ImportBatch, rows: Sequence[ImportedRow], status_counts
 
 
 def batch_kind_discipline(rows: Sequence[ImportedRow]) -> str | None:
-    return next((row.raw.get('_discipline') for row in rows if row.raw.get('_discipline')), None)
+    values = {row.raw.get('_discipline') for row in rows if row.raw.get('_discipline')}
+    return next(iter(values)) if len(values) == 1 else None
 
 
 def _apply_row(db: Session, item: ImportedRow, identity_map: dict[str, Material],
@@ -548,12 +592,50 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
         metadata.update({'headers':selected['headers'],'mapping':mapping,'selected_sheet':selected['name']})
         batch.status='needs_review';batch.preview_metadata=metadata;batch.rows=selected['row_count'];batch.stage='preview'
         batch.parse_duration_ms=int((perf_counter()-started)*1000);batch.updated_at=datetime.now(UTC);db.commit();return
-    discipline=_resolve_discipline(options.get('discipline'),batch.filename,selected['name'])
+    discipline=_resolve_discipline(options.get('discipline'),'', '')
     metadata.update({'headers':selected['headers'],'mapping':mapping,
         'selected_sheet':'__all__' if selected_name=='__all__' else selected['name'],'discipline':discipline})
     discipline = discipline or ''
-    prepared=_prepared(selected['_rows'],mapping,discipline)
-    seen:set[str]=set()
+    category_disciplines = {}
+    category_records = {c.id: c for c in db.scalars(select(Category))}
+    for material in db.scalars(select(Material).where(Material.active.is_(True))):
+        leaf = category_records.get(material.category_id)
+        main = category_records.get(material.main_category_id) or (category_records.get(leaf.parent_id) if leaf and leaf.parent_id else leaf)
+        sub = category_records.get(material.subcategory_id) or (leaf if leaf and leaf.parent_id else None)
+        known = DISCIPLINES.get(_clean(material.discipline).casefold())
+        if main and known:
+            category_disciplines.setdefault((_normal(main.name_en), _normal(sub.name_en) if sub else ''), set()).add(known)
+    prepared=_prepared(selected['_rows'],mapping,discipline,category_disciplines)
+    # Map source group labels to approved IDs before calculating material identity.
+    approved={c.id:c for c in db.scalars(select(Category).where(Category.active.is_(True)))}
+    group_mapping=options.get('group_mapping') or {}
+    groups={}
+    for item in prepared:
+        raw=item['raw'];main=_row_value(raw,mapping,'main_category');sub=_row_value(raw,mapping,'subcategory')
+        key=json.dumps([main,sub],ensure_ascii=False,separators=(',',':'))
+        group=groups.setdefault(key,{'key':key,'main_category':main,'subcategory':sub,'rows':0})
+        group['rows']+=1
+        target=group_mapping.get(key)
+        if not target:
+            roots=[c for c in approved.values() if not c.parent_id and normalize_category_name(c.name_en)==normalize_category_name(main)]
+            children=[c for c in approved.values() if len(roots)==1 and c.parent_id==roots[0].id and normalize_category_name(c.name_en)==normalize_category_name(sub)]
+            if len(roots)==1 and (not sub or len(children)==1):target={'main_category_id':roots[0].id,'subcategory_id':children[0].id if sub else None}
+        if target:
+            root=approved.get(target.get('main_category_id'));child=approved.get(target.get('subcategory_id'))
+            if not root or root.parent_id or target.get('subcategory_id') and (not child or child.parent_id!=root.id):
+                raise ValueError('Group mapping must select an existing main category and its subcategory')
+            group.update({'main_category_id':root.id,'subcategory_id':child.id if child else None})
+            raw[mapping['main_category']]=root.name_en
+            if mapping.get('subcategory'):raw[mapping['subcategory']]=child.name_en if child else ''
+            reparsed=_prepared([raw],mapping,discipline,category_disciplines)
+            if reparsed:
+                item.update(reparsed[0])
+            if item.get('identity'):
+                item['identity']=material_identity(main_category=root.name_en,subcategory=child.name_en if child else '',description=item['name'],unit=item['unit'],specifications=item['specs'],discipline=item['raw'].get('_discipline'))
+        elif (options.get('approved_only') or raw.get('_grouped')) and (item['status']=='valid' or not _row_value(raw,mapping,'discipline')):
+            item['status']='conflict';item['issue']=(item.get('issue','') + ' Map this imported group to an existing approved category.').strip()
+    metadata['detected_groups']=list(groups.values())
+    seen:dict[str,str]={}
     existing_materials=_materials_by_identity(db,[item['identity'] for item in prepared if item.get('identity')],
                                                 [item['name'] for item in prepared if item.get('name')])
     source_codes = {item['source_code'] for item in prepared if item.get('source_code')}
@@ -568,9 +650,12 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
         if item['status'] != 'valid': continue
         identity = item['identity']
         if identity in seen:
-            item['status'], item['issue'] = 'duplicate', 'Duplicate material identity in this workbook; first valid row retained.'
+            if seen[identity]!=_normal(item.get('specs','')):
+                item['status'],item['issue']='conflict','Different technical specifications require review; these rows will not be merged.'
+            else:
+                item['status'], item['issue'] = 'duplicate', 'Duplicate material identity in this workbook; first valid row retained.'
             continue
-        seen.add(identity)
+        seen[identity]=_normal(item.get('specs',''))
         source=item.get('source_code')
         if source and source in source_seen and source_seen[source]!=identity:
             item['status'],item['issue']='conflict','Source code is reused for different materials in this workbook.'
@@ -583,6 +668,9 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
         elif owners and (not existing or owners != {existing.id}):
             item['status'], item['issue'] = 'conflict', 'Source code already identifies a different material; description/classification will not be overwritten.'
         elif existing:
+            if item.get('specs') and _normal(item['specs'])!=_normal(existing.description or ''):
+                item['status'],item['issue']='conflict','Different technical specifications require material review; existing material will not be merged.'
+                continue
             incoming = (('expenditure_code', item.get('expenditure_code')), ('source_sn', item.get('source_code')))
             if any(getattr(existing, field) and value and getattr(existing, field) != value for field, value in incoming):
                 item['status'], item['issue'] = 'conflict', 'Existing material metadata conflicts; review required.'
@@ -618,7 +706,7 @@ def _stage_material_preview(db: Session, batch: ImportBatch) -> None:
     row_values=[]
     for item in prepared:
         raw=dict(item.get('raw',{}))
-        raw.update({'_discipline':discipline,'_mapping':mapping,'_sheet':raw.get('_sheet') or selected['name'],
+        raw.update({'_discipline':raw.get('_discipline'),'_mapping':mapping,'_sheet':raw.get('_sheet') or selected['name'],
                     '_identity':item.get('identity'),'_name':item.get('name',''),
                     '_category':item.get('main',''),'_subcategory':item.get('subcategory',''),
                     '_unit':item.get('unit',''),'_source_unit':item.get('source_unit',''),
@@ -843,7 +931,7 @@ def recent_material_imports(user:User=Depends(admin_user),db:Session=Depends(get
 @router.post('/preview', response_model=MaterialImportPreview, status_code=202)
 def preview(
     file: UploadFile = File(...), discipline: str | None = Form(default=None), sheet_name: str | None = Form(default=None),
-    column_mapping: str | None = Form(default=None), user: User = Depends(admin_user), db: Session = Depends(get_db),
+    column_mapping: str | None = Form(default=None), approved_only: bool = Form(default=False), user: User = Depends(admin_user), db: Session = Depends(get_db),
 ):
     """Stage an admin workbook locally and return a background job (202).
 
@@ -902,7 +990,7 @@ def preview(
         return result
     batch = ImportBatch(id=job_id, kind='materials', filename=filename[:200], status='uploaded', stage='parse',
         rows=0, completed_rows=0, initiated_by=user.id, source_storage_key=key, source_bytes=size,
-        source_sha256=digest.hex(), import_options={'discipline': discipline, 'sheet_name': sheet_name, 'column_mapping': explicit},
+        source_sha256=digest.hex(), import_options={'discipline': discipline, 'sheet_name': sheet_name, 'column_mapping': explicit,'approved_only':approved_only},
         upload_duration_ms=int((perf_counter() - started) * 1000), updated_at=datetime.now(UTC))
     db.add(batch)
     try:
@@ -916,7 +1004,7 @@ def preview(
 
 @router.post('/{batch_id}/preview-options', response_model=MaterialImportPreview, status_code=202)
 def update_preview_options(batch_id: str, discipline: str | None = Form(default=None), sheet_name: str | None = Form(default=None),
-                           column_mapping: str | None = Form(default=None), user: User = Depends(admin_user), db: Session = Depends(get_db)):
+                           column_mapping: str | None = Form(default=None), group_mapping: str | None = Form(default=None), user: User = Depends(admin_user), db: Session = Depends(get_db)):
     batch = db.scalar(select(ImportBatch).where(ImportBatch.id == batch_id, ImportBatch.kind == 'materials').with_for_update())
     if not batch:
         raise HTTPException(404, 'Material import not found')
@@ -935,7 +1023,13 @@ def update_preview_options(batch_id: str, discipline: str | None = Form(default=
         if not isinstance(explicit, dict) or any(k not in FIELD_ALIASES or not isinstance(v, str) for k, v in explicit.items()):
             raise HTTPException(422, 'Column mapping must map supported fields to header names')
     db.execute(__import__('sqlalchemy').delete(ImportedRow).where(ImportedRow.batch_id == batch.id))
-    batch.import_options = {'discipline': discipline, 'sheet_name': sheet_name, 'column_mapping': explicit}
+    groups=(batch.import_options or {}).get('group_mapping',{})
+    if group_mapping:
+        try:
+            groups=json.loads(group_mapping)
+            if not isinstance(groups,dict) or len(groups)>1000 or any(not isinstance(v,dict) or set(v)-{'main_category_id','subcategory_id'} or any(x is not None and not isinstance(x,str) for x in v.values()) for v in groups.values()):raise ValueError()
+        except (ValueError,TypeError):raise HTTPException(422,'Group mapping is invalid')
+    batch.import_options = {**(batch.import_options or {}),'discipline': discipline, 'sheet_name': sheet_name, 'column_mapping': explicit,'group_mapping':groups}
     batch.status = 'uploaded'; batch.stage = 'parse'; batch.failure_reason = None
     batch.rows = 0; batch.errors = 0; batch.completed_rows = 0; batch.preview_metadata = None
     batch.updated_at = datetime.now(UTC)

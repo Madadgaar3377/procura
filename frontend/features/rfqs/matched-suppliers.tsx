@@ -15,6 +15,7 @@ import { useToast } from '@/features/shared/toast';
 import { eligibilityReason, isRecommended, isSubmitted, matchEvidence, matchingState, PAGE_SIZE, type Match } from './matching-model';
 import styles from './matched-suppliers.module.css';
 import { matchingArabic } from './matching-copy';
+import { AdminMatchingDiagnostics } from './admin-matching-diagnostics';
 
 type Favorite = { supplier_org_id: string; name: string };
 type Translate = (english: string) => string;
@@ -283,6 +284,7 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
           <Button size="sm" variant="outline" disabled={!invitationOffset || progressResult.fetching} onClick={() => { setInvPage({ rfq: currentId, offset: Math.max(0, invitationOffset - PAGE_SIZE) }); setSelectedReminders([]); }}>{t('Previous')}</Button>
           <Button size="sm" variant="outline" disabled={progressResult.fetching || (data?.invited_suppliers != null ? invitationOffset + PAGE_SIZE >= data.invited_suppliers : invitations.length < PAGE_SIZE)} onClick={() => { setInvPage({ rfq: currentId, offset: invitationOffset + PAGE_SIZE }); setSelectedReminders([]); }}>{t('Next')}</Button></div></nav>
       </section>
+      {user.is_admin && !embedded && <AdminMatchingDiagnostics rfqId={currentId} onRerunDone={results.reload} />}
     </>}
   </div>;
 }

@@ -1,32 +1,105 @@
-"""Set-based matching for active suppliers under the configured capability policy."""
+"""Set-based hybrid matching for active suppliers under the configured capability policy."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
-from sqlalchemy import func, select, or_, cast, literal
+
+from sqlalchemy import cast, func, literal, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.models import (
     RFQ,
-    Category,
     Capability,
+    Category,
+    ImportedSupplierTrade,
     Invitation,
     Material,
     Member,
     Notification,
     Organization,
     Outbox,
+    PriceBookItem,
     RFQItem,
     RFQMatch,
     User,
+)
+from app.modules.materials.service import normalize_text
+from app.modules.rfqs.material_matching import (
+    extract_keywords,
+    gemini_semantic_supplier_match,
+    score_categories_for_text,
 )
 from app.security import as_utc
 
 NATIONWIDE_KEYWORDS = {
     'all', 'all cities', 'nationwide', 'kingdom-wide', 'ksa', 'saudi arabia',
-    'المملكة', 'جميع المدن', 'كل المدن', 'كافة المدن'
+    'المملكة', 'جميع المدن', 'كل المدن', 'كافة المدن', 'السعودية',
 }
+
+CITY_ALIASES: dict[str, str] = {
+    'riyadh': 'riyadh', 'al riyadh': 'riyadh', 'الرياض': 'riyadh',
+    'jeddah': 'jeddah', 'jiddah': 'jeddah', 'جدة': 'jeddah', 'جده': 'jeddah',
+    'dammam': 'dammam', 'al dammam': 'dammam', 'الدمام': 'dammam',
+    'khobar': 'khobar', 'al khobar': 'khobar', 'alkhobar': 'khobar', 'الخبر': 'khobar',
+    'dhahran': 'dhahran', 'الظهران': 'dhahran',
+    'jubail': 'jubail', 'al jubail': 'jubail', 'الجبيل': 'jubail',
+    'makkah': 'makkah', 'mecca': 'makkah', 'مكة': 'makkah', 'مكة المكرمة': 'makkah',
+    'madinah': 'madinah', 'medina': 'madinah', 'المدينة': 'madinah', 'المدينة المنورة': 'madinah',
+    'taif': 'taif', 'al taif': 'taif', 'الطائف': 'taif',
+    'yanbu': 'yanbu', 'ينبع': 'yanbu',
+    'abha': 'abha', 'أبها': 'abha', 'ابها': 'abha',
+    'tabuk': 'tabuk', 'تبوك': 'tabuk',
+    'qassim': 'qassim', 'buraydah': 'qassim', 'buraidah': 'qassim', 'القصيم': 'qassim', 'بريدة': 'qassim',
+    'hofuf': 'hofuf', 'al ahsa': 'hofuf', 'alahsa': 'hofuf', 'الأحساء': 'hofuf', 'الهفوف': 'hofuf',
+    'qatif': 'qatif', 'القطيف': 'qatif',
+    'kharj': 'kharj', 'al kharj': 'kharj', 'الخرج': 'kharj',
+    'hail': 'hail', 'حائل': 'hail',
+    'najran': 'najran', 'نجران': 'najran',
+    'jazan': 'jazan', 'jizan': 'jazan', 'جازان': 'jazan',
+}
+
+REGION_CITIES: dict[str, set[str]] = {
+    'eastern province': {'dammam', 'khobar', 'dhahran', 'jubail', 'qatif', 'hofuf'},
+    'eastern region': {'dammam', 'khobar', 'dhahran', 'jubail', 'qatif', 'hofuf'},
+    'المنطقة الشرقية': {'dammam', 'khobar', 'dhahran', 'jubail', 'qatif', 'hofuf'},
+    'الشرقية': {'dammam', 'khobar', 'dhahran', 'jubail', 'qatif', 'hofuf'},
+    'riyadh region': {'riyadh', 'kharj'},
+    'منطقة الرياض': {'riyadh', 'kharj'},
+    'makkah region': {'jeddah', 'makkah', 'taif'},
+    'western region': {'jeddah', 'makkah', 'taif', 'madinah', 'yanbu'},
+    'western province': {'jeddah', 'makkah', 'taif', 'madinah', 'yanbu'},
+    'منطقة مكة': {'jeddah', 'makkah', 'taif'},
+    'المنطقة الغربية': {'jeddah', 'makkah', 'taif', 'madinah', 'yanbu'},
+    'central region': {'riyadh', 'kharj', 'qassim'},
+    'المنطقة الوسطى': {'riyadh', 'kharj', 'qassim'},
+}
+
+
+def normalize_city(value: str | None) -> str:
+    raw = normalize_text(value or '')
+    return CITY_ALIASES.get(raw, raw)
+
+
+def city_covered_by(rfq_city: str | None, cap_city: str | None) -> tuple[bool, bool]:
+    """Return (covered, exact_city_match) respecting Saudi city aliases, regions, and nationwide coverage."""
+    rfq_norm = normalize_city(rfq_city)
+    if not rfq_norm:
+        return True, False
+    cap_raw = normalize_text(cap_city or '')
+    if not cap_raw:
+        return False, False
+    if cap_raw in NATIONWIDE_KEYWORDS:
+        return True, False
+    cap_norm = normalize_city(cap_raw)
+    if cap_norm == rfq_norm:
+        return True, True
+    if rfq_norm in REGION_CITIES.get(cap_raw, set()):
+        return True, False
+    if cap_norm in REGION_CITIES.get(rfq_norm, set()):
+        return True, False
+    return False, False
 
 
 def material_link(db, material_id):
@@ -37,22 +110,67 @@ def material_link(db, material_id):
     return select(literal(1)).select_from(values).where(values.c.value == material_id).exists()
 
 
-def capability_scope(db, material_ids, sub_ids):
-    linked_material = select(Material.id).where(
-        Material.active.is_(True),
-        or_(Material.id.in_(material_ids), Material.subcategory_id.in_(sub_ids)),
-        material_link(db, Material.id),
-    ).exists()
-    return or_(Capability.category_id.in_(sub_ids), linked_material)
+def capability_scope(
+    db,
+    material_ids: set[str],
+    sub_ids: set[str],
+    main_ids: set[str] | None = None,
+    keywords: set[str] | None = None,
+    include_root_only: bool = False,
+):
+    """SQL predicate for candidate capabilities matching exact material, subcategory, main+evidence, or trade keywords."""
+    clauses = []
+    if sub_ids:
+        clauses.append(Capability.category_id.in_(sub_ids))
+    if material_ids or sub_ids:
+        mat_conds = []
+        if material_ids:
+            mat_conds.append(Material.id.in_(material_ids))
+        if sub_ids:
+            mat_conds.append(Material.subcategory_id.in_(sub_ids))
+        linked_material = select(Material.id).where(
+            Material.active.is_(True),
+            or_(*mat_conds),
+            material_link(db, Material.id),
+        ).exists()
+        clauses.append(linked_material)
+    if main_ids:
+        if include_root_only:
+            clauses.append(Capability.category_id.in_(main_ids))
+        else:
+            # Main-category capability qualifies as a candidate when the capability carries trade_keywords
+            # (so empty broad main-category records with no evidence are not needlessly pulled in).
+            clauses.append(
+                (Capability.category_id.in_(main_ids))
+                & (func.coalesce(Capability.trade_keywords, '') != '')
+            )
+    if keywords:
+        top_kw = sorted(keywords, key=len, reverse=True)[:12]
+        for kw in top_kw:
+            escaped = kw.replace('_', '\\_').replace('%', '\\%')
+            clauses.append(Capability.trade_keywords.ilike('%' + escaped + '%', escape='\\'))
+    if not clauses:
+        return literal(False)
+    return or_(*clauses)
 
 
-def match_and_invite(db: Session, rfq: RFQ, actor: User | None = None, limit: int | None = None,
-                     after_supplier_id: str | None = None, bounded: bool = False) -> dict:
+def match_and_invite(
+    db: Session,
+    rfq: RFQ,
+    actor: User | None = None,
+    limit: int | None = None,
+    after_supplier_id: str | None = None,
+    bounded: bool = False,
+) -> dict:
     """Drain relevant SQL pages; legacy limit is the page size, never a discovery cap."""
-    # Serialize every entry point (worker, publish, dispatch) on the same RFQ row.
     db.scalar(select(RFQ).where(RFQ.id == rfq.id).with_for_update())
-    summary = {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [],
-               'evaluated_suppliers': 0, 'ineligible_suppliers': 0}
+    summary = {
+        'eligible_suppliers': 0,
+        'new_invitations': 0,
+        'invitations': [],
+        'evaluated_suppliers': 0,
+        'ineligible_suppliers': 0,
+    }
     cursor = after_supplier_id
     while True:
         batch = _match_batch(db, rfq, actor, limit, cursor, True)
@@ -77,53 +195,117 @@ def _match_batch(
     evaluate_only: bool = False,
     supplier_ids: list[str] | None = None,
 ) -> dict:
-    """Filter candidates in PostgreSQL, evaluate eligibility, and write matches/invitations.
-
-    Active status, supplier role, configured capability eligibility, and
-    service-city coverage are evaluated systematically. Ineligible suppliers who matched
-    the category are recorded with diagnostic reasons so administrators have complete visibility.
-    """
+    """Filter candidates in PostgreSQL, evaluate hybrid eligibility, and write matches/invitations."""
     if rfq.status not in {'published', 'collecting_quotes'} or as_utc(rfq.response_deadline) <= datetime.now(timezone.utc):
         return {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
 
-    # Snapshot IDs take precedence; fallback supports pre-migration legacy items.
     requested = db.execute(
         select(RFQItem, Material)
         .outerjoin(Material, Material.id == RFQItem.material_id)
         .where(RFQItem.rfq_id == rfq.id)
     ).all()
+    if not requested:
+        return {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
 
-    item_scope = {}
+    all_active_categories = {c.id: c for c in db.scalars(select(Category).where(Category.active.is_(True))).all()}
+
+    item_scope: dict[str, tuple[str | None, str | None]] = {}
+    item_keywords: dict[str, set[str]] = {}
+    item_material_codes: dict[str, str] = {}
+    include_root_only = False
+
     for item, material in requested:
         main = item.main_category_id or (material.main_category_id if material else None)
         sub = item.subcategory_id or (material.subcategory_id if material else None)
         if not main and material:
-            leaf = db.get(Category, material.category_id)
+            leaf = all_active_categories.get(material.category_id) or db.get(Category, material.category_id)
             if leaf:
                 main = leaf.parent_id or leaf.id
                 sub = leaf.id if leaf.parent_id else None
-        if main:
-            item_scope[item.id] = (main, sub)
+        # Fallback for unclassified items: infer active category in-memory without mutating the RFQ item
+        if not main:
+            inferred = score_categories_for_text(f'{item.description} {item.specifications or ""}', all_active_categories)
+            if inferred:
+                main = inferred[0]['main_category_id']
+                sub = inferred[0]['subcategory_id']
+        if main and not sub:
+            include_root_only = True
+        item_scope[item.id] = (main, sub)
+        item_keywords[item.id] = extract_keywords(f'{item.description} {item.specifications or ""}')
+        if material and material.code:
+            item_material_codes[item.id] = material.code.strip().casefold()
 
-    if not item_scope:
-        return {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
-
-    category_scopes = {category_id for main, sub in item_scope.values() for category_id in (main, sub) if category_id}
-    category_parents = dict(
-        db.execute(select(Category.id, Category.parent_id).where(Category.id.in_(category_scopes), Category.active.is_(True))).all()
-    )
+    category_scopes = {cid for main, sub in item_scope.values() for cid in (main, sub) if cid}
+    category_parents = {
+        cid: all_active_categories[cid].parent_id
+        for cid in category_scopes
+        if cid in all_active_categories
+    }
     exact_material_ids = {item.material_id for item, _ in requested if item.material_id}
+    sub_ids = {sub for _, sub in item_scope.values() if sub}
+    main_ids = {main for main, _ in item_scope.values() if main}
+    all_keywords = {kw for kws in item_keywords.values() for kw in kws}
 
     batch_size = max(1, min(limit if limit is not None else 500, 500))
-    sub_ids = {sub for _, sub in item_scope.values() if sub}
-    relevant = capability_scope(db, exact_material_ids, sub_ids)
+    relevant = capability_scope(
+        db,
+        exact_material_ids,
+        sub_ids,
+        main_ids=main_ids,
+        keywords=all_keywords,
+        include_root_only=include_root_only,
+    )
 
-    # Phase 3 & 8: Scan candidate supplier organizations offering the required category scope.
+    # Also include suppliers who have verified/active PriceBookItems or ImportedSupplierTrades matching the RFQ
+    pricebook_conds = []
+    if exact_material_ids:
+        pricebook_conds.append(PriceBookItem.material_id.in_(exact_material_ids))
+    if sub_ids:
+        pricebook_conds.append(PriceBookItem.subcategory_id.in_(sub_ids))
+    for kw in sorted(all_keywords, key=len, reverse=True)[:10]:
+        escaped = kw.replace('_', '\\_').replace('%', '\\%')
+        pricebook_conds.append(PriceBookItem.supplier_description.ilike('%' + escaped + '%', escape='\\'))
+
+    trade_conds = []
+    for kw in sorted(all_keywords, key=len, reverse=True)[:10]:
+        escaped = kw.replace('_', '\\_').replace('%', '\\%')
+        trade_conds.append(ImportedSupplierTrade.raw_trade.ilike('%' + escaped + '%', escape='\\'))
+        trade_conds.append(ImportedSupplierTrade.raw_brands.ilike('%' + escaped + '%', escape='\\'))
+
+    org_desc_conds = []
+    for kw in sorted(all_keywords, key=len, reverse=True)[:8]:
+        escaped = kw.replace('_', '\\_').replace('%', '\\%')
+        org_desc_conds.append(Organization.description.ilike('%' + escaped + '%', escape='\\'))
+
+    candidate_sources = [
+        select(Capability.id).where(Capability.org_id == Organization.id, relevant).exists(),
+        select(RFQMatch.id).where(RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id == Organization.id).exists(),
+    ]
+    if pricebook_conds:
+        candidate_sources.append(
+            select(PriceBookItem.id).where(
+                PriceBookItem.org_id == Organization.id,
+                PriceBookItem.active.is_(True),
+                or_(*pricebook_conds),
+            ).exists()
+        )
+    if trade_conds:
+        candidate_sources.append(
+            select(ImportedSupplierTrade.id).where(
+                ImportedSupplierTrade.org_id == Organization.id,
+                or_(*trade_conds),
+            ).exists()
+        )
+    if org_desc_conds:
+        candidate_sources.append(
+            or_(*org_desc_conds)
+            & select(Capability.id).where(Capability.org_id == Organization.id).exists()
+        )
+
     candidate_query = (
         select(Organization.id)
         .where(
-            or_(select(Capability.id).where(Capability.org_id == Organization.id, relevant).exists(),
-                select(RFQMatch.id).where(RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id == Organization.id).exists()),
+            or_(*candidate_sources),
             Organization.id != rfq.buyer_org_id,
         )
     )
@@ -139,56 +321,117 @@ def _match_batch(
     if bounded:
         candidate_ids = candidate_ids[:batch_size]
 
-    if not candidate_ids:
-        return {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
-
-    # Fetch supplier capabilities and organizations
+    # Batch-fetch capabilities, organizations, pricebook items, and imported trades (no N+1)
     rows = db.execute(
         select(Capability, Organization)
         .join(Organization, Organization.id == Capability.org_id)
-        .where(
-            Capability.org_id.in_(candidate_ids),
-        )
-    ).all()
+        .where(Capability.org_id.in_(candidate_ids))
+    ).all() if candidate_ids else []
 
     suppliers_caps: dict[str, list[Capability]] = {}
-    suppliers_org = {org.id: org for org in db.scalars(select(Organization).where(Organization.id.in_(candidate_ids)))}
+    suppliers_org = {
+        org.id: org
+        for org in db.scalars(select(Organization).where(Organization.id.in_(candidate_ids)))
+    } if candidate_ids else {}
     for cap, org in rows:
         suppliers_caps.setdefault(org.id, []).append(cap)
         suppliers_org[org.id] = org
+
+    pricebooks_by_org: dict[str, list[PriceBookItem]] = {}
+    if candidate_ids:
+        for pb in db.scalars(
+            select(PriceBookItem).where(PriceBookItem.org_id.in_(candidate_ids), PriceBookItem.active.is_(True))
+        ).all():
+            pricebooks_by_org.setdefault(pb.org_id, []).append(pb)
+
+    trades_by_org: dict[str, list[ImportedSupplierTrade]] = {}
+    if candidate_ids:
+        for tr in db.scalars(
+            select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id.in_(candidate_ids))
+        ).all():
+            trades_by_org.setdefault(tr.org_id, []).append(tr)
 
     linked_ids = {mid for cap, _ in rows for mid in (cap.material_ids or [])}
     linked_materials = {
         m.id: m
         for m in db.scalars(select(Material).where(Material.id.in_(linked_ids), Material.active.is_(True)))
-        if (not m.discipline or m.discipline.strip().casefold() in {'civil', 'electrical', 'mechanical'})
-    }
-    category_names = dict(db.execute(select(Category.id, Category.name_en).where(Category.id.in_(category_scopes))).all())
-    active_categories = set(db.scalars(select(Category.id).where(Category.active.is_(True), Category.id.in_({cap.category_id for cap, _ in rows}))))
+    } if linked_ids else {}
 
-    rfq_city_norm = (rfq.city or '').strip().casefold()
+    category_names = {cid: all_active_categories[cid].name_en for cid in all_active_categories}
+    active_categories = set(all_active_categories.keys())
+
+    rfq_city_norm = normalize_city(rfq.city)
     required = {value.strip().casefold() for value in (rfq.required_qualifications or []) if value.strip()}
     requested_by_id = {item.id: item for item, _ in requested}
 
-    def capability_level(cap, item_id, main, sub):
-        if main not in category_parents or (sub and category_parents.get(sub) != main):
-            return None
-        material_id = requested_by_id[item_id].material_id
-        if material_id and material_id in (cap.material_ids or []) and material_id in linked_materials:
+    def _supplier_profile_keywords(org: Organization, caps: list[Capability]) -> set[str]:
+        parts = [org.description or '']
+        for c in caps:
+            if c.trade_keywords:
+                parts.append(c.trade_keywords)
+            cat = all_active_categories.get(c.category_id)
+            if cat:
+                parts.append(f'{cat.name_en} {cat.name_ar or ""}')
+        for tr in trades_by_org.get(org.id, []):
+            parts.append(f'{tr.raw_trade or ""} {tr.raw_brands or ""}')
+        for pb in pricebooks_by_org.get(org.id, []):
+            parts.append(f'{pb.supplier_description or ""} {pb.brand or ""} {pb.model or ""}')
+        return extract_keywords(' '.join(parts))
+
+    def capability_level(org: Organization, cap: Capability, item_id: str, main: str | None, sub: str | None) -> str | None:
+        item = requested_by_id[item_id]
+        material_id = item.material_id
+        org_pbs = pricebooks_by_org.get(org.id, [])
+
+        # 1. Exact material / material-code / verified pricebook match
+        if material_id and (
+            (material_id in (cap.material_ids or []) and material_id in linked_materials)
+            or any(pb.material_id == material_id for pb in org_pbs)
+        ):
             return 'exact material'
-        if sub and category_parents.get(sub) == main:
-            if cap.category_id == sub or any(
-                linked_materials[mid].subcategory_id == sub and linked_materials[mid].main_category_id == main
-                for mid in (cap.material_ids or []) if mid in linked_materials
+        code = item_material_codes.get(item_id)
+        if code and any(code in (pb.supplier_description or '').casefold() or code in (pb.model or '').casefold() for pb in org_pbs):
+            return 'exact material'
+
+        # 2. Exact subcategory match
+        if main and sub and main in category_parents and category_parents.get(sub) == main:
+            if (
+                cap.category_id == sub
+                or any(
+                    linked_materials[mid].subcategory_id == sub and linked_materials[mid].main_category_id == main
+                    for mid in (cap.material_ids or []) if mid in linked_materials
+                )
+                or any(pb.subcategory_id == sub for pb in org_pbs)
             ):
                 return 'exact subcategory'
-        return None
-    # RFQ invitations require an explicitly approved capability, regardless of
-    # the softer discovery-directory setting.
-    require_approval = True
 
+        # 3. Keyword / catalog / trade-keyword match (requires approved capability + genuine lexical/synonym overlap)
+        item_kw = item_keywords.get(item_id, set())
+        if item_kw:
+            cap_text_parts = [cap.trade_keywords or '', org.description or '']
+            for tr in trades_by_org.get(org.id, []):
+                cap_text_parts.append(f'{tr.raw_trade or ""} {tr.raw_brands or ""}')
+            for pb in org_pbs:
+                cap_text_parts.append(f'{pb.supplier_description or ""} {pb.brand or ""} {pb.model or ""}')
+            evidence_kw = extract_keywords(' '.join(cap_text_parts))
+            # Match if there is concrete product keyword overlap between RFQ item and supplier's trade/catalog evidence
+            overlap = item_kw & evidence_kw
+            if overlap:
+                return 'keyword catalog'
+
+        # 4. Main category match (only when RFQ item has no subcategory, or supplier has a pricebook in that main category)
+        if main and main in category_parents and cap.category_id == main:
+            if not sub:
+                return 'main category'
+            if any(pb.main_category_id == main for pb in org_pbs):
+                return 'main category'
+
+        return None
+
+    require_approval = True
     eligible_candidates: dict[str, dict] = {}
     ineligible_diagnostics: dict[str, dict] = {}
+    ai_pool_orgs: dict[str, tuple[Organization, list[Capability], bool]] = {}
 
     for org_id in candidate_ids:
         org = suppliers_org.get(org_id)
@@ -219,7 +462,10 @@ def _match_batch(
         # Check C: Capability approval
         approved_caps = [
             c for c in caps
-            if (c.confirmed or not require_approval) and c.eligibility_status == 'enabled' and c.accepts_rfqs and c.category_id in active_categories
+            if (c.confirmed or not require_approval)
+            and c.eligibility_status == 'enabled'
+            and c.accepts_rfqs
+            and c.category_id in active_categories
         ]
         if not approved_caps:
             reasons = []
@@ -235,45 +481,48 @@ def _match_batch(
             }
             continue
 
-        approved_caps = [c for c in approved_caps if any(
-            capability_level(c, item_id, main, sub) for item_id, (main, sub) in item_scope.items())]
-        if not approved_caps:
+        matching_caps = [
+            c for c in approved_caps
+            if any(capability_level(org, c, item_id, main, sub) for item_id, (main, sub) in item_scope.items())
+        ]
+        if not matching_caps:
+            # Keep as potential AI semantic pool ONLY if location + qualifications pass
+            loc_caps = [c for c in approved_caps if city_covered_by(rfq.city, c.city)[0]]
+            if loc_caps:
+                supplier_quals = {q.strip().casefold() for c in loc_caps for q in (c.qualifications or [])}
+                if not required or required.issubset(supplier_quals):
+                    has_exact_city = any(city_covered_by(rfq.city, c.city)[1] for c in loc_caps)
+                    ai_pool_orgs[org_id] = (org, loc_caps, has_exact_city)
             ineligible_diagnostics[org_id] = {
-                'org': org, 'status': 'ineligible', 'covered': set(),
-                'reasons': ['No approved material or subcategory capability supports the requested items. A broad main category does not qualify.'],
+                'org': org,
+                'status': 'ineligible',
+                'covered': set(),
+                'reasons': ['No approved material, subcategory, or verified keyword capability supports the requested items.'],
             }
             continue
 
-        # Check D: Delivery location coverage
-        covered_cities = {c.city.strip().casefold() for c in approved_caps if c.city and c.city.strip()}
+        # Check D: Delivery location / region coverage
+        covered_cities = {c.city.strip() for c in matching_caps if c.city and c.city.strip()}
+        city_checks = [city_covered_by(rfq.city, c.city) for c in matching_caps]
+        location_matches = any(cov for cov, _ in city_checks)
+        has_exact_city = any(exact for _, exact in city_checks)
 
-        has_nationwide = any(
-            (c.city or '').strip().casefold() in NATIONWIDE_KEYWORDS
-            for c in approved_caps
-        )
-        location_matches = (
-            not rfq_city_norm
-            or has_nationwide
-            or (rfq_city_norm in covered_cities)
-        )
         if not location_matches:
-            cities_disp = ', '.join(sorted({c.city for c in approved_caps if c.city})) or org.city or 'None'
+            cities_disp = ', '.join(sorted(covered_cities)) or org.city or 'None'
             ineligible_diagnostics[org_id] = {
                 'org': org,
                 'status': 'location_mismatch' if covered_cities else 'coverage_unknown',
                 'reasons': [
                     f"Delivery location not covered: supplier serves '{cities_disp}', RFQ requires '{rfq.city}'."
-                    if covered_cities else f"Service coverage is unknown; explicit coverage for {rfq.city} is required. Office city is not service coverage."
+                    if covered_cities
+                    else f"Service coverage is unknown; explicit coverage for {rfq.city} is required. Office city is not service coverage."
                 ],
                 'covered': set(),
             }
             continue
 
         # Check E: Required qualifications
-        supplier_quals = set()
-        for c in approved_caps:
-            for q in (c.qualifications or []):
-                supplier_quals.add(q.strip().casefold())
+        supplier_quals = {q.strip().casefold() for c in matching_caps for q in (c.qualifications or [])}
         if required and not required.issubset(supplier_quals):
             ineligible_diagnostics[org_id] = {
                 'org': org,
@@ -283,24 +532,28 @@ def _match_batch(
             }
             continue
 
-        # Item coverage
-        covered = set()
-        exact_subcategory_items = set()
-        main_category_items = set()
-        exact_items = set()
+        # Item coverage evaluation
+        covered: set[str] = set()
+        exact_items: set[str] = set()
+        exact_subcategory_items: set[str] = set()
+        keyword_items: set[str] = set()
+        main_category_items: set[str] = set()
+
         for item_id, (main, sub) in item_scope.items():
-            # Coverage belongs to the capability that supports this item.
-            item_caps = [c for c in approved_caps if not rfq_city_norm or
-                         (c.city or '').strip().casefold() in NATIONWIDE_KEYWORDS | {rfq_city_norm}]
-            levels = {capability_level(c, item_id, main, sub) for c in item_caps}
-            exact_material = 'exact material' in levels
-            exact_subcategory = 'exact subcategory' in levels
-            if exact_material:
+            item_caps = [c for c in matching_caps if city_covered_by(rfq.city, c.city)[0]]
+            levels = {capability_level(org, c, item_id, main, sub) for c in item_caps}
+            if 'exact material' in levels:
                 covered.add(item_id)
                 exact_items.add(item_id)
-            elif exact_subcategory:
+            elif 'exact subcategory' in levels:
                 covered.add(item_id)
                 exact_subcategory_items.add(item_id)
+            elif 'keyword catalog' in levels:
+                covered.add(item_id)
+                keyword_items.add(item_id)
+            elif 'main category' in levels:
+                covered.add(item_id)
+                main_category_items.add(item_id)
 
         if not covered:
             ineligible_diagnostics[org_id] = {
@@ -311,40 +564,139 @@ def _match_batch(
             }
             continue
 
-        exact_materials = {requested_by_id[item_id].material_id for item_id in exact_items}
-
+        exact_materials = {requested_by_id[item_id].material_id for item_id in exact_items if requested_by_id[item_id].material_id}
         eligible_candidates[org_id] = {
             'org': org,
             'covered': covered,
-            'exact_subcategory_items': exact_subcategory_items,
-            'main_category_items': main_category_items,
-            'exact_materials': exact_materials,
             'exact_items': exact_items,
-            'has_exact_city': rfq_city_norm in covered_cities,
-            'approved_caps': approved_caps,
+            'exact_subcategory_items': exact_subcategory_items,
+            'keyword_items': keyword_items,
+            'main_category_items': main_category_items,
+            'ai_items': set(),
+            'ai_explanations': {},
+            'exact_materials': exact_materials,
+            'has_exact_city': has_exact_city,
+            'approved_caps': matching_caps,
         }
+
+    # AI-assisted semantic matching ONLY for unresolved items (0 deterministic eligible suppliers)
+    covered_by_any = {item_id for cand in eligible_candidates.values() for item_id in cand['covered']}
+    unresolved_item_ids = [item_id for item_id in item_scope if item_id not in covered_by_any]
+    settings = get_settings()
+    if unresolved_item_ids and not evaluate_only and settings.gemini_api_key.get_secret_value():
+        # If ai_pool_orgs is empty, fetch a small bounded slice of active approved suppliers covering the RFQ city
+        if not ai_pool_orgs and supplier_ids is None:
+            extra_rows = db.execute(
+                select(Capability, Organization)
+                .join(Organization, Organization.id == Capability.org_id)
+                .where(
+                    Organization.is_active.is_(True),
+                    Organization.is_supplier.is_(True),
+                    Organization.verified_status.notin_({'rejected', 'suspended'}),
+                    Organization.id != rfq.buyer_org_id,
+                    Capability.confirmed.is_(True),
+                    Capability.accepts_rfqs.is_(True),
+                    Capability.eligibility_status == 'enabled',
+                    Capability.category_id.in_(active_categories),
+                )
+                .limit(120)
+            ).all()
+            grouped_extra: dict[str, tuple[Organization, list[Capability]]] = {}
+            for cap, org in extra_rows:
+                if org.id in eligible_candidates:
+                    continue
+                if not city_covered_by(rfq.city, cap.city)[0]:
+                    continue
+                grouped_extra.setdefault(org.id, (org, []))[1].append(cap)
+            for oid, (org, caps) in list(grouped_extra.items())[:30]:
+                supplier_quals = {q.strip().casefold() for c in caps for q in (c.qualifications or [])}
+                if required and not required.issubset(supplier_quals):
+                    continue
+                has_exact = any(city_covered_by(rfq.city, c.city)[1] for c in caps)
+                ai_pool_orgs[oid] = (org, caps, has_exact)
+
+        if ai_pool_orgs:
+            unresolved_payload = [
+                {
+                    'item_id': item_id,
+                    'description': requested_by_id[item_id].description,
+                    'specifications': requested_by_id[item_id].specifications or '',
+                    'category': ' / '.join(
+                        category_names[cid] for cid in item_scope[item_id] if cid and cid in category_names
+                    ),
+                }
+                for item_id in unresolved_item_ids
+            ]
+            supplier_payload = []
+            for oid, (org, caps, _) in list(ai_pool_orgs.items())[:30]:
+                cat_list = sorted({category_names.get(c.category_id, '') for c in caps if c.category_id in category_names})
+                kw_list = [c.trade_keywords for c in caps if c.trade_keywords]
+                pb_list = [pb.supplier_description for pb in pricebooks_by_org.get(oid, []) if pb.supplier_description][:10]
+                if not (cat_list or kw_list or pb_list or org.description):
+                    continue
+                supplier_payload.append({
+                    'supplier_org_id': oid,
+                    'categories': cat_list[:10],
+                    'trade_keywords': ' | '.join(kw_list)[:300],
+                    'catalog_items': pb_list,
+                    'description': (org.description or '')[:240],
+                })
+            if supplier_payload:
+                ai_matches, _failed = gemini_semantic_supplier_match(unresolved_payload, supplier_payload)
+                for item_id, hits in ai_matches.items():
+                    for hit in hits:
+                        oid = hit['supplier_org_id']
+                        if oid not in ai_pool_orgs:
+                            continue
+                        org, caps, has_exact = ai_pool_orgs[oid]
+                        ineligible_diagnostics.pop(oid, None)
+                        cand = eligible_candidates.setdefault(oid, {
+                            'org': org,
+                            'covered': set(),
+                            'exact_items': set(),
+                            'exact_subcategory_items': set(),
+                            'keyword_items': set(),
+                            'main_category_items': set(),
+                            'ai_items': set(),
+                            'ai_explanations': {},
+                            'exact_materials': set(),
+                            'has_exact_city': has_exact,
+                            'approved_caps': caps,
+                        })
+                        cand['covered'].add(item_id)
+                        cand['ai_items'].add(item_id)
+                        cand['ai_explanations'][item_id] = f"{hit['explanation']} (confidence {hit['confidence']:.2f})"
+
+    if not candidate_ids and not eligible_candidates:
+        return {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
 
     # Rank eligible candidates
     ranked = sorted(
         eligible_candidates.values(),
         key=lambda cand: (
-            -len(cand.get('exact_materials', set())),
+            -len(cand.get('exact_items', set())),
             -len(cand.get('exact_subcategory_items', set())),
+            -len(cand.get('keyword_items', set())),
+            -len(cand.get('main_category_items', set())),
             -len(cand['covered']),
             0 if cand.get('has_exact_city') else 1,
             cand['org'].name.casefold(),
             cand['org'].id,
-        )
+        ),
     )
 
     if evaluate_only:
-        return {'eligible_ids': [candidate['org'].id for candidate in ranked],
-                'covered_items': {candidate['org'].id: sorted(candidate['covered']) for candidate in ranked}}
+        return {
+            'eligible_ids': [candidate['org'].id for candidate in ranked],
+            'covered_items': {candidate['org'].id: sorted(candidate['covered']) for candidate in ranked},
+        }
 
-    # Persist or update RFQMatch for eligible candidates
+    all_touch_ids = set(candidate_ids) | set(eligible_candidates.keys())
     existing_matches = {
         m.supplier_org_id: m
-        for m in db.scalars(select(RFQMatch).where(RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id.in_(candidate_ids))).all()
+        for m in db.scalars(
+            select(RFQMatch).where(RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id.in_(all_touch_ids))
+        ).all()
     }
     for obj in db.new:
         if isinstance(obj, RFQMatch) and obj.rfq_id == rfq.id:
@@ -352,24 +704,63 @@ def _match_batch(
 
     for candidate in ranked:
         exact_count = len(candidate.get('exact_materials', set()))
-        score = (50 + int(30 * len(candidate['exact_items']) / len(item_scope))
-                 + int(15 * len(candidate['exact_subcategory_items']) / len(item_scope))
-                 + (5 if candidate.get('has_exact_city') else 0))
+        total_items = max(1, len(item_scope))
+        score = (
+            50
+            + int(30 * len(candidate['exact_items']) / total_items)
+            + int(20 * len(candidate['exact_subcategory_items']) / total_items)
+            + int(14 * len(candidate.get('keyword_items', set())) / total_items)
+            + int(10 * len(candidate.get('main_category_items', set())) / total_items)
+            + int(8 * len(candidate.get('ai_items', set())) / total_items)
+            + (5 if candidate.get('has_exact_city') else 0)
+        )
+        score = min(100, score)
+
+        if candidate['exact_items']:
+            primary_reason = 'Approved exact material capability'
+        elif candidate['exact_subcategory_items']:
+            primary_reason = 'Approved exact subcategory capability'
+        elif candidate.get('keyword_items'):
+            primary_reason = 'Approved supplier keyword/catalog capability'
+        elif candidate.get('main_category_items'):
+            primary_reason = 'Approved main category capability'
+        else:
+            primary_reason = 'AI-assisted semantic match based on verified supplier profile'
+
         reasons = [
             'active supplier company',
-            ('Approved exact material capability' if candidate.get('exact_items') else 'Approved exact subcategory capability'),
-            f'delivery city match: {rfq.city}' if candidate.get('has_exact_city') else ('service coverage matches delivery requirement' if rfq_city_norm else 'delivery location not specified; city coverage not used'),
+            primary_reason,
+            (
+                f'delivery city match: {rfq.city}'
+                if candidate.get('has_exact_city')
+                else ('service coverage matches delivery requirement' if rfq_city_norm else 'delivery location not specified; city coverage not used')
+            ),
             f"coverage:{len(candidate['covered'])}/{len(item_scope)}",
         ]
         if exact_material_ids:
-            reasons.append(f"exact_materials:{exact_count}/{len(exact_material_ids)}")
+            reasons.append(f'exact_materials:{exact_count}/{len(exact_material_ids)}')
         reasons.extend([f'item:{item_id}' for item_id in sorted(candidate['covered'])])
         reasons.extend([f'exact_subcategory_item:{item_id}' for item_id in sorted(candidate.get('exact_subcategory_items', set()))])
+        reasons.extend([f'keyword_item:{item_id}' for item_id in sorted(candidate.get('keyword_items', set()))])
         reasons.extend([f'main_category_item:{item_id}' for item_id in sorted(candidate.get('main_category_items', set()))])
+        reasons.extend([f'ai_semantic_item:{item_id}' for item_id in sorted(candidate.get('ai_items', set()))])
+
         for item_id in sorted(candidate['covered']):
             main, sub = item_scope[item_id]
-            level = 'exact material' if item_id in candidate['exact_items'] else 'exact subcategory'
-            reasons.append(f"Approved {level}: {category_names.get(sub) or requested_by_id[item_id].description}.")
+            if item_id in candidate['exact_items']:
+                level = 'exact material'
+            elif item_id in candidate['exact_subcategory_items']:
+                level = 'exact subcategory'
+            elif item_id in candidate.get('keyword_items', set()):
+                level = 'keyword/catalog match'
+            elif item_id in candidate.get('main_category_items', set()):
+                level = 'main category'
+            else:
+                level = 'AI-assisted semantic match'
+            detail = candidate.get('ai_explanations', {}).get(item_id)
+            label = category_names.get(sub) or category_names.get(main) or requested_by_id[item_id].description
+            reasons.append(f'Approved {level}: {label}.' + (f' {detail}' if detail else ''))
+
         brand_requests = []
         brand_evidence = []
         for item_id in sorted(candidate['covered']):
@@ -381,26 +772,38 @@ def _match_batch(
             saved_brands = set()
             main, sub = item_scope[item_id]
             for cap in candidate['approved_caps']:
-                if not capability_level(cap, item_id, main, sub):
+                if not capability_level(candidate['org'], cap, item_id, main, sub):
                     continue
-                if rfq_city_norm and (cap.city or '').strip().casefold() not in NATIONWIDE_KEYWORDS | {rfq_city_norm}:
+                if not city_covered_by(rfq.city, cap.city)[0]:
                     continue
                 for mid in cap.material_ids or []:
                     product = linked_materials.get(mid)
-                    if not product or not (product.id == item.material_id or
-                                           (sub and product.subcategory_id == sub and product.main_category_id == main)):
+                    if not product or not (
+                        product.id == item.material_id
+                        or (sub and product.subcategory_id == sub and product.main_category_id == main)
+                    ):
                         continue
                     for key, value in (product.specs_template or {}).items():
                         if str(key).strip().casefold() in {'brand', 'manufacturer'} and isinstance(value, str):
                             saved_brands.add(value.strip().casefold())
+            for pb in pricebooks_by_org.get(candidate['org'].id, []):
+                if pb.brand:
+                    saved_brands.add(pb.brand.strip().casefold())
             brand_requests.append(match.group(1).strip())
             brand_evidence.append(bool(requested_brands) and requested_brands.issubset(saved_brands))
+
         if brand_requests and all(brand_evidence):
-            reasons.append('Brand requirement matches approved saved product data: ' + ', '.join(brand_requests)
-                           + '. Availability and brand authorization require quotation confirmation.')
+            reasons.append(
+                'Brand requirement matches approved saved product data: '
+                + ', '.join(brand_requests)
+                + '. Availability and brand authorization require quotation confirmation.'
+            )
         else:
-            reasons.append('Brand compliance is unverified' + (': ' + ', '.join(brand_requests) if brand_requests else '')
-                           + '; requested brands must be confirmed in the supplier quotation.')
+            reasons.append(
+                'Brand compliance is unverified'
+                + (': ' + ', '.join(brand_requests) if brand_requests else '')
+                + '; requested brands must be confirmed in the supplier quotation.'
+            )
         reasons.append('Category eligibility does not confirm technical compliance')
 
         status = 'eligible' if len(candidate['covered']) == len(item_scope) else 'partial'
@@ -418,16 +821,18 @@ def _match_batch(
                 status=status,
             ))
 
-    # Persist non-match diagnostics (Phase 9)
+    # Persist non-match diagnostics
     for org_id, inelig in ineligible_diagnostics.items():
         m = existing_matches.get(org_id)
         diag_reasons = inelig['reasons'] + ['Category eligibility does not confirm technical compliance']
         if m:
             if m.status in {'eligible', 'partial'}:
                 from app.security import audit
-                audit(db, actor, 'rfq.match_eligibility_corrected', rfq.buyer_org_id, m.id,
-                      previous_status=m.status, status=inelig['status'], supplier_org_id=org_id,
-                      historical_invitation_preserved=True)
+                audit(
+                    db, actor, 'rfq.match_eligibility_corrected', rfq.buyer_org_id, m.id,
+                    previous_status=m.status, status=inelig['status'], supplier_org_id=org_id,
+                    historical_invitation_preserved=True,
+                )
             m.score = 0
             m.reasons = diag_reasons
             m.status = inelig['status']
@@ -440,11 +845,14 @@ def _match_batch(
                 status=inelig['status'],
             ))
 
-    # Create invitations for eligible candidates
+    # Create invitations for eligible candidates (duplicate-safe)
     eligible_org_ids = [cand['org'].id for cand in ranked]
-    invited = set(db.scalars(select(Invitation.supplier_org_id).where(
-        Invitation.rfq_id == rfq.id, Invitation.supplier_org_id.in_(eligible_org_ids),
-    )).all())
+    invited = set(db.scalars(
+        select(Invitation.supplier_org_id).where(
+            Invitation.rfq_id == rfq.id,
+            Invitation.supplier_org_id.in_(eligible_org_ids),
+        )
+    ).all()) if eligible_org_ids else set()
     for obj in db.new:
         if isinstance(obj, Invitation) and obj.rfq_id == rfq.id:
             invited.add(obj.supplier_org_id)
@@ -485,12 +893,15 @@ def _match_batch(
             user_id for invitation in invitations
             for user_id in members_by_org.get(invitation.supplier_org_id, [])
         ]
-        db.add_all(Notification(
-            recipient_user_id=user_id,
-            event='rfq.invitation',
-            message=f'New RFQ: {rfq.reference}',
-            status='delivered',
-        ) for user_id in recipients)
+        db.add_all(
+            Notification(
+                recipient_user_id=user_id,
+                event='rfq.invitation',
+                message=f'New RFQ: {rfq.reference}',
+                status='delivered',
+            )
+            for user_id in recipients
+        )
 
         rfq.status = 'collecting_quotes'
     elif invited:
@@ -501,7 +912,7 @@ def _match_batch(
         'eligible_suppliers': len(ranked),
         'new_invitations': len(invitations),
         'invitations': invitations,
-        'evaluated_suppliers': len(candidate_ids),
+        'evaluated_suppliers': len(all_touch_ids),
         'ineligible_suppliers': len(ineligible_diagnostics),
     }
 

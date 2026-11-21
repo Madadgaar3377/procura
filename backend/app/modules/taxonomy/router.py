@@ -15,12 +15,12 @@ from app.modules.taxonomy.review_router import router as category_review
 from app.modules.taxonomy.review_service import analyze_categories, normalize_supported_discipline, serialize_assessment
 from app.response_contracts import (CategoryOut, CategorySummary, IndustryCatalogPage,
                                     IndustryTaxonomyReviewCandidate, MaterialOut, SubcategoryMaterialOut)
-from app.schemas import CategoryIn, CategoryEdit, SubcategoryMaterialIn, MaterialIn, MaterialMasterIn, MaterialRevisionOut, MeasurementUnitIn, MaterialFilterPage
+from app.schemas import CategoryIn, CategoryEdit, SubcategoryMaterialIn, MaterialIn, MaterialMasterIn, MaterialRevisionOut, MeasurementUnitIn, MaterialFilterPage, MaterialGroupIn, MaterialGroupOut
 from app.security import admin_user, audit
 from app.serializers import record
 from app.modules.materials.service import (
     UNIT_NAMES, create_material_record, category_code, ensure_unit, find_exact_material, material_identity,
-    material_snapshot, normalize_category_name, normalize_text, resolve_category,
+    material_snapshot, normalize_category_name, normalize_text, normalize_unit, resolve_category,
 )
 
 from app.response_contracts import UnitOptionOut
@@ -493,6 +493,52 @@ def manage_materials(q:str='',main_category_id:str|None=None,subcategory_id:str|
         value=record(item);value['main_category']=main_name;value['subcategory']=sub_name;items.append(value)
     return {'items':items,'total':total,'limit':limit,'offset':offset,
             'filters':{'q':q,'main_category_id':main_category_id,'subcategory_id':subcategory_id,'unit':unit,'archived':archived,'sort':sort,'direction':direction}}
+
+@router.post('/materials/group',response_model=MaterialGroupOut)
+def save_material_group(payload:MaterialGroupIn,user:User=Depends(admin_user),db:Session=Depends(get_db)):
+    """Save at most 30 definitions atomically. Exact retries reuse stable master IDs.
+
+    No quantities or supplier rates are accepted. Category IDs must already exist.
+    """
+    ids={payload.main_category_id,payload.subcategory_id}-{None}
+    categories={c.id:c for c in db.scalars(select(Category).where(Category.id.in_(ids),Category.active.is_(True)))}
+    main=categories.get(payload.main_category_id);sub=categories.get(payload.subcategory_id)
+    if not main or main.parent_id:raise HTTPException(422,'Choose an active main category')
+    if payload.subcategory_id and (not sub or sub.parent_id!=main.id):raise HTTPException(422,'Subcategory does not belong to this main category')
+    if not sub and db.scalar(select(Category.id).where(Category.parent_id==main.id,Category.active.is_(True)).limit(1)):
+        raise HTTPException(422,'Choose a subcategory')
+    leaf=sub or main
+    # Serialize competing group retries without locking unrelated RFQ/auth tables.
+    db.scalar(select(Category.id).where(Category.id==leaf.id).with_for_update())
+    prepared=[(' '.join(row.description.split()),normalize_unit(row.unit)) for row in payload.rows]
+    if any(len(normalize_text(name))<3 for name,_ in prepared):raise HTTPException(422,'Enter a meaningful material description')
+    codes={unit for _,unit in prepared}
+    unit_rows=db.scalars(select(MeasurementUnit).where(MeasurementUnit.code.in_(codes))).all()
+    if any(not u.active for u in unit_rows):raise HTTPException(422,'Choose an active approved unit')
+    configured={u.code for u in unit_rows}
+    if codes-configured-set(UNIT_NAMES):raise HTTPException(422,'Choose an approved unit')
+    for code in codes-configured:db.add(MeasurementUnit(code=code,name_en=UNIT_NAMES[code],active=True))
+    names={normalize_text(name) for name,_ in prepared}
+    candidates=db.scalars(select(Material).where(Material.category_id==leaf.id,or_(Material.normalized_description.in_(names),Material.name_en.in_([name for name,_ in prepared])))).all()
+    matches={}
+    for item in candidates:matches.setdefault((normalize_text(item.name_en),item.unit),[]).append(item)
+    result=[];created=0
+    for name,unit in prepared:
+        key=(normalize_text(name),unit);existing=matches.get(key,[])
+        if existing:
+            if len(existing)!=1 or not existing[0].active:raise HTTPException(409,'Ambiguous or archived material requires review')
+            material=existing[0]
+            if payload.discipline and material.discipline and payload.discipline!=material.discipline:
+                raise HTTPException(409,'Existing material discipline conflicts with this group')
+        else:
+            identity=material_identity(main_category=main.normalized_name or main.name_en,subcategory=(sub.normalized_name or sub.name_en) if sub else '',description=name,unit=unit,specifications='')
+            material=Material(id=uid(),code='MAT-'+identity[:28].upper(),source_identity=identity,category_id=leaf.id,main_category_id=main.id,subcategory_id=sub.id if sub else None,name_en=name,normalized_description=key[0],unit=unit,source_unit=unit,discipline=payload.discipline,name_ar='',arabic_description='',description='',specs_template={},version=1,active=True)
+            db.add(material);matches[key]=[material];created+=1
+            db.add(MaterialRevision(material_id=material.id,version=1,actor_user_id=user.id,action='created',snapshot=material_snapshot(material)))
+        result.append(material)
+    audit(db,user,'material.group_saved',entity_id=leaf.id,created=created,reused=len(result)-created)
+    db.commit();catalog_cache.invalidate()
+    return {'materials':[record(m) for m in result],'created':created,'reused':len(result)-created}
 
 @router.get('/materials/{material_id}',response_model=MaterialOut)
 def material_detail(material_id:str,db:Session=Depends(get_db)):

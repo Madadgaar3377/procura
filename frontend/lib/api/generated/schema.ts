@@ -12,9 +12,9 @@ export interface Schemas {
   "AuditOut": { "actor_user_id": string | null; "org_id": string | null; "action": string; "entity_id": string | null; "metadata_json": Record<string, unknown>; "id": string; "created_at": string };
   "AutomationMaterial": { "id": string; "description": string; "unit": string };
   "Body_enqueue_api_v1_imports_bulk_suppliers_jobs_post": { "file": string };
-  "Body_preview_api_v1_imports_materials_preview_post": { "file": string; "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null };
+  "Body_preview_api_v1_imports_materials_preview_post": { "file": string; "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null; "approved_only"?: boolean };
   "Body_preview_categories_api_v1_taxonomy_categories_import_preview_post": { "file": string; "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null };
-  "Body_update_preview_options_api_v1_imports_materials__batch_id__preview_options_post": { "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null };
+  "Body_update_preview_options_api_v1_imports_materials__batch_id__preview_options_post": { "discipline"?: string | null; "sheet_name"?: string | null; "column_mapping"?: string | null; "group_mapping"?: string | null };
   "Body_upload_api_v1_imports__kind__post": { "file": string; "sheet_name"?: string | null };
   "Body_upload_api_v1_pricebooks__org_id__bulk_import_post": { "file": string };
   "Body_upload_attachment_api_v1_rfqs__rfq_id__attachments_post": { "file": string };
@@ -91,7 +91,7 @@ export interface Schemas {
   "MatchingRerunOut": { "rfq_id": string; "job_id": string; "job_status": "pending" | "retry" | "processing"; "deduplicated": boolean };
   "MatchingSupplierDiagnostic": { "supplier_org_id": string; "supplier_name": string; "status": string; "reasons": Array<string> };
   "MaterialFilterPage": { "items": Array<Record<string, unknown>>; "total": number; "limit": number; "offset": number; "filters"?: Record<string, unknown> };
-  "MaterialImportPreview": { "batch_id"?: string | null; "status": string; "discipline"?: string | null; "sheets"?: Array<Schemas["MaterialImportSheet"]>; "selected_sheet"?: string | null; "headers"?: Array<string>; "mapping"?: Record<string, string>; "rows"?: number; "valid"?: number; "invalid"?: number; "create"?: number; "update"?: number; "unchanged"?: number; "duplicate_rows"?: number; "created"?: number; "updated_count"?: number; "unchanged_count"?: number; "categories_created"?: number; "completed_rows"?: number; "progress_percent"?: number; "stage"?: string | null; "failure_reason"?: string | null; "new_categories"?: Array<Record<string, unknown>>; "upload_duration_ms"?: number; "parse_duration_ms"?: number; "apply_duration_ms"?: number; "updated_at"?: string | null; "errors"?: number; "conflicts"?: number; "existing_categories_reused"?: number; "job_size"?: number; "batch_size"?: number; "jobs_total"?: number; "current_job"?: number; "current_batch"?: number; "batches_in_job"?: number; "sample"?: Array<Record<string, unknown>>; "issues"?: Array<Record<string, unknown>>; "warnings"?: Array<Record<string, unknown>> };
+  "MaterialImportPreview": { "batch_id"?: string | null; "status": string; "discipline"?: string | null; "sheets"?: Array<Schemas["MaterialImportSheet"]>; "selected_sheet"?: string | null; "headers"?: Array<string>; "mapping"?: Record<string, string>; "rows"?: number; "valid"?: number; "invalid"?: number; "create"?: number; "update"?: number; "unchanged"?: number; "duplicate_rows"?: number; "created"?: number; "updated_count"?: number; "unchanged_count"?: number; "categories_created"?: number; "completed_rows"?: number; "progress_percent"?: number; "stage"?: string | null; "failure_reason"?: string | null; "new_categories"?: Array<Record<string, unknown>>; "detected_groups"?: Array<Record<string, unknown>>; "upload_duration_ms"?: number; "parse_duration_ms"?: number; "apply_duration_ms"?: number; "updated_at"?: string | null; "errors"?: number; "conflicts"?: number; "existing_categories_reused"?: number; "job_size"?: number; "batch_size"?: number; "jobs_total"?: number; "current_job"?: number; "current_batch"?: number; "batches_in_job"?: number; "sample"?: Array<Record<string, unknown>>; "issues"?: Array<Record<string, unknown>>; "warnings"?: Array<Record<string, unknown>> };
   "MaterialImportResult": { "batch_id": string; "status": string; "rows": number; "created": number; "updated": number; "unchanged": number; "errors": number; "categories_created": number };
   "MaterialImportSheet": { "name": string; "eligible": boolean; "header_row"?: number | null; "row_count"?: number; "headers"?: Array<string>; "reason"?: string | null };
   "MaterialIn": { "code": string; "category_id": string; "name_en": string; "name_ar"?: string; "description"?: string; "unit"?: string; "specs_template"?: Record<string, unknown> };
@@ -194,6 +194,20 @@ export interface Schemas {
   "VerifyCreate": { "cr_number": string; "document_key"?: string | null };
   "VerifyOTP": { "phone_country"?: string | null; "phone": string; "code": string };
   "WorkspaceSelectionIn": { "role": "buyer" | "supplier"; "org_id": string };
+  "Body_upload_job_api_v1_rfqs_imports_post": { "file": string; "org_id": string; "draft_key": string; "rfq_id"?: string | null; "ai_enabled"?: boolean };
+  "MaterialGroupIn": { "main_category_id": string; "subcategory_id"?: string | null; "discipline"?: "Civil" | "Mechanical" | "Electrical" | null; "rows": Array<Schemas["MaterialGroupRow"]> };
+  "MaterialGroupOut": { "materials": Array<Record<string, unknown>>; "created": number; "reused": number };
+  "MaterialGroupRow": { "description": string; "unit": string };
+  "PriceGroupIn": { "org_id": string; "main_category_id": string; "subcategory_id"?: string | null; "rows": Array<Schemas["PriceIn"]> };
+  "RFQImportCandidate": { "id": string; "description": string; "main_category_id": string; "subcategory_id"?: string | null; "category": string; "unit": string; "score": number };
+  "RFQImportConfirmation": { "batch_id": string; "lines": Array<Schemas["RFQImportConfirmedLine"]> };
+  "RFQImportConfirmedLine": { "material_id"?: string | null; "main_category_id"?: string | null; "subcategory_id"?: string | null; "description": string; "specifications"?: string; "unit": string; "quantity": string; "key": string };
+  "RFQImportEdit": { "expected_version": number; "description": string; "specifications"?: string; "unit": string; "quantity": number | string; "main_category_id": string; "subcategory_id"?: string | null; "material_id"?: string | null; "accepted"?: boolean; "removed"?: boolean };
+  "RFQImportJob": { "id": string; "status": string; "stage": string; "total": number; "processed": number; "matched": number; "needs_review": number; "unmatched": number; "failed": number; "ai_enabled": boolean; "failure_reason"?: string | null; "headers"?: Array<string>; "column_mapping"?: Record<string, string>; "rows"?: Array<Schemas["RFQImportRow"]> };
+  "RFQImportOptions": { "column_mapping"?: Record<string, string> };
+  "RFQImportRetry": { "row_ids"?: Array<string> };
+  "RFQImportReview": { "action": "accept_high_confidence" | "remove"; "row_ids"?: Array<string> };
+  "RFQImportRow": { "id": string; "row_number": number; "original_description": string; "description": string; "specifications"?: string; "main_category_id"?: string | null; "subcategory_id"?: string | null; "material_id"?: string | null; "unit": string; "quantity": string; "group"?: string; "attributes"?: Record<string, unknown>; "candidates"?: Array<Schemas["RFQImportCandidate"]>; "confidence"?: number; "status": string; "accepted"?: boolean; "removed"?: boolean; "issue"?: string | null; "ai_fallback"?: boolean; "version"?: number };
 }
 export interface Operations {
   "POST /api/v1/auth/register": { body: Schemas["UserRegister"]; response: unknown };
@@ -455,4 +469,15 @@ export interface Operations {
   "GET /api/v1/files/admin/summary": { body: never; response: unknown };
   "GET /health/live": { body: never; response: unknown };
   "GET /health/ready": { body: never; response: unknown };
+  "GET /api/v1/rfqs/imports/template": { body: never; response: unknown };
+  "GET /api/v1/rfqs/imports/recent": { body: never; response: Array<Schemas["RFQImportJob"]> };
+  "POST /api/v1/rfqs/imports": { body: never; response: Schemas["RFQImportJob"] };
+  "GET /api/v1/rfqs/imports/{batch_id}": { body: never; response: Schemas["RFQImportJob"] };
+  "PUT /api/v1/rfqs/imports/{batch_id}/options": { body: Schemas["RFQImportOptions"]; response: Schemas["RFQImportJob"] };
+  "PUT /api/v1/rfqs/imports/{batch_id}/rows/{row_id}": { body: Schemas["RFQImportEdit"]; response: Schemas["RFQImportRow"] };
+  "POST /api/v1/rfqs/imports/{batch_id}/review": { body: Schemas["RFQImportReview"]; response: Schemas["RFQImportJob"] };
+  "POST /api/v1/rfqs/imports/{batch_id}/retry": { body: Schemas["RFQImportRetry"]; response: Schemas["RFQImportJob"] };
+  "POST /api/v1/rfqs/imports/{batch_id}/confirm": { body: never; response: Schemas["RFQImportConfirmation"] };
+  "POST /api/v1/taxonomy/materials/group": { body: Schemas["MaterialGroupIn"]; response: Schemas["MaterialGroupOut"] };
+  "POST /api/v1/pricebooks/group": { body: Schemas["PriceGroupIn"]; response: Record<string, number> };
 }

@@ -250,3 +250,128 @@ def test_transient_failure_is_requeued_and_abandoned_parse_is_resumed(system,mon
     monkeypatch.setattr(imports,'_apply_row',apply)
     with s.db() as db:imports.process_queued_material_imports(db)
     assert s.client.get('/imports/materials/'+key).json()['created']==30
+
+
+def test_group_entry_ten_materials_retry_units_and_permissions(system):
+    s=system
+    with s.db() as db:
+        db.add_all([Category(id='main',code='M',name_en='Plumbing',normalized_name='plumbing'),Category(id='sub',code='S',name_en='Pipes',normalized_name='pipes',parent_id='main'),Category(id='fittings',code='F',name_en='Fittings',normalized_name='fittings',parent_id='main')]);db.commit()
+    body={'main_category_id':'main','subcategory_id':'sub','discipline':'Mechanical','rows':[{'description':f'BCW Pipe diameter {20+i} mm','unit':'M'} for i in range(10)]}
+    result=s.client.post('/taxonomy/materials/group',json=body);assert result.status_code==200,result.text
+    assert result.json()['created']==10
+    ids=[m['id'] for m in result.json()['materials']]
+    retry=s.client.post('/taxonomy/materials/group',json=body).json()
+    assert retry['created']==0 and retry['reused']==10 and [m['id'] for m in retry['materials']]==ids
+    next_group={**body,'subcategory_id':'fittings','rows':[{'description':'BCW Pipe Tee diameter 32 mm','unit':'PCS'}]}
+    assert s.client.post('/taxonomy/materials/group',json=next_group).json()['created']==1
+    invalid={**body,'rows':[{'description':'Valid pipe 99mm','unit':'M'},{'description':'Invalid unit pipe','unit':'INVALID'}]}
+    assert s.client.post('/taxonomy/materials/group',json=invalid).status_code==422
+    assert s.client.post('/taxonomy/materials/group',json={**body,'main_category_id':'sub'}).status_code==422
+    s.actor[0]='buyer';assert s.client.post('/taxonomy/materials/group',json=body).status_code==403
+    with s.db() as db:
+        assert db.scalar(select(func.count()).select_from(Material))==11
+        assert db.scalar(select(func.count()).select_from(Category))==3
+        assert len(set(db.scalars(select(Material.normalized_description))))==11
+        assert {m.discipline for m in db.scalars(select(Material))}=={'Mechanical'}
+
+
+def test_grouped_headings_csv_mapping_approved_categories_only(system):
+    s=system
+    with s.db() as db:
+        db.add_all([Category(id='main',code='M',name_en='Plumbing',normalized_name='plumbing'),Category(id='pipes',code='P',name_en='Approved pipes',normalized_name='approved pipes',parent_id='main'),Category(id='fits',code='F',name_en='Approved fittings',normalized_name='approved fittings',parent_id='main')]);db.commit()
+    content=b'Main Category,Subcategory,Description,Unit,Quantity\n,,PIPES,,\n,,BCW Pipe diameter 20mm,M,128.38\n,,BCW Pipe diameter 25mm,M,27.17\n,,PIPE FITTINGS,,\n,,BCW Tee diameter 32mm,PCS,0\n'
+    response=s.client.post('/imports/materials/preview',files={'file':('groups.csv',content,'text/csv')},data={'approved_only':'true'})
+    assert response.status_code==202,response.text
+    key=response.json()['batch_id'];preview=parse(s,key)
+    assert preview['rows']==3 and preview['conflicts']==3 and len(preview['detected_groups'])==2
+    mapping={g['key']:{'main_category_id':'main','subcategory_id':'pipes' if g['subcategory']=='PIPES' else 'fits'} for g in preview['detected_groups']}
+    import json
+    mapped=s.client.post(f'/imports/materials/{key}/preview-options',data={'group_mapping':json.dumps(mapping),'discipline':'Mechanical'})
+    assert mapped.status_code==202,mapped.text
+    preview=parse(s,key);assert preview['create']==3 and preview['new_categories']==[],preview
+    assert s.client.post(f'/imports/materials/{key}/confirm').status_code==200
+    with s.db() as db:imports.process_queued_material_imports(db)
+    with s.db() as db:
+        assert db.scalar(select(func.count()).select_from(Category))==3
+        materials=db.scalars(select(Material)).all();assert len(materials)==3
+        assert {m.name_en for m in materials}=={'BCW Pipe diameter 20mm','BCW Pipe diameter 25mm','BCW Tee diameter 32mm'}
+        assert all(not hasattr(m,'quantity') for m in materials)
+
+
+def test_different_specifications_are_flagged_for_review_not_merged(system):
+    s=system
+    book=Workbook();page=book.active
+    page.append(['Main Category','Subcategory','Description','Unit','Technical specifications'])
+    page.append(['Plumbing','Pipes','BCW Pipe diameter 20mm','M','Grade A'])
+    page.append(['Plumbing','Pipes','BCW Pipe diameter 20mm','M','Grade B'])
+    out=BytesIO();book.save(out)
+    key=stage(s,out.getvalue());preview=parse(s,key)
+    assert preview['create']==1 and preview['conflicts']==1 and preview['duplicate_rows']==0,preview
+
+
+def test_group_reuses_legacy_material_without_normalized_description(system):
+    s=system
+    with s.db() as db:
+        db.add(Category(id='main',code='M',name_en='Pipes',normalized_name='pipes'));db.flush()
+        db.add(Material(id='legacy',code='LEGACY',name_en='Pipe diameter 20mm',normalized_description=None,unit='M',category_id='main',main_category_id='main',active=True));db.commit()
+    body={'main_category_id':'main','rows':[{'description':'Pipe diameter 20mm','unit':'M'}]}
+    response=s.client.post('/taxonomy/materials/group',json=body)
+    assert response.status_code==200,response.text
+    assert response.json()['created']==0 and response.json()['materials'][0]['id']=='legacy'
+
+
+def test_row_discipline_precedence_and_errors():
+    mapping = {'discipline':'Discipline','main_category':'Main','material_name':'Description','unit':'Unit'}
+    rows = [{'_row':i,'Discipline':value,'Main':'Concrete','Description':'Concrete material','Unit':'M3'}
+            for i,value in enumerate([' civil ', 'ELECTRICAL', 'Mechanical', '', 'Plumbing'], 2)]
+    prepared = imports._prepared(rows, mapping, 'Mechanical')
+    assert [r['raw']['_discipline'] for r in prepared[:4]] == ['Civil','Electrical','Mechanical','Mechanical']
+    assert prepared[4]['status'] == 'invalid'
+    assert imports._prepared([rows[3]], mapping, '')[0]['status'] == 'invalid'
+
+
+@pytest.mark.parametrize('fallback', ['', 'Civil'])
+def test_mixed_discipline_rows(system, fallback):
+    s=system; book=Workbook(); page=book.active; page.title='Materials'
+    page.append(['Discipline','Main Category','Subcategory','Description','Unit'])
+    rows=[[' civil ','Concrete','Mix','Concrete mix 30MPa','M3'],['ELECTRICAL','Cables','Copper','Copper cable 10mm','M'],['Mechanical','Pipes','Steel','Steel pipe 20mm','M'],['Electrical','Cables','Copper','Copper cable 10mm','M'],['Invalid','Pipes','Steel','Invalid pipe 40mm','M'],['','Unmapped','Other','Fallback material 50mm','PCS']]
+    for row in rows:page.append(row)
+    out=BytesIO();book.save(out)
+    def upload():
+        return s.client.post('/imports/materials/preview',files={'file':('mixed.xlsx',out.getvalue())},data={'discipline':fallback}).json()['batch_id']
+    key=upload();preview=parse(s,key)
+    assert preview['duplicate_rows']==1
+    assert preview['invalid']==(1 if fallback else 2)
+    s.client.post(f'/imports/materials/{key}/confirm')
+    with s.db() as db:imports.process_queued_material_imports(db)
+    state=s.client.get('/imports/materials/'+key).json()
+    assert state['status']=='completed_with_errors'
+    assert state['created']==(4 if fallback else 3)
+    assert state['completed_rows']==6 and state['progress_percent']==100
+    with s.db() as db:
+        records={m.name_en:m.discipline for m in db.scalars(select(Material))}
+        assert records['Copper cable 10mm']=='Electrical'
+        assert records['Steel pipe 20mm']=='Mechanical'
+    assert parse(s,upload())['create']==0
+
+
+def test_category_discipline_inference():
+    mapping={'discipline':'Discipline','main_category':'Main','subcategory':'Sub','material_name':'Description','unit':'Unit'}
+    row={'_row':2,'Main':'Pipes','Sub':'Steel','Description':'Steel pipe 20mm','Unit':'M'}
+    result=imports._prepared([row],mapping,'',{('pipes','steel'):{'Mechanical'}})[0]
+    assert result['status']=='valid' and result['raw']['_discipline']=='Mechanical'
+    result=imports._prepared([row],mapping,'',{('pipes','steel'):{'Mechanical','Civil'}})[0]
+    assert result['status']=='invalid' and 'unknown' in result['issue']
+
+
+
+def test_infer_discipline_from_existing_material_category(system):
+    s=system;key=stage(s,workbook());parse(s,key)
+    s.client.post(f'/imports/materials/{key}/confirm')
+    with s.db() as db:imports.process_queued_material_imports(db)
+    content=workbook(rows=[['2','Reinforcement & Prestressing','Reinforcing Steel','New reinforcement 50mm','KG','']])
+    key=s.client.post('/imports/materials/preview',files={'file':('materials.xlsx',content)}).json()['batch_id']
+    assert parse(s,key)['create']==1
+    with s.db() as db:
+        row=db.scalar(select(ImportedRow).where(ImportedRow.batch_id==key))
+        assert row.raw['_discipline']=='Civil'

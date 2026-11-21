@@ -286,16 +286,51 @@ class MatchingSupplierDiagnostic(ResponseModel):
     status: str
     reasons: list[str]
 
+class MatchingItemDiagnostic(ResponseModel):
+    item_id: str
+    description: str
+    material_id: str | None = None
+    main_category_id: str | None = None
+    main_category_name: str | None = None
+    subcategory_id: str | None = None
+    subcategory_name: str | None = None
+    classified: bool
+    matched_supplier_count: int = 0
+
+
+class MatchingEligibleSupplierDiagnostic(ResponseModel):
+    supplier_org_id: str
+    supplier_name: str
+    status: str
+    score: int
+    match_levels: list[str] = Field(default_factory=list)
+    coverage: str = 'Not recorded'
+    invitation_status: str | None = None
+    quotation_status: str | None = None
+    ai_assisted: bool = False
+    reasons: list[str] = Field(default_factory=list)
+
+
 class MatchingDiagnosticOut(ResponseModel):
     rfq_id: str
     rfq_items: int
+    classified_items: int = 0
+    unclassified_items: int = 0
     active_suppliers_checked: int
     category_candidate_organizations: int
     approved_matching_capabilities: int
+    exact_matches: int = 0
+    category_matches: int = 0
+    ai_assisted_candidates: int = 0
     rejected_by_location: int
     rejected_by_verification_or_eligibility: int
     matches_created: int
     invitations_created: int
+    delivery_summary: dict[str, int] = Field(default_factory=dict)
+    invitation_statuses: dict[str, int] = Field(default_factory=dict)
+    item_diagnostics: list[MatchingItemDiagnostic] = Field(default_factory=list)
+    eligible_suppliers: list[MatchingEligibleSupplierDiagnostic] = Field(default_factory=list)
+    excluded_suppliers: list[MatchingSupplierDiagnostic] = Field(default_factory=list)
     job_status: list[OutboxOut]
     supplier_reasons: list[MatchingSupplierDiagnostic]
 

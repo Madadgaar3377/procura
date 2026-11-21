@@ -2,7 +2,7 @@ from functools import lru_cache
 import json
 from pathlib import Path
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -150,6 +150,9 @@ class Settings(BaseSettings):
     r2_max_document_bytes: int = Field(default=26_214_400, ge=1)
     r2_allowed_origins: str = ''
     matching_batch_size: int = 5
+    gemini_api_key: SecretStr = SecretStr('')
+    gemini_model: str = Field(default='gemini-2.5-flash',pattern=r'^[a-zA-Z0-9.-]+$')
+    gemini_timeout_seconds: float = Field(default=10,ge=0.1,le=30)
     require_capability_approval: bool = False
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / '.env', extra='ignore')
 

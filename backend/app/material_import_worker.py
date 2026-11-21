@@ -11,6 +11,7 @@ from app.modules.imports.materials import process_queued_material_imports
 from app.modules.imports.router import process_queued_supplier_imports
 from app.modules.imports.supplier_jobs import process_supplier_jobs
 from app.modules.pricebooks.worker import process_pricing_jobs
+from app.modules.rfqs.imports import process_rfq_import_jobs
 
 
 def main() -> None:
@@ -23,6 +24,7 @@ def main() -> None:
     while True:
         try:
             with SessionLocal() as db:
+                process_rfq_import_jobs(db)
                 completed = process_queued_material_imports(db)
                 supplier_completed = process_queued_supplier_imports(db)
                 process_supplier_jobs(db)
