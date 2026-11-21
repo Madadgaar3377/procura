@@ -375,3 +375,112 @@ def test_infer_discipline_from_existing_material_category(system):
     with s.db() as db:
         row=db.scalar(select(ImportedRow).where(ImportedRow.batch_id==key))
         assert row.raw['_discipline']=='Civil'
+
+
+FAILED_ROW_HEADERS = ['SN', 'Main Category', 'Sub Category', 'Description/Pacification',
+                      'UNIT', 'Expenditures', 'Source Sheet', 'Source Row', 'Reason']
+PREFIX_CATEGORIES = ['Electrical', 'Electrical - Low Current System', 'Mechanical - HVAC',
+                     'Mechanical - Plumbing', 'Mechanical - Fire Fighting',
+                     'Mechanical - Multi-System (Plumbing / Fire / HVAC)',
+                     'Civil - Roofing', 'Civil - Reinforcement & Prestressing']
+
+
+def failed_row_workbook(count):
+    book = Workbook(); page = book.active; page.title = 'Failed Materials'
+    page.append(FAILED_ROW_HEADERS)
+    for i in range(count):
+        page.append([str(i + 1), PREFIX_CATEGORIES[i % len(PREFIX_CATEGORIES)],
+                     'Original subcategory', f'Material specification {i + 1} mm', 'PCS', '003-20',
+                     'Original sheet', i + 2, 'Row discipline conflicts with the selected import discipline.'])
+    out = BytesIO(); book.save(out); return out.getvalue()
+
+
+@pytest.mark.parametrize('fallback', ['', 'Civil'])
+def test_failed_row_workbook_prefixes_apply_and_reuse(system, fallback):
+    s = system; content = failed_row_workbook(8)
+    def upload():
+        response = s.client.post('/imports/materials/preview',
+            files={'file': ('failed-material-rows.xlsx', content)}, data={'discipline': fallback})
+        assert response.status_code == 202
+        return response.json()['batch_id']
+    key = upload(); preview = parse(s, key)
+    assert preview['valid'] == 8 and preview['invalid'] == 0 and preview['errors'] == 0
+    assert preview['mapping']['material_name'] == 'Description/Pacification'
+    assert preview['mapping']['subcategory'] == 'Sub Category'
+    assert preview['mapping']['unit'] == 'UNIT'
+    assert s.client.post(f'/imports/materials/{key}/confirm').json()['status'] == 'queued'
+    with s.db() as db: imports.process_queued_material_imports(db)
+    state = s.client.get('/imports/materials/' + key).json()
+    assert state['status'] == 'completed' and state['created'] == 8
+    with s.db() as db:
+        categories = {c.id: c for c in db.scalars(select(Category))}
+        originals = {m.id for m in db.scalars(select(Material))}
+        for material in db.scalars(select(Material)):
+            main = categories[material.main_category_id]
+            sub = categories[material.subcategory_id]
+            assert main.name_en in PREFIX_CATEGORIES and main.parent_id is None
+            assert sub.name_en == 'Original subcategory' and sub.parent_id == main.id
+            assert material.discipline == main.name_en.split(' - ')[0]
+    key = upload(); preview = parse(s, key)
+    assert preview['create'] == 0 and preview['unchanged'] == 8
+    s.client.post(f'/imports/materials/{key}/confirm')
+    with s.db() as db: imports.process_queued_material_imports(db)
+    state = s.client.get('/imports/materials/' + key).json()
+    assert state['created'] == 0 and state['unchanged_count'] == 8
+    with s.db() as db:
+        assert {m.id for m in db.scalars(select(Material))} == originals
+        assert db.scalar(select(func.count()).select_from(Category)) == 16
+
+
+def test_5118_failed_export_rows_preview_and_queue(system):
+    s = system
+    response = s.client.post('/imports/materials/preview',
+        files={'file': ('failed-material-rows.xlsx', failed_row_workbook(5118))},
+        data={'discipline': 'Civil', 'sheet_name': '__all__'})
+    assert response.status_code == 202
+    key = response.json()['batch_id']
+    with s.db() as db:
+        assert db.scalar(select(func.count()).select_from(Material)) == 0
+    preview = parse(s, key)
+    assert preview['rows'] == preview['valid'] == preview['create'] == 5118
+    assert preview['invalid'] == preview['errors'] == preview['conflicts'] == 0
+    assert preview['jobs_total'] == 18 and preview['batch_size'] == 30
+    assert preview['issues'] == []
+    response = s.client.post(f'/imports/materials/{key}/confirm')
+    assert response.json()['status'] == 'queued'
+    with s.db() as db:
+        assert db.scalar(select(func.count()).select_from(Material)) == 0
+        imports.process_queued_material_imports(db)
+    state = s.client.get('/imports/materials/' + key).json()
+    assert state['status'] == 'queued' and state['completed_rows'] == state['created'] == 300
+    assert state['errors'] == 0 and state['current_job'] == 2
+
+
+@pytest.mark.parametrize(('main', 'expected'), [
+    (' cIvIl - Roofing ', 'Civil'), ('Electrical', 'Electrical'),
+    ('Mechanical - Unseen category', 'Mechanical'), ('Electricality', None),
+    ('Some Electrical category', None), ('Civilian - Roofing', None)])
+def test_prefix_detection_is_generic_and_bounded(main, expected):
+    assert imports._category_discipline(main) == expected
+
+
+def test_prefix_does_not_bypass_invalid_material_or_explicit_discipline():
+    mapping = imports._column_map(FAILED_ROW_HEADERS + ['Discipline'])
+    base = dict(zip(FAILED_ROW_HEADERS, ['1', 'Mechanical - HVAC', 'Ducts', 'Duct 20mm', 'PCS', '', '', '', '']))
+    base['_row'] = 2
+    row = {**base, 'Discipline': 'Electrical'}
+    result = imports._prepared([row], mapping, 'Civil')[0]
+    assert result['raw']['_discipline'] == 'Electrical'
+    assert result['main'] == 'Mechanical - HVAC'
+    row['Discipline'] = 'Unsupported'
+    assert 'Unsupported discipline' in imports._prepared([row], mapping, 'Civil')[0]['issue']
+    assert imports._prepared([{**base, 'UNIT': ''}], mapping, '')[0]['issue'] == 'Missing unit of measurement'
+
+
+@pytest.mark.parametrize(('main', 'sub'), [('Electrical', 'Electrical'), ('Civil - Roofing', 'Civil - Roofing')])
+def test_prefix_inference_does_not_flatten_duplicate_category_levels(main, sub):
+    mapping = imports._column_map(FAILED_ROW_HEADERS)
+    row = {'_row': 2, 'Main Category': main, 'Sub Category': sub,
+           'Description/Pacification': 'Valid material description', 'UNIT': 'PCS'}
+    result = imports._prepared([row], mapping, '')[0]
+    assert result['status'] == 'invalid' and 'must be distinct' in result['issue']

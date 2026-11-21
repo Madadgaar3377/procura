@@ -290,6 +290,16 @@ def _resolve_discipline(value: str | None, filename: str, sheet_name: str | None
     return matches[0] if len(matches) == 1 else None
 
 
+def _category_discipline(main_category: str) -> str | None:
+    """Recognize only a supported discipline label or its category prefix.
+
+    Detection never edits the category path or treats the discipline as a level.
+    """
+    match = re.match(r'^(civil|electrical|mechanical)(?:\s*[-\u2013\u2014]\s*.+)?$',
+                     _normal(main_category))
+    return DISCIPLINES[match.group(1)] if match else None
+
+
 def _category_code(parent_id: str | None, label: str, discipline: str) -> str:
     return 'IMP-' + _digest(discipline.casefold(), parent_id or 'root', _normal(label))[:28].upper()
 
@@ -389,7 +399,8 @@ def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str, catego
         if mapping.get('main_category'):row[mapping['main_category']]=main
         if mapping.get('subcategory'):row[mapping['subcategory']]=sub
         explicit_discipline = _row_value(row, mapping, 'discipline')
-        row_discipline = DISCIPLINES.get(explicit_discipline.casefold()) if explicit_discipline else discipline
+        row_discipline = (DISCIPLINES.get(explicit_discipline.casefold()) if explicit_discipline
+                          else _category_discipline(main) or DISCIPLINES.get(_clean(discipline).casefold()))
         if explicit_discipline and not row_discipline:
             output.append({'row': row['_row'], 'status': 'invalid', 'issue': f'Unsupported discipline "{explicit_discipline}"; use Civil, Electrical or Mechanical.', 'raw': row})
             continue
@@ -399,15 +410,15 @@ def _prepared(rows: list[dict], mapping: dict[str, str], discipline: str, catego
         row['_discipline'] = row_discipline
         issue = ''
         if not row_discipline:
-            issue = 'Discipline unknown; enter Civil, Electrical or Mechanical on this row or select an upload fallback.'
+            issue = 'Discipline unknown; review this row: enter Civil, Electrical or Mechanical, use a recognized Main Category prefix, or select an upload fallback.'
         elif not name:
             issue = 'Missing material description'
         elif len(_normal(name)) < 3:
             issue = 'Material description must contain 3 to 250 characters'
         elif not main:
             issue = 'Missing main category; a subcategory alone cannot safely establish its parent.'
-        elif sub and _normal(main) in DISCIPLINES and _normal(sub) in DISCIPLINES:
-            issue = 'Do not nest discipline names as both main category and subcategory; keep Discipline in its own column.'
+        elif sub and normalize_category_name(main) == normalize_category_name(sub):
+            issue = 'Main Category and Sub Category must be distinct; discipline detection does not create an extra hierarchy level.'
         elif not unit:
             issue = 'Missing unit of measurement'
         elif any(len(v) > cap for v, cap in ((name, 250), (main, 180), (sub, 180), (unit, 30), (source, 120), (expenditure, 120))):

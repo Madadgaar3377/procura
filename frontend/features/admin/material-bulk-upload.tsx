@@ -48,7 +48,7 @@ export function MaterialBulkUpload({open,onClose,onDone}:{open:boolean;onClose:(
   if(!file||busy||submitting.current)return;
   submitting.current=true;setPosting(true);setError('');setPercent(0);
   try{
-   const body=new FormData();body.set('file',file);body.set('sheet_name','__all__');body.set('approved_only','true');if(discipline)body.set('discipline',discipline);
+   const body=new FormData();body.set('file',file);body.set('sheet_name','__all__');if(discipline)body.set('discipline',discipline);
    const next=await upload<Progress>('imports/materials/preview',body,setPercent);
    setResult(next);setBatchId(next.batch_id||undefined);setPollVersion(v=>v+1);
   }catch(cause){setError(cause instanceof Error?cause.message:t('Import preview failed'));}
@@ -72,18 +72,18 @@ export function MaterialBulkUpload({open,onClose,onDone}:{open:boolean;onClose:(
   if(next.size>8_000_000){setError(t('Maximum workbook size is 8 MB.'));return;}
   setGroupMapping({});setFile(next);setResult(undefined);setBatchId(undefined);setError('');done.current=undefined;
  }
- const stats:[string,number][]=[['Total rows',result?.rows||0],['Completed rows',result?.completed_rows||0],
+ const stats:[string,number][]=[['Total rows',result?.rows||0],['Processed rows',result?.completed_rows||0],
   ['New categories',result?.new_categories?.length||0],['Existing categories reused',result?.existing_categories_reused||0],
   ['New materials',result?.create||0],['Existing materials',(result?.unchanged||0)+(result?.update||0)],
   ['New records',result?.created||0],['Updated records',result?.updated_count||0],['Existing records reused',result?.unchanged_count||0],
-  ['Duplicate rows',result?.duplicate_rows||0],['Invalid rows',result?.invalid||0],['Conflicts requiring review',result?.conflicts||0],['Failed records',result?.errors||0]];
+  ['Duplicate rows',result?.duplicate_rows||0],['Invalid rows',result?.invalid||0],['Conflicts requiring review',result?.conflicts||0],['Rows requiring review',result?.errors||0]];
  return <AdminModal open={open} size="lg" normalize={false} busy={posting} onRequestClose={onClose} aria-labelledby="material-bulk-title" className="material-bulk-dialog">
   <ModalHeader onClose={onClose} disabled={posting}><h2 id="material-bulk-title">{t('Bulk Upload')}</h2><p>{t('Upload once, preview, then import all materials in the background.')}</p></ModalHeader>
   <ModalBody>
    <DownloadAction path="imports/materials/template" filename="civil-materials-template.xlsx" onError={setError}>{t('Download Excel Template')}</DownloadAction>
    <label className="field">{t('Choose Excel File')}<input type="file" accept=".xlsx,.csv" disabled={busy} onChange={e=>{select(e.target.files?.[0]);e.target.value='';}}/></label>
    {file&&<p><bdi>{file.name}</bdi></p>}
-   <label className="field">{t('Discipline')}<select value={discipline} disabled={busy||!!result} onChange={e=>setDiscipline(e.target.value)}><option value="">{t('Auto-detect from Excel')}</option>{['Civil','Electrical','Mechanical'].map(value=><option key={value} value={value}>{t(value)}</option>)}</select></label>
+   <label className="field">{t('Discipline fallback (optional)')}<select value={discipline} disabled={busy||!!result} onChange={e=>setDiscipline(e.target.value)}><option value="">{t('Auto-detect / Mixed disciplines')}</option>{['Civil','Electrical','Mechanical'].map(value=><option key={value} value={value}>{t(value)}</option>)}</select></label>
    {recovering&&<p role="status">{t('Loading saved import...')}</p>}
    {posting&&percent!==undefined&&<ProgressPanel status="uploading" stage={t('Uploading workbook')} percent={percent}/>}
    {error&&<p role="alert" className="form-error">{error}</p>}
