@@ -743,47 +743,101 @@ def _apply_group(db: Session, batch: ImportBatch, item: ImportedRow, user: User)
 
 
 def process_supplier_jobs(db: Session):
-    """Process at most one configured chunk; business data and checkpoint commit together."""
+    """Process at most one configured chunk, committing independently per supplier group.
+
+    Short per-supplier transactions prevent long-held row/FK/advisory locks from
+    blocking authentication or other concurrent API requests.
+    """
     t0 = time.monotonic()
+    batch_id = None
     try:
-        _lock(db, WORKER_LOCK)
         batch = db.scalar(
             select(ImportBatch)
             .where(ImportBatch.kind == KIND, ImportBatch.status == 'queued')
             .order_by(ImportBatch.created_at)
             .limit(1)
-            .with_for_update(skip_locked=True)
         )
         if not batch:
             db.rollback()
             return []
         batch_id = batch.id
         size = (batch.import_options or {}).get('batch_size', 10)
-        items = db.scalars(
+        pending_items = db.scalars(
             select(ImportedRow)
-            .where(ImportedRow.batch_id == batch.id, ImportedRow.status == 'pending')
+            .where(ImportedRow.batch_id == batch_id, ImportedRow.status == 'pending')
             .order_by(ImportedRow.created_at, ImportedRow.id)
             .limit(size)
         ).all()
-        metadata = deepcopy(batch.preview_metadata or {})
-        if not metadata.get('started_at'):
-            metadata['started_at'] = datetime.now(UTC).isoformat()
+        item_ids = [item.id for item in pending_items]
+        # Preload chunk materials into plain immutable tuples (session-independent).
+        material_cache = _preload_chunk_material_cache(db, pending_items) if pending_items else {'_by_norm': {}}
+        db.rollback()
 
-        user = db.get(User, batch.initiated_by)
-        if not user or not user.is_admin or not user.is_active:
-            batch.status = 'failed'
-            batch.failure_reason = 'The initiating administrator no longer has import permission.'
+        if not item_ids:
+            # Finalize an empty or already-drained queued batch cleanly.
+            _lock(db, WORKER_LOCK)
+            batch = db.scalar(
+                select(ImportBatch)
+                .where(ImportBatch.id == batch_id, ImportBatch.status == 'queued')
+                .with_for_update(skip_locked=True)
+            )
+            if not batch:
+                db.rollback()
+                return []
+            metadata = deepcopy(batch.preview_metadata or {})
+            has_issues = bool(
+                batch.errors
+                or metadata.get('capabilities_skipped')
+                or metadata.get('pending_category_mappings')
+                or metadata.get('pending_material_mappings')
+            )
+            batch.status = 'completed_with_errors' if has_issues else 'completed'
+            batch.stage = 'complete'
             metadata['completed_at'] = datetime.now(UTC).isoformat()
             batch.preview_metadata = metadata
+            batch.failure_reason = None
+            batch.retry_count = 0
             db.commit()
-            return []
+            return [batch_id]
 
-        # Preload active taxonomy and chunk materials once per batch to avoid N+1 queries.
-        category_cache = {'_lookup': bulk.build_category_lookup(db)}
-        material_cache = _preload_chunk_material_cache(db, items)
-        cache_token = _CHUNK_CACHES.set((category_cache, material_cache))
-        try:
-            for item in items:
+        processed_count = 0
+        for item_id in item_ids:
+            group_started = time.monotonic()
+            _lock(db, WORKER_LOCK)
+            batch = db.scalar(
+                select(ImportBatch)
+                .where(ImportBatch.id == batch_id, ImportBatch.status == 'queued')
+                .with_for_update(skip_locked=True)
+            )
+            if not batch:
+                db.rollback()
+                break
+            user = db.get(User, batch.initiated_by)
+            if not user or not user.is_admin or not user.is_active:
+                metadata = deepcopy(batch.preview_metadata or {})
+                batch.status = 'failed'
+                batch.failure_reason = 'The initiating administrator no longer has import permission.'
+                metadata['completed_at'] = datetime.now(UTC).isoformat()
+                batch.preview_metadata = metadata
+                db.commit()
+                return []
+
+            item = db.scalar(
+                select(ImportedRow)
+                .where(ImportedRow.id == item_id, ImportedRow.batch_id == batch_id, ImportedRow.status == 'pending')
+                .with_for_update(skip_locked=True)
+            )
+            if not item:
+                db.rollback()
+                continue
+
+            metadata = deepcopy(batch.preview_metadata or {})
+            if not metadata.get('started_at'):
+                metadata['started_at'] = datetime.now(UTC).isoformat()
+
+            category_cache = {'_lookup': bulk.build_category_lookup(db)}
+            cache_token = _CHUNK_CACHES.set((category_cache, material_cache))
+            try:
                 try:
                     with db.begin_nested():
                         counts, warnings = _apply_group(db, batch, item, user)
@@ -812,7 +866,6 @@ def process_supplier_jobs(db: Session):
                     item.raw = {**item.raw, 'row_issues': [issue_obj]}
                     metadata['issues'] = (metadata.get('issues', []) + [issue_obj])[-100:]
                 except (DBAPIError, PoolTimeoutError):
-                    # Infrastructure failures retry the whole uncommitted chunk.
                     raise
                 except Exception as exc:
                     logger.warning('Supplier import row failed batch_id=%s source_id=%s type=%s', batch.id, item.id, type(exc).__name__)
@@ -835,43 +888,51 @@ def process_supplier_jobs(db: Session):
                     }
                     item.raw = {**item.raw, 'row_issues': [issue_obj]}
                     metadata['issues'] = (metadata.get('issues', []) + [issue_obj])[-100:]
-                batch.completed_rows += 1
-        finally:
-            _CHUNK_CACHES.reset(cache_token)
+            finally:
+                _CHUNK_CACHES.reset(cache_token)
 
-        batch.preview_metadata = metadata
-        batch.created = metadata.get('new_suppliers_saved', 0)
-        batch.unchanged_count = metadata.get('existing_suppliers_reused', 0)
-        batch.updated_count = metadata.get('suppliers_updated', 0)
-        if batch.completed_rows >= metadata.get('total_supplier_records_identified', 0):
-            has_issues = bool(
-                batch.errors
-                or metadata.get('capabilities_skipped')
-                or metadata.get('pending_category_mappings')
-                or metadata.get('pending_material_mappings')
-            )
-            batch.status = 'completed_with_errors' if has_issues else 'completed'
-            batch.stage = 'complete'
-            metadata['completed_at'] = datetime.now(UTC).isoformat()
+            batch.completed_rows += 1
             batch.preview_metadata = metadata
-        batch.failure_reason = None
-        batch.retry_count = 0
-        db.commit()
+            batch.created = metadata.get('new_suppliers_saved', 0)
+            batch.unchanged_count = metadata.get('existing_suppliers_reused', 0)
+            batch.updated_count = metadata.get('suppliers_updated', 0)
+            total_groups = metadata.get('total_supplier_records_identified', 0)
+            if batch.completed_rows >= total_groups:
+                has_issues = bool(
+                    batch.errors
+                    or metadata.get('capabilities_skipped')
+                    or metadata.get('pending_category_mappings')
+                    or metadata.get('pending_material_mappings')
+                )
+                batch.status = 'completed_with_errors' if has_issues else 'completed'
+                batch.stage = 'complete'
+                metadata['completed_at'] = datetime.now(UTC).isoformat()
+                batch.preview_metadata = metadata
+            batch.failure_reason = None
+            batch.retry_count = 0
+            db.commit()
+            processed_count += 1
+            logger.info(
+                'Supplier import group committed batch_id=%s completed=%s/%s status=%s elapsed_ms=%.1f',
+                batch_id, batch.completed_rows, total_groups, batch.status,
+                (time.monotonic() - group_started) * 1000.0,
+            )
+
         elapsed_ms = round((time.monotonic() - t0) * 1000, 1)
         logger.info(
-            'Supplier import batch completed batch_id=%s processed_groups=%s total_groups=%s status=%s elapsed_ms=%s',
-            batch_id, len(items), metadata.get('total_supplier_records_identified', 0), batch.status, elapsed_ms,
+            'Supplier import chunk finished batch_id=%s processed_groups=%s elapsed_ms=%s',
+            batch_id, processed_count, elapsed_ms,
         )
-        return [batch_id]
+        return [batch_id] if processed_count else []
     except Exception as exc:
         logger.warning(
             'Supplier import chunk rolled back batch_id=%s type=%s sqlstate=%s',
-            locals().get('batch_id', 'unclaimed'),
+            batch_id or 'unclaimed',
             type(exc).__name__,
             getattr(getattr(exc, 'orig', None), 'sqlstate', None),
         )
         db.rollback()
-        if 'batch_id' in locals():
+        if batch_id:
             batch = db.scalar(select(ImportBatch).where(ImportBatch.id == batch_id).with_for_update())
             if batch and batch.status == 'queued':
                 batch.retry_count += 1

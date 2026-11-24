@@ -196,8 +196,9 @@ def login(payload:Login,request:Request,db:Session=Depends(get_db)):
         normalized='invalid:'+digest(key.casefold())
     recipient_limit(request,scope='login-normalized-identifier',identity=normalized,limit=10,window_seconds=300)
     condition=email_identity(User.email)==normalized if '@' in normalized else User.phone_e164==normalized
-    # Serialize credential check/session creation with reset and admin changes.
-    matches=db.scalars(select(User).where(condition).limit(2).with_for_update()).all()
+    # Serialize credential check/session creation with reset and admin changes
+    # using FOR NO KEY UPDATE so FK KEY SHARE locks from background workers never block login.
+    matches=db.scalars(select(User).where(condition).limit(2).with_for_update(key_share=True)).all()
     user=matches[0] if len(matches)==1 else None
     valid=check_password(user.password_hash if user else _DUMMY_PASSWORD_HASH,payload.password)
     if not user or not valid or not user.is_active:
@@ -214,10 +215,10 @@ class RefreshRequest(BaseModel):
 
 @router.post('/refresh',response_model=TokenPair)
 def refresh(payload:RefreshRequest,db:Session=Depends(get_db)):
-    # Lock user before session, matching password reset/admin lock order.
+    # Lock user with FOR NO KEY UPDATE before session so background worker FK locks never block refresh.
     candidate=db.scalar(select(RefreshSession).where(RefreshSession.token_hash==digest(payload.refresh_token)))
     if not candidate:raise HTTPException(401,'Invalid refresh session')
-    user=db.scalar(select(User).where(User.id==candidate.user_id).with_for_update().execution_options(populate_existing=True))
+    user=db.scalar(select(User).where(User.id==candidate.user_id).with_for_update(key_share=True).execution_options(populate_existing=True))
     session=db.scalar(select(RefreshSession).where(RefreshSession.id==candidate.id).with_for_update().execution_options(populate_existing=True))
     if not session:
         raise HTTPException(401,'Invalid refresh session')
@@ -953,8 +954,11 @@ class BrowserSessionOut(BaseModel):
 
 def set_browser_cookies(response:Response,pair):
     settings=get_settings()
+    cookie_domain=settings.resolved_cookie_domain
     for name,value,seconds in [('procura_access',pair['access_token'],settings.token_minutes*60),('procura_refresh',pair['refresh_token'],settings.refresh_days*86400)]:
-        response.set_cookie(name,value,max_age=seconds,httponly=True,secure=settings.is_production,samesite='lax',path='/')
+        kwargs=dict(max_age=seconds,httponly=True,secure=settings.is_production,samesite='lax',path='/')
+        if cookie_domain:kwargs['domain']=cookie_domain
+        response.set_cookie(name,value,**kwargs)
 
 
 @router.post('/browser/login',response_model=BrowserSessionOut)
@@ -979,5 +983,8 @@ def browser_logout(request:Request,response:Response,db:Session=Depends(get_db))
         if session:
             db.execute(update(RefreshSession).where(RefreshSession.user_id==session.user_id,RefreshSession.family_id==session.family_id).values(revoked=True))
             db.commit()
-    for name in ('procura_access','procura_refresh'):response.delete_cookie(name,path='/')
+    cookie_domain=get_settings().resolved_cookie_domain
+    for name in ('procura_access','procura_refresh'):
+        response.delete_cookie(name,path='/')
+        if cookie_domain:response.delete_cookie(name,path='/',domain=cookie_domain)
     return {'ok':True}

@@ -161,6 +161,7 @@ class Settings(BaseSettings):
     material_match_high_threshold: int = Field(default=90, ge=50, le=100)
     material_match_medium_threshold: int = Field(default=65, ge=30, le=95)
     require_capability_approval: bool = False
+    cookie_domain: str = Field(default='', validation_alias=AliasChoices('cookie_domain', 'COOKIE_DOMAIN'))
 
     @field_validator('gemini_timeout_seconds', mode='before')
     @classmethod
@@ -178,6 +179,27 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.lower() == 'production'
+
+    @property
+    def resolved_cookie_domain(self) -> str | None:
+        configured = self.cookie_domain.strip()
+        if configured:
+            return configured
+        if not self.is_production:
+            return None
+        from urllib.parse import urlparse
+        import ipaddress
+        host = (urlparse(self.frontend_url).hostname or '').strip().lower()
+        if not host or host in {'localhost', '127.0.0.1', '::1'} or '.' not in host:
+            return None
+        try:
+            ipaddress.ip_address(host)
+            return None
+        except ValueError:
+            pass
+        parts = host.split('.')
+        apex = '.'.join(parts[-2:]) if len(parts) >= 2 else host
+        return f'.{apex}'
 
     @property
     def is_test(self) -> bool:

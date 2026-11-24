@@ -159,8 +159,28 @@ def ensure_import_verification(db: Session, org, admin: User | None, *, reason: 
 
 
 def ensure_trade_record(db: Session, org: Organization, batch: ImportBatch, *, raw_trade: str,
-                        raw_type: str, raw_brands: str = "", raw_location: str = "") -> ImportedSupplierTrade:
+                        raw_type: str, raw_brands: str = "", raw_location: str = "",
+                        trade_cache: dict | None = None) -> ImportedSupplierTrade:
     values = (raw_trade.strip(), raw_type.strip(), raw_brands.strip(), raw_location.strip())
+    if trade_cache is not None:
+        org_trades = trade_cache.get(org.id)
+        if org_trades is None:
+            existing = db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id == org.id)).all()
+            org_trades = {
+                (it.raw_trade.strip(), it.raw_type.strip(), it.raw_brands.strip(), it.raw_location.strip()): it
+                for it in existing
+            }
+            trade_cache[org.id] = org_trades
+        found = org_trades.get(values)
+        if found is not None:
+            return found
+        item = ImportedSupplierTrade(org_id=org.id, import_batch_id=batch.id,
+            raw_trade=values[0], raw_type=values[1][:150], raw_brands=values[2],
+            raw_location=values[3][:150], mapping_status="unreviewed")
+        db.add(item)
+        db.flush()
+        org_trades[values] = item
+        return item
     candidates = db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id == org.id)).all()
     for item in candidates:
         if (item.raw_trade.strip(), item.raw_type.strip(), item.raw_brands.strip(), item.raw_location.strip()) == values:

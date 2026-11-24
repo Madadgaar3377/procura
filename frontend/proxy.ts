@@ -3,16 +3,32 @@ import { isSafeInternalRedirect } from '@/lib/auth/route-guard';
 
 const DEMO_MODE = process.env.NEXT_PUBLIC_DEMO_MODE === 'true' && process.env.NODE_ENV !== 'production';
 
+function isCrossOriginApi(request: NextRequest): boolean {
+  const configured = process.env.NEXT_PUBLIC_API_URL;
+  if (!configured) return false;
+  try {
+    const apiHost = new URL(configured).hostname.toLowerCase();
+    const reqHost = (request.headers.get('host') || request.nextUrl.hostname || '').split(':')[0].toLowerCase();
+    return Boolean(apiHost && reqHost && apiHost !== reqHost);
+  } catch {
+    return false;
+  }
+}
+
 export function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname;
 
-  // Protected workspace routes: enforce no-store caching and fast-path
-  // unauthenticated redirects before any protected layout renders.
+  // Protected workspace routes: enforce strict no-store caching so shared CDNs
+  // never cache authenticated HTML/RSC payloads.
   if (pathname.startsWith('/app/') || pathname === '/app') {
     if (!DEMO_MODE) {
       const hasAccess = Boolean(request.cookies.get('procura_access')?.value);
       const hasRefresh = Boolean(request.cookies.get('procura_refresh')?.value);
-      if (!hasAccess && !hasRefresh) {
+      // When the API is same-origin, missing cookies guarantee an unauthenticated
+      // visitor and we can redirect immediately at the proxy. When the API is on
+      // a separate subdomain (e.g. api.procumaterial.com), allow SSR/SessionGate
+      // to verify so legacy host-only cookies cannot cause a /login redirect loop.
+      if (!hasAccess && !hasRefresh && !isCrossOriginApi(request)) {
         const loginUrl = request.nextUrl.clone();
         loginUrl.pathname = '/login';
         const safeNext = isSafeInternalRedirect(pathname + request.nextUrl.search);

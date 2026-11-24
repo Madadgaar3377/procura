@@ -3,7 +3,15 @@ import re
 
 
 def classify(error):
-    detail = str(getattr(error, 'orig', error)).lower()
+    original = getattr(error, 'orig', error)
+    sqlstate = getattr(original, 'sqlstate', None)
+    if sqlstate == '55P03':
+        return {'category': 'lock_not_available', 'action': 'Another transaction held a conflicting row lock beyond lock_timeout. Keep worker transactions short and retry transiently.'}
+    if sqlstate == '57014':
+        return {'category': 'statement_timeout', 'action': 'A database query exceeded statement_timeout. Inspect slow queries or reduce batch size.'}
+    if sqlstate == '40P01':
+        return {'category': 'deadlock_detected', 'action': 'Concurrent transactions acquired locks in conflicting order. Retry the transaction.'}
+    detail = str(original).lower()
     rules = [
         (('does not match host name', 'hostname mismatch', 'host name mismatch'),
          'certificate_hostname_mismatch', 'Use the service hostname covered by the Aiven certificate, not its IP address or an alias; retain verify-full.'),
@@ -49,7 +57,8 @@ def error_metadata(error):
     markers = ('ssl', 'certificate', 'authentication', 'password', 'hostname',
                'timeout', 'refused', 'permission', '10013', '10060', '10061',
                'resolve', 'encoding', 'connection', 'pool', 'endpoint', 'tenant',
-               'startup', 'options', 'fatal', 'unexpected', 'closed', 'eof')
+               'startup', 'options', 'fatal', 'unexpected', 'closed', 'eof',
+               'lock', '55p03', '57014', '40p01', 'deadlock')
     sqlstate = getattr(original, 'sqlstate', None)
     return {
         'driver_error_type': type(original).__name__,

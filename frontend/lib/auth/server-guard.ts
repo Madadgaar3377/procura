@@ -1,5 +1,5 @@
 import 'server-only';
-import { cookies } from 'next/headers';
+import { cookies, headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 import type { Schemas } from '@/lib/api/generated/schema';
 import type { WorkspaceResolution } from '@/features/auth/workspace';
@@ -13,12 +13,25 @@ const ACCESS_COOKIE = 'procura_access';
 const REFRESH_COOKIE = 'procura_refresh';
 
 function upstreamOrigin(): string {
-  const value = process.env.FASTAPI_INTERNAL_URL || process.env.BACKEND_URL || 'http://127.0.0.1:8000';
+  const value = process.env.FASTAPI_INTERNAL_URL || process.env.BACKEND_URL || process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
   const url = new URL(value);
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
     throw new Error('Invalid FASTAPI_INTERNAL_URL');
   }
   return url.origin;
+}
+
+async function isCrossOriginApiRequest(): Promise<boolean> {
+  const configured = process.env.NEXT_PUBLIC_API_URL;
+  if (!configured) return false;
+  try {
+    const apiHost = new URL(configured).hostname.toLowerCase();
+    const headerStore = await headers();
+    const reqHost = (headerStore.get('host') || '').split(':')[0].toLowerCase();
+    return Boolean(apiHost && reqHost && apiHost !== reqHost);
+  } catch {
+    return false;
+  }
 }
 
 async function fetchWithBearer<T>(path: string, accessToken: string): Promise<{ status: number; data: T | null }> {
@@ -58,12 +71,17 @@ export async function enforceServerWorkspaceAccess(
   const loginUrl = safeNext ? `/login?next=${encodeURIComponent(safeNext)}` : '/login';
 
   if (!accessToken && !refreshToken) {
+    // On cross-origin API deployments (www.procumaterial.com -> api.procumaterial.com),
+    // defer to SessionGate (which renders only a neutral loading screen) if cookies
+    // are not yet visible on the frontend host, preventing infinite /login loops.
+    if (await isCrossOriginApiRequest()) {
+      return;
+    }
     redirect(loginUrl);
   }
 
   // If access token is absent (expired cookie) but refresh token exists, allow
-  // the client SessionGate -> /api/backend/auth/me proxy to rotate the session
-  // cleanly without racing refresh-token rotation during SSR.
+  // the client SessionGate -> auth/browser/refresh flow to rotate once cleanly.
   if (!accessToken) {
     return;
   }
@@ -72,12 +90,10 @@ export async function enforceServerWorkspaceAccess(
   try {
     userRes = await fetchWithBearer<Schemas['UserOut']>('auth/me', accessToken);
   } catch {
-    // Backend temporarily unreachable during SSR; let client SessionGate handle retry UI.
     return;
   }
 
   if (userRes.status === 401 || !userRes.data) {
-    // If a refresh token is still present, let client proxy attempt one refresh rotation.
     if (refreshToken) {
       return;
     }

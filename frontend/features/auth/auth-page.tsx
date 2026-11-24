@@ -124,6 +124,14 @@ export default function LiveAuth({ type }: { type: string }) {
     })();
     return () => controller.abort();
   }, [type, router, sessionAttempt]);
+  useEffect(() => {
+    if (!redirecting) return;
+    const timer = window.setTimeout(() => {
+      setRedirecting(false);
+      setError("Navigation took longer than expected. Please try signing in again.");
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [redirecting]);
   const title = register ? "Create your account" : verify ? "Verify your mobile" : forgot ? "Recover your password" : reset ? "Reset your password" : email ? "Verify your email" : "Welcome back";
 
   async function requestCode(recipient?: string) {

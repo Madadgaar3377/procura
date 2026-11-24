@@ -358,7 +358,9 @@ def _supplier_write_lock(db):
 
 
 def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen, metrics=None, *, fallback_discipline: str | None = None, default_country: str | None = None):
-    _supplier_write_lock(db)
+    if not cap_cache.get('_write_locked'):
+        _supplier_write_lock(db)
+        cap_cache['_write_locked'] = True
     name=_clean(row.get("Company Name"));contact_name=_clean(row.get("Contact Person"))
     if len(name) > 220:
         raise ValueError('Company Name must contain at most 220 characters')
@@ -484,23 +486,33 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     org_cache[reliable_key] = org
 
     source_row = row.get("_source_row", number)
-    contact_changes = {}
-    contacts_added, contacts_need_review, contact_ids, contacts_updated = import_contact_row(db, org.id, contact_name, raw_email, raw_phone,
-        country or "SA", f"{batch.id}:{row.get('_source_sheet', '')}:{source_row}", return_ids=True, metrics=contact_changes)
-    for contact_id in contact_ids:
-        imported_contact=db.get(Contact,contact_id)
-        if imported_contact and contact_designation and not imported_contact.role:
-            imported_contact.role=contact_designation[:100]
-            contact_changes['updated_ids'].append(contact_id)
-        if imported_contact and _clean(row.get("Is Primary Contact")).casefold() in {"yes","y","true","1"}:
-            db.query(Contact).filter(Contact.org_id==org.id,Contact.id!=imported_contact.id).update({Contact.is_primary:False},synchronize_session=False)
-            imported_contact.is_primary=True
+    contact_changes = {'created_ids': [], 'updated_ids': []}
+    is_primary_flag = _clean(row.get("Is Primary Contact")).casefold() in {"yes", "y", "true", "1"}
+    contact_cache = cap_cache.setdefault('_contacts', {})
+    contact_key = (org.id, contact_name.casefold(), _clean(raw_email).casefold(), _clean(raw_phone).casefold(), contact_designation.casefold(), is_primary_flag)
+    if contact_key in contact_cache:
+        contacts_added, contacts_need_review, contact_ids, contacts_updated = 0, False, contact_cache[contact_key], 0
+    else:
+        contacts_added, contacts_need_review, contact_ids, contacts_updated = import_contact_row(db, org.id, contact_name, raw_email, raw_phone,
+            country or "SA", f"{batch.id}:{row.get('_source_sheet', '')}:{source_row}", return_ids=True, metrics=contact_changes)
+        for contact_id in contact_ids:
+            imported_contact=db.get(Contact,contact_id)
+            if imported_contact and contact_designation and not imported_contact.role:
+                imported_contact.role=contact_designation[:100]
+                contact_changes['updated_ids'].append(contact_id)
+            if imported_contact and is_primary_flag:
+                db.query(Contact).filter(Contact.org_id==org.id,Contact.id!=imported_contact.id).update({Contact.is_primary:False},synchronize_session=False)
+                imported_contact.is_primary=True
+        if not contacts_need_review:
+            contact_cache[contact_key] = list(contact_ids)
     if contacts_need_review:
         contact_warnings.append(f"Contact data needs review (Excel row {source_row})")
     db.flush()
-    # Imported and admin-created supplier records are verified by this authenticated admin operation.
-    if org.source == "imported":
+    # Imported and admin-created supplier records are verified once per org.
+    verified_orgs = cap_cache.setdefault('_verified_orgs', set())
+    if org.source == "imported" and org.id not in verified_orgs:
         ensure_import_verification(db, org, user)
+        verified_orgs.add(org.id)
     if website or extracted_website:
         org.website = org.website or (website or extracted_website)[:300]
     if not org.country and country: org.country=country[:100]
@@ -519,8 +531,11 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     if mapping:
         # Save the exact employee-to-source responsibility before attempting any
         # taxonomy mapping. A company-level capability alone loses this detail.
+        trade_cache = cap_cache.setdefault('_trades', {})
         source_trade = ensure_trade_record(db, org, batch, raw_trade=source_raw_trade or desc or contact_category,
-            raw_type=path or contact_category or raw_type, raw_brands=_clean(row.get('Brands')), raw_location=city)
+            raw_type=path or contact_category or raw_type, raw_brands=_clean(row.get('Brands')), raw_location=city,
+            trade_cache=trade_cache)
+        mapping['_trade_cache'] = trade_cache
         mapping['source_trade_id'] = source_trade.id
         mapping['import_batch_id'] = batch.id
         mapping['actor'] = user
@@ -552,7 +567,7 @@ def _process_supplier_capability(db,org,mapping,batch,user,row,number,*,category
     if category_cache is None:
         category_cache = {}
     trade=ensure_trade_record(db,org,batch,raw_trade=mapping["source_raw_trade"] or mapping.get('description') or mapping.get('contact_category', ''),raw_type=mapping["path"] or mapping.get('contact_category') or mapping["raw_type"],
-        raw_brands=mapping["raw_brands"],raw_location=mapping["city"])
+        raw_brands=mapping["raw_brands"],raw_location=mapping["city"],trade_cache=mapping.get('_trade_cache'))
     if mapping.get('unrecognized_discipline'):
         trade.mapping_status = 'unreviewed'
         return {

@@ -1,4 +1,4 @@
-"""Small, durable queue runner for large Material Master imports.
+"""Small, durable queue runner for background imports.
 
 Run separately from the API: ``python -m app.material_import_worker``.
 """
@@ -16,18 +16,39 @@ from app.modules.rfqs.imports import process_rfq_import_jobs
 
 
 def process_once() -> bool:
-    """An unavailable queue must not starve the other import queues."""
+    """An unavailable queue must not starve the other import queues.
+
+    Every queue executes in its own session that is always rolled back and
+    closed on exit so no idle-in-transaction connection can ever leak.
+    """
     success = True
+    logger = logging.getLogger(__name__)
     for process in (process_queued_material_imports, process_queued_supplier_imports,
                     process_supplier_jobs, process_pricing_jobs, process_rfq_import_jobs):
+        db = SessionLocal()
         try:
-            with SessionLocal() as db:
-                result = process(db)
+            started = time.monotonic()
+            result = process(db)
             if result:
-                logging.getLogger(__name__).info('Import poll queue=%s progressed', process.__name__)
+                logger.info(
+                    'Import poll queue=%s progressed elapsed_ms=%.1f',
+                    process.__name__,
+                    (time.monotonic() - started) * 1000.0,
+                )
         except Exception as exc:
             success = False
-            logging.getLogger(__name__).error('Import poll failed queue=%s type=%s', process.__name__, type(exc).__name__)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.error('Import poll failed queue=%s type=%s', process.__name__, type(exc).__name__)
+        finally:
+            try:
+                if db.in_transaction():
+                    db.rollback()
+            except Exception:
+                pass
+            db.close()
     return success
 
 
@@ -42,13 +63,18 @@ def main() -> None:
         if not acquired:
             logger.error('Another import worker owns the local queue lock; exiting')
             raise SystemExit(75)
-        logger.info('Import worker started; material jobs use 30-row batches and at most 300 rows per poll')
+        logger.info('Import worker started; supplier groups commit independently with short transactions')
+        last_heartbeat = time.monotonic()
         while True:
             success = process_once()
             if args.once:
                 if not success:
                     raise SystemExit(1)
                 return
+            now = time.monotonic()
+            if now - last_heartbeat >= 60.0:
+                logger.info('Import worker heartbeat status=alive')
+                last_heartbeat = now
             time.sleep(max(0.25, args.interval))
 
 
