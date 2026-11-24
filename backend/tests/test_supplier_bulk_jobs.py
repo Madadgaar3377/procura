@@ -14,7 +14,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import Base, get_db
-from app.models import Capability, Category, Contact, ContactCapability, ImportBatch, ImportedRow, Material, Organization, User
+from app.models import Capability, Category, Contact, ContactCapability, ImportBatch, ImportedRow, ImportedSupplierTrade, Material, Organization, User
 from app.modules.imports import bulk, supplier_jobs as jobs
 from app.security import current_user
 
@@ -86,6 +86,81 @@ def enqueue(client, content):
     return response.json()
 
 
+def test_new_template_and_preview_do_not_import(system):
+    client, sessions, *_ = system
+    response = client.get('/bulk/suppliers/template')
+    assert response.status_code == 200
+    template = load_workbook(BytesIO(response.content))
+    assert [cell.value for cell in template.active[1]] == bulk.SUPPLIER_TEMPLATE_HEADERS
+    assert template.active.freeze_panes == 'A2'
+    assert 'Instructions' in template.sheetnames
+    preview = client.post('/bulk/suppliers/jobs/preview', files={'file': ('template.xlsx', response.content)})
+    assert preview.status_code == 202, preview.text
+    job = preview.json()
+    assert job['status'] == 'preview_ready'
+    with sessions() as db:
+        assert db.scalar(select(func.count(Organization.id))) == 0
+        assert jobs.process_supplier_jobs(db) == []
+    started = client.post(f"/bulk/suppliers/jobs/{job['batch_id']}/start")
+    assert started.status_code == 202
+    assert started.json()['status'] == 'queued'
+
+
+def test_optional_supplier_fields_do_not_require_review(system):
+    client, sessions, *_ = system
+    book = Workbook()
+    sheet = book.active
+    sheet.append(bulk.SUPPLIER_TEMPLATE_HEADERS)
+    sheet.append(['Minimal Supplier', 'Saudi Arabia', *([''] * 15)])
+    stream = BytesIO()
+    book.save(stream)
+    preview = client.post('/bulk/suppliers/jobs/preview', files={'file': ('minimal.xlsx', stream.getvalue())})
+    assert preview.status_code == 202, preview.text
+    job_id = preview.json()['batch_id']
+    assert client.post(f'/bulk/suppliers/jobs/{job_id}/start').status_code == 202
+    drain(sessions)
+    result = client.get(f'/bulk/suppliers/jobs/{job_id}').json()
+    assert result['status'] == 'completed'
+    assert result['warnings'] == []
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Organization)) == 1
+
+
+def test_seventeen_column_rows_reuse_two_level_taxonomy_and_material_master(system):
+    client, sessions, *_ = system
+    with sessions() as db:
+        main = Category(code='MECH-ROOT', name_en='Plumbing', normalized_name='plumbing', active=True)
+        db.add(main); db.flush()
+        sub = Category(code='MECH-PIPES', name_en='Pipes', normalized_name='pipes', parent_id=main.id, active=True)
+        db.add(sub); db.flush()
+        material = Material(code='TEST-PVC-20', name_en='PVC Pipe 20mm', normalized_description='pvc pipe 20mm',
+                            category_id=sub.id, main_category_id=main.id, subcategory_id=sub.id, unit='No.', active=True)
+        db.add(material); db.commit()
+        material_id, sub_id = material.id, sub.id
+    book = Workbook(); sheet = book.active; sheet.append(bulk.SUPPLIER_TEMPLATE_HEADERS)
+    for contact, email, values in [('Ali', 'ali@example.com', 'PVC Pipe 20mm; Unknown Pipe 110mm'),
+                                   ('Sara', 'sara@example.com', 'PVC Pipe 20mm')]:
+        row = {'Company Name': 'Pipe Supplier', 'Country': 'Saudi Arabia', 'Contact Person': contact,
+               'Contact Email': email, 'Discipline': 'Mechanical', 'Category': 'Plumbing',
+               'Subcategory': 'Pipes', 'Materials': values, 'Brands': 'Brand A; Brand B'}
+        sheet.append([row.get(header, '') for header in bulk.SUPPLIER_TEMPLATE_HEADERS])
+    stream = BytesIO(); book.save(stream)
+    preview = client.post('/bulk/suppliers/jobs/preview', files={'file': ('pipes.xlsx', stream.getvalue())})
+    assert preview.status_code == 202, preview.text
+    summary = preview.json()
+    assert summary['total_rows'] == 2 and summary['total_supplier_records_identified'] == 1
+    assert summary['material_values_detected'] == 2 and summary['brands_detected'] == 2
+    assert client.post(f"/bulk/suppliers/jobs/{summary['batch_id']}/start").status_code == 202
+    drain(sessions)
+    with sessions() as db:
+        assert db.scalar(select(func.count()).select_from(Organization)) == 1
+        assert db.scalar(select(func.count()).select_from(Contact)) == 2
+        cap = db.scalar(select(Capability))
+        assert cap.category_id == sub_id and cap.material_ids == [material_id]
+        assert db.scalar(select(func.count()).select_from(Material)) == 1
+        assert any('Unknown Pipe 110mm' in trade.raw_trade for trade in db.scalars(select(ImportedSupplierTrade)).all())
+
+
 def drain(sessions):
     for _ in range(20):
         with sessions() as db:
@@ -143,8 +218,9 @@ def test_split_xlsx_without_reliable_dimensions_imports_every_row(system, dimens
 
 
 @pytest.mark.parametrize('limit', ['rows', 'columns'])
-def test_dimensionless_xlsx_still_enforces_actual_parsing_limits(system, limit):
+def test_dimensionless_xlsx_still_enforces_actual_parsing_limits(system, limit, monkeypatch):
     client, *_ = system
+    monkeypatch.setattr(bulk.get_settings(), 'supplier_import_max_rows', 30_000)
     book = Workbook(write_only=True)
     sheet = book.create_sheet()
     if limit == 'columns':
@@ -307,23 +383,24 @@ def test_group_counts_and_committed_progress(system, count):
     client, sessions, admin, app = system
     content = workbook(count, repeat_contacts=True)
     queued = enqueue(client, content)
+    batch_size = queued['batch_size']
     assert queued['total_supplier_records_identified'] == count
     assert queued['total_rows'] == count * 2
-    assert queued['batches_total'] == ceil(count / 10)
+    assert queued['batches_total'] == ceil(count / batch_size)
     with sessions() as db:
         assert db.scalar(select(func.count()).select_from(Organization)) == 0
         jobs.process_supplier_jobs(db)
     partial = client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()
-    assert partial['new_suppliers_saved'] == min(10, count)
+    assert partial['new_suppliers_saved'] == min(batch_size, count)
     # A second session sees only committed records, matching the displayed counts.
     with sessions() as db:
-        assert db.scalar(select(func.count()).select_from(Organization)) == min(10, count)
+        assert db.scalar(select(func.count()).select_from(Organization)) == min(batch_size, count)
     drain(sessions)  # Opens a new session on every chunk, as after a worker restart.
     result = client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()
     assert result['status'] == 'completed_with_errors'  # Lighting has no approved taxonomy in this fixture.
     assert result['new_suppliers_saved'] == count
     assert result['progress_percent'] == 100
-    assert result['completed_batches'] == ceil(count / 10)
+    assert result['completed_batches'] == ceil(count / batch_size)
     repeated = enqueue(client, content)
     assert repeated['batch_id'] != queued['batch_id']
     drain(sessions)
@@ -390,7 +467,7 @@ def test_partial_failure_retry_is_atomic_and_keeps_contact_assignments(system, m
 
 def test_database_timeout_rolls_back_only_current_chunk_and_can_resume(system, monkeypatch):
     client, sessions, admin, app = system
-    queued = enqueue(client, workbook(12))
+    queued = enqueue(client, workbook(27))
     with sessions() as db:
         jobs.process_supplier_jobs(db)
     original = jobs._apply_group
@@ -401,12 +478,12 @@ def test_database_timeout_rolls_back_only_current_chunk_and_can_resume(system, m
     with sessions() as db:
         jobs.process_supplier_jobs(db)
     partial = client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()
-    assert partial['new_suppliers_saved'] == 10
+    assert partial['new_suppliers_saved'] == queued['batch_size']
     with sessions() as db:
-        assert db.scalar(select(func.count()).select_from(Organization)) == 10
+        assert db.scalar(select(func.count()).select_from(Organization)) == queued['batch_size']
     monkeypatch.setattr(jobs, '_apply_group', original)
     drain(sessions)
-    assert client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()['new_suppliers_saved'] == 12
+    assert client.get(f"/bulk/suppliers/jobs/{queued['batch_id']}").json()['new_suppliers_saved'] == 27
 
 
 def test_real_auth_dependencies_protect_all_job_operations(system):
@@ -422,8 +499,9 @@ def test_real_auth_dependencies_protect_all_job_operations(system):
     assert client.post('/bulk/suppliers/jobs/unknown/retry').status_code == 403
 
 
-def test_bad_excel_and_file_limit(system):
+def test_bad_excel_and_file_limit(system, monkeypatch):
     client, *_ = system
+    monkeypatch.setattr(bulk.get_settings(), 'supplier_import_max_bytes', 8_000_000)
     assert client.post('/bulk/suppliers/jobs', files={'file': ('test.xlsx', b'not a workbook')}).status_code == 422
     assert client.post('/bulk/suppliers/jobs', files={'file': ('test.xlsx', b'x' * 8_000_001)}).status_code == 413
 

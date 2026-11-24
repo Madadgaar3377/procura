@@ -583,7 +583,7 @@ def _match_batch(
     covered_by_any = {item_id for cand in eligible_candidates.values() for item_id in cand['covered']}
     unresolved_item_ids = [item_id for item_id in item_scope if item_id not in covered_by_any]
     settings = get_settings()
-    if unresolved_item_ids and not evaluate_only and settings.gemini_api_key.get_secret_value():
+    if unresolved_item_ids and not evaluate_only and getattr(settings, 'gemini_enabled', True) and settings.gemini_api_key.get_secret_value():
         # If ai_pool_orgs is empty, fetch a small bounded slice of active approved suppliers covering the RFQ city
         if not ai_pool_orgs and supplier_ids is None:
             extra_rows = db.execute(
@@ -776,6 +776,9 @@ def _match_batch(
                     continue
                 if not city_covered_by(rfq.city, cap.city)[0]:
                     continue
+                for brand in cap.brands or []:
+                    if isinstance(brand, str) and brand.strip():
+                        saved_brands.add(brand.strip().casefold())
                 for mid in cap.material_ids or []:
                     product = linked_materials.get(mid)
                     if not product or not (

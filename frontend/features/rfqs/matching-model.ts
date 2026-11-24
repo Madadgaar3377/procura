@@ -12,13 +12,13 @@ export const isSubmitted = (status?: string | null) =>
 export function eligibilityReason(match: Match): string {
   const reasons = match.reasons || [];
   if (match.status === 'location_mismatch' || match.service_coverage_status === 'not covered') return 'location';
-  if (match.status === 'unverified' || match.verification_status === 'unverified') return 'verification';
   if (match.status === 'pending_approval') return 'approval';
   if (match.status === 'inactive') return 'inactive';
   if (match.status === 'coverage_unknown') return 'coverage';
   if (reasons.includes('Missing required project qualifications.')) return 'qualifications';
   if (reasons.includes('Capability was rejected by administration.')) return 'rejected';
   if (match.status === 'no_capability' || reasons.some(reason => /no .*capability|material.*not found|hierarchy does not match/i.test(reason))) return 'capability';
+  if (match.status === 'unverified' || match.verification_status === 'unverified') return 'verification';
   return 'requirements';
 }
 
@@ -27,7 +27,12 @@ export function matchEvidence(match: Match): 'material' | 'subcategory' | 'categ
   const reasons = match.reasons || [];
   if (levels.includes('exact material') || reasons.some(r => r.startsWith('Approved exact material capability in '))) return 'material';
   if (levels.includes('exact subcategory') || reasons.some(r => r.startsWith('Approved exact subcategory capability in '))) return 'subcategory';
-  if (reasons.some(r => r.startsWith('Approved main category capability in '))) return 'category';
+  if (
+    levels.includes('main category')
+    || levels.includes('keyword/catalog match')
+    || levels.includes('AI-assisted semantic match')
+    || reasons.some(r => r.startsWith('Approved main category capability in ') || r.startsWith('Approved keyword/catalog match:') || r.startsWith('Approved AI-assisted semantic match:'))
+  ) return 'category';
   return null;
 }
 

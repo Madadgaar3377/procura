@@ -455,6 +455,7 @@ class Capability(TimeID, Base):
     city: Mapped[str] = mapped_column(String(100), index=True)
     qualifications: Mapped[list] = mapped_column(JSON, default=list)
     material_ids: Mapped[list] = mapped_column(JSON, default=list)
+    brands: Mapped[list] = mapped_column(JSON, default=list, server_default='[]')
     trade_keywords: Mapped[str] = mapped_column(Text, default='')
     mapping_source: Mapped[str | None] = mapped_column(String(30), nullable=True)
     confirmed: Mapped[bool] = mapped_column(Boolean, default=False)

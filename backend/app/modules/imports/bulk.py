@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app import catalog_cache
+from app.config import get_settings
 from app.database import SessionLocal, get_db
 from app.models import Capability, Category, Contact, ContactCapability, ContactChannel, ContactSupplierTrade, ImportBatch, ImportedRow, ImportedSupplierTrade, Material, Organization, User
 from app.modules.materials.service import create_material_record, material_identity, normalize_text, normalize_unit, resolve_category
@@ -28,7 +29,52 @@ from app.security import admin_user, audit
 router = APIRouter(prefix="/bulk", tags=["Bulk Materials and Suppliers"])
 MATERIAL_HEADERS = ["Discipline", "Main Category", "Subcategory", "Description", "Unit"]
 SUPPLIER_HEADERS = ["Company Name","Country","City","Address","Website","CR Number","VAT Number","Company Description","Contact Person","Contact Designation","Contact Email","Contact Phone","Category","Material","Is Primary Contact"]
+SUPPLIER_TEMPLATE_HEADERS = ["Company Name","Country","City","Address","Website","CR Number","VAT Number","Company Description","Contact Person","Contact Designation","Contact Email","Contact Phone","Discipline","Category","Subcategory","Materials","Brands"]
 DISCIPLINES = {"civil": "Civil", "electrical": "Electrical", "mechanical": "Mechanical"}
+DISCIPLINE_ALIASES = {
+    "civil": "Civil", "civ": "Civil", "civil works": "Civil", "civil engineering": "Civil",
+    "electrical": "Electrical", "elec": "Electrical", "elect": "Electrical", "electrical works": "Electrical",
+    "mechanical": "Mechanical", "mech": "Mechanical", "mechanical works": "Mechanical", "hvac": "Mechanical", "plumbing": "Mechanical",
+}
+
+
+def normalize_discipline(value: str | None) -> str:
+    key = " ".join(unicodedata.normalize("NFKC", _clean(value)).casefold().split())
+    return DISCIPLINE_ALIASES.get(key, "")
+
+
+def normalize_company_name(value: str | None) -> str:
+    text = unicodedata.normalize("NFKC", _clean(value)).casefold()
+    text = re.sub(r"[\s\u00a0]+", " ", text).strip()
+    # Strip harmless leading/trailing punctuation without collapsing distinct names
+    text = text.strip(".,;:-_ ")
+    return re.sub(r"\s+", " ", text)
+
+
+def parse_semicolon_list(value: str | None) -> list[str]:
+    raw = _clean(value)
+    if not raw:
+        return []
+    seen: set[str] = set()
+    items: list[str] = []
+    for part in re.split(r"[;\n\r]+", raw):
+        cleaned = " ".join(unicodedata.normalize("NFKC", part).split()).strip()
+        if not cleaned:
+            continue
+        key = cleaned.casefold()
+        if key not in seen:
+            seen.add(key)
+            items.append(cleaned)
+    return items
+
+
+def parse_brands(value: str | None) -> list[str]:
+    return parse_semicolon_list(value)
+
+
+def excel_safe(value) -> str:
+    text = str(value or "")
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@")) else text
 # These source labels identify discrete equipment. Use the existing Material
 # model's No. unit; quantities/units for cables, mixed trades and acronyms remain
 # reviewable instead of guessing metres, reels or a fabricated material.
@@ -50,12 +96,19 @@ def _clean(value):
 def _read(content: bytes, filename: str, headers: list[str]):
     if not filename.casefold().endswith((".xlsx", ".xls")):
         raise HTTPException(415, "Upload an Excel .xlsx or .xls workbook")
-    if len(content) > 8_000_000: raise HTTPException(413, "Maximum workbook size is 8 MB")
+    supplier = headers == SUPPLIER_HEADERS or headers == SUPPLIER_TEMPLATE_HEADERS
+    max_bytes = get_settings().supplier_import_max_bytes if supplier else 8_000_000
+    max_rows = get_settings().supplier_import_max_rows if supplier else 30_000
+    if len(content) > max_bytes: raise HTTPException(413, f"Maximum workbook size is {max_bytes // 1_000_000} MB")
     try:
         if filename.casefold().endswith(".xls"):
             import xlrd
             book = xlrd.open_workbook(file_contents=content, on_demand=True)
-            sheets = [(sheet.name, [[sheet.cell_value(r, c) for c in range(sheet.ncols)] for r in range(sheet.nrows)]) for sheet in book.sheets()]
+            sheets = []
+            for sheet in book.sheets():
+                if sheet.nrows > max_rows + 1 or sheet.ncols > 120:
+                    raise HTTPException(413, 'Workbook exceeds the safe row or column limit')
+                sheets.append((sheet.name, [[sheet.cell_value(r, c) for c in range(sheet.ncols)] for r in range(sheet.nrows)]))
             book.release_resources()
         else:
             with ZipFile(BytesIO(content)) as archive:
@@ -65,8 +118,8 @@ def _read(content: bytes, filename: str, headers: list[str]):
             try:
                 sheets=[]
                 for sheet in book.worksheets:
-                    if sheet.max_row is not None and sheet.max_row > 30_001:
-                        raise HTTPException(413, f"Worksheet {sheet.title} exceeds the 30,000-row limit")
+                    if sheet.max_row is not None and sheet.max_row > max_rows + 1:
+                        raise HTTPException(413, f"Worksheet {sheet.title} exceeds the {max_rows:,}-row limit")
                     if sheet.max_column is not None and sheet.max_column > 120:
                         raise HTTPException(413, 'Workbook exceeds the 120-column parsing limit')
                     # Streaming writers can omit dimensions, and some exporters
@@ -74,8 +127,8 @@ def _read(content: bytes, filename: str, headers: list[str]):
                     sheet.reset_dimensions()
                     values=[]
                     for number, row in enumerate(sheet.iter_rows(values_only=True), 1):
-                        if number > 30_001:
-                            raise HTTPException(413, f"Worksheet {sheet.title} exceeds the 30,000-row limit")
+                        if number > max_rows + 1:
+                            raise HTTPException(413, f"Worksheet {sheet.title} exceeds the {max_rows:,}-row limit")
                         if len(row) > 120:
                             raise HTTPException(413, 'Workbook exceeds the 120-column parsing limit')
                         values.append(row)
@@ -91,7 +144,7 @@ def _read(content: bytes, filename: str, headers: list[str]):
             'xls' if filename.casefold().endswith('.xls') else 'xlsx', len(content), type(exc).__name__)
         raise HTTPException(422, "The uploaded Excel workbook could not be read") from exc
     if not any(values for _,values in sheets): raise HTTPException(422, "The workbook is empty")
-    if headers is SUPPLIER_HEADERS or headers == SUPPLIER_HEADERS:
+    if headers is SUPPLIER_HEADERS or headers == SUPPLIER_HEADERS or headers == SUPPLIER_TEMPLATE_HEADERS:
         aliases={
             "company name":{"company name","supplier name","suppliers name","supplier company","supplier company name","legal company name","company","supplier"},
             "contact person":{"contact person","contact name","contact person name","representative","sales contact"},
@@ -99,10 +152,10 @@ def _read(content: bytes, filename: str, headers: list[str]):
             "email":{"email","email address","e-mail","contact email"},
             "phone":{"phone","mobile","mobile/phone","mobile phone","mobile phone number","telephone","telephone number","phone number","contact number","tel","contact phone"},
             "country":{"country"},"city":{"city","location","supplier location"},"address":{"address","business address"},
-            "category":{"category","supplier category","assigned category"},"material":{"material","specific material","assigned material"},
+            "category":{"category","main category","supplier category","assigned category"},"material":{"material","specific material","assigned material","materials","material description"},
             "is primary contact":{"is primary contact","primary contact","primary"},
             "main category":{"main category","discipline category"},"subcategory":{"subcategory","sub category","sub-category"},
-            "material description":{"material description","product description","description","products","materials","product"},
+            "material description":{"material description","product description","description","products","product"},
             "unit":{"unit","uom","unit of measure"},"discipline":{"discipline"},
             "trade":{"trade","trade products","trade / products","trade/products","products and services","trade / services","services"},
             "type":{"type","supplier type","supplier / manufacturer","supplier/manufacturer","business type"},
@@ -111,17 +164,17 @@ def _read(content: bytes, filename: str, headers: list[str]):
             "vat number":{"vat number","vat registration","vat registration number"},
             "verification notes":{"verification notes"},
             "company description":{"company description","about company","profile description"}}
-        aliases={canonical:{re.sub(r"[^a-z0-9]+"," ",value.casefold()).strip() for value in values} for canonical,values in aliases.items()}
+        aliases={canonical:{re.sub(r"[^\w]+"," ",unicodedata.normalize("NFKC",value).casefold()).strip() for value in values} for canonical,values in aliases.items()}
         parsed=[]
         for sheet_name,values in sheets:
             header_index=None;header_map={}
             for index,source_row in enumerate(values[:15]):
                 mapped={}
                 for column_index,value in enumerate(source_row):
-                    key=re.sub(r"[^a-z0-9]+"," ",_clean(value).casefold()).strip()
+                    key=re.sub(r"[^\w]+"," ",_clean(value).casefold()).strip()
                     for canonical,choices in aliases.items():
                         if key in choices: mapped.setdefault(canonical,column_index);break
-                if "company name" in mapped and len(mapped)>=2:
+                if "company name" in mapped:
                     header_index=index;header_map=mapped;break
             if header_index is None: continue
             previous_name=""
@@ -143,7 +196,7 @@ def _read(content: bytes, filename: str, headers: list[str]):
                 row={display_keys[key]:value for key,value in canonical_row.items() if key in display_keys}
                 row["_source_sheet"]=sheet_name;row["_source_row"]=physical_row;row["_raw_excel"]=raw_excel
                 parsed.append((physical_row,row))
-                if len(parsed) > 30_000: raise HTTPException(413, 'Workbook exceeds the 30,000-row limit across worksheets')
+                if len(parsed) > max_rows: raise HTTPException(413, f'Workbook exceeds the {max_rows:,}-row limit across worksheets')
         if not parsed: raise HTTPException(422,"No worksheet contains a supplier company-name header")
         return parsed
     values=sheets[0][1]
@@ -176,23 +229,27 @@ def material_template(user: User = Depends(admin_user)):
 
 @router.get("/suppliers/template")
 def supplier_template(user: User = Depends(admin_user)):
-    book=Workbook();sheet=book.active;sheet.title='Supplier Import';sheet.append(SUPPLIER_HEADERS)
+    book=Workbook();sheet=book.active;sheet.title='Supplier Import';sheet.append(SUPPLIER_TEMPLATE_HEADERS)
     examples=[
-        ['Sydney Fine','Saudi Arabia','Jeddah','','','', '', '', 'Heal','Sales','heal@example.com','+966111111111','Lighting','Lighting Fixture','Yes'],
-        ['Sydney Fine','Saudi Arabia','Jeddah','','','', '', '', 'Abby Adeeb Arshad','Sales','abby@example.com','+966222222222','Fixer','Fixer','No'],
-        ['Sydney Fine','Saudi Arabia','Jeddah','','','', '', '', 'Another Contact','Sales','contact@example.com','+966333333333','Generator','Generator','No'],
-        ['ABC Trading','Saudi Arabia','Riyadh','','','', '', '', 'Ali','Sales','ali@example.com','+966444444444','Electrical','Cables','Yes'],
-        ['ABC Trading','Saudi Arabia','Riyadh','','','', '', '', 'Ahmed','Sales','ahmed@example.com','+966555555555','Mechanical','Pumps','No'],
+        ['Example Trading','Saudi Arabia','Riyadh','','','','','','Ali','Sales','ali@example.com','','Electrical','Low Current System','Second Fix','Cable; Conduit','ABB; Siemens'],
+        ['Example Trading','Saudi Arabia','Riyadh','','','','','','Sara','Engineer','sara@example.com','','Electrical','Low Current System','Third Fix','Panel; Switch','Schneider Electric'],
+        ['Example Trading','Saudi Arabia','Riyadh','','','','','','Sara','Engineer','sara@example.com','','Mechanical','Plumbing','Pipes','PVC Pipe; UPVC Pipe',''],
     ]
     for row in examples:sheet.append(row)
     sheet.freeze_panes='A2';sheet.auto_filter.ref=sheet.dimensions
+    from openpyxl.styles import Font, PatternFill, Alignment
+    for cell in sheet[1]:
+        cell.font=Font(bold=True,color='FFFFFF')
+        cell.fill=PatternFill('solid',fgColor='17365D')
+        cell.alignment=Alignment(wrap_text=True)
     for column in sheet.columns:
         letter=column[0].column_letter;sheet.column_dimensions[letter].width=min(38,max(15,max(len(str(cell.value or '')) for cell in column)+2))
-    yes_no=DataValidation(type='list',formula1='"Yes,No"',allow_blank=True);sheet.add_data_validation(yes_no);yes_no.add('O2:O5000')
     instructions=book.create_sheet('Instructions')
     instructions.append(['Supplier Excel Import Instructions'])
     for text in [
-        'Enter company information and the responsible contact/category on each row.',
+        'Use the 17 columns on Supplier Import. Company Name and Country are required.',
+        'The same supplier can appear on multiple rows and is merged into one organization.',
+        'Separate multiple materials and brands with semicolons. Brands do not imply a relationship to every listed material.',
         'For multiple contacts, add multiple rows and repeat the same company name.',
         "Enter each person's own email and phone number; blank contact details are allowed.",
         'Select or type the category that the contact handles. Use the category as it appears in the admin Material Master.',
@@ -300,17 +357,18 @@ def _supplier_write_lock(db):
         db.execute(text('SELECT pg_advisory_xact_lock(717341392)'))
 
 
-def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen, metrics=None):
+def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_cache, material_cache, seen, metrics=None, *, fallback_discipline: str | None = None, default_country: str | None = None):
     _supplier_write_lock(db)
     name=_clean(row.get("Company Name"));contact_name=_clean(row.get("Contact Person"))
     if len(name) > 220:
         raise ValueError('Company Name must contain at most 220 characters')
     raw_email=row.get("Contact Email") or row.get("Email","");raw_phone=row.get("Contact Phone") or row.get("Phone","")
-    country=_clean(row.get("Country"));city=_clean(row.get("City"));address=_clean(row.get("Address"))
+    country=_clean(row.get("Country")) or _clean(default_country);city=_clean(row.get("City"));address=_clean(row.get("Address"))
     main_name=_clean(row.get("Main Category"));sub_name=_clean(row.get("Subcategory"))
-    desc=_clean(row.get("Material") or row.get("Material Description"));unit=_clean(row.get("Unit"))
+    explicit_cat=_clean(row.get("Category"))
+    desc=_clean(row.get("Materials") or row.get("Material") or row.get("Material Description"));unit=_clean(row.get("Unit"))
     contact_designation=_clean(row.get("Contact Designation"))
-    contact_category=_clean(row.get("Category"))
+    contact_category=explicit_cat if not main_name and not sub_name else ""
     website = _clean(row.get("Website"))
     _, normalized_website = extract_website(website)
     website = normalized_website or website
@@ -319,8 +377,14 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     raw_trade = source_raw_trade
     trade_keyword = trade_without_website or source_raw_trade
     raw_type = _clean(row.get("Type"))
-    discipline = _clean(row.get("Discipline"))
-    path = " / ".join(part for part in (discipline, main_name, sub_name) if part)
+    raw_discipline = _clean(row.get("Discipline"))
+    discipline = normalize_discipline(raw_discipline) if raw_discipline else ""
+    unrecognized_discipline = raw_discipline if (raw_discipline and not discipline) else ""
+    normalized_fallback_discipline = normalize_discipline(fallback_discipline) if fallback_discipline else ""
+    brands_list = parse_brands(row.get("Brands"))
+    # The source discipline is classification context, not a category-tree node.
+    # Explicit 17-column category/subcategory values are resolved separately.
+    path = " / ".join(part for part in (discipline, main_name, sub_name) if part) if (main_name or (discipline and not explicit_cat and sub_name)) else ""
     # Use the Excel type only when it explicitly describes a discipline hierarchy.
     if raw_type and raw_type.split("/", 1)[0].strip().casefold() in DISCIPLINES:
         path = raw_type
@@ -331,7 +395,9 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
         if sub_name and sub_name.casefold() not in trade_keyword.casefold():
             trade_keyword=" | ".join(part for part in (trade_keyword,sub_name) if part)
     name = _clean(name)
-    name_key = " ".join(unicodedata.normalize("NFKC", name).casefold().split())
+    name_key = normalize_company_name(name)
+    cr_number = _clean(row.get("CR Number"))
+    vat_number = _clean(row.get("VAT Number"))
     email_values = _supplier_emails(raw_email)
     phone_values = _supplier_phones(raw_phone)
     valid_email = next((email for email in email_values if email["valid"]), None)
@@ -343,9 +409,25 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     reliable_key = name_key or ("email:" + valid_email["value"].casefold() if valid_email else "phone:" + valid_phone["normalized"])
     org = org_cache.get(reliable_key)
     created = False
-    if org is None and name_key:
+    if org is None and cr_number:
         org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True), Organization.is_active.is_(True),
-            Organization.name_normalized == name_key).limit(1))
+            func.lower(func.trim(Organization.cr_number)) == _category_key(cr_number)).limit(1))
+    if org is None and vat_number:
+        org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True), Organization.is_active.is_(True),
+            func.lower(func.trim(Organization.vat_number)) == _category_key(vat_number)).limit(1))
+    if org is None and name_key:
+        candidates = db.scalars(select(Organization).where(Organization.is_supplier.is_(True), Organization.is_active.is_(True),
+            Organization.name_normalized == name_key)).all()
+        compatible = [candidate for candidate in candidates if not country or not candidate.country or
+            _category_key(candidate.country) == _category_key(country)]
+        if len(compatible) > 1 and website:
+            site_key = website.casefold().rstrip("/")
+            by_site = [c for c in compatible if (c.website or "").casefold().rstrip("/") == site_key]
+            if len(by_site) == 1:
+                compatible = by_site
+        if len(compatible) > 1:
+            raise ValueError('Supplier identity is ambiguous; review company name and country')
+        org = compatible[0] if compatible else None
     if org is None and valid_email and not name_key:
         org = db.scalar(select(Organization).where(Organization.is_supplier.is_(True), Organization.is_active.is_(True),
             func.lower(func.trim(Organization.business_email)) == valid_email["value"].casefold()).limit(1))
@@ -364,6 +446,12 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
             raise ValueError('Contact phone belongs to an unrelated organization; review this supplier')
     if org and name_key and org.name_normalized and ' '.join(unicodedata.normalize('NFKC', org.name_normalized).casefold().split()) != name_key and not org.name.startswith('[Imported supplier placeholder:'):
         raise ValueError('Company name conflicts with an existing contact identity; review this supplier')
+    if org:
+        for field, label in (('cr_number', 'CR Number'), ('vat_number', 'VAT Number')):
+            supplied = _clean(row.get(label))
+            stored = _clean(getattr(org, field))
+            if supplied and stored and _category_key(supplied) != _category_key(stored):
+                raise ValueError(f'{label} conflicts with an existing supplier; review the identity')
     profile_fields = ('business_email', 'business_phone', 'city', 'address', 'contact_name', 'country',
                       'website', 'cr_number', 'vat_number', 'description', 'profile_status')
     before_profile = tuple(getattr(org, field) for field in profile_fields) if org else None
@@ -419,10 +507,15 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     if not org.cr_number and row.get("CR Number"): org.cr_number=_clean(row.get("CR Number"))[:80]
     if not org.vat_number and row.get("VAT Number"): org.vat_number=_clean(row.get("VAT Number"))[:80]
     if not org.description and row.get("Company Description"): org.description=_clean(row.get("Company Description"))[:5000]
-    raw_type = raw_type or " / ".join(part for part in (main_name,sub_name) if part)
-    mapping = {"path":path,"raw_trade":trade_keyword,"source_raw_trade":source_raw_trade,"raw_type":raw_type,"raw_brands":_clean(row.get("Brands")),
+    raw_type = raw_type or " / ".join(part for part in (main_name or explicit_cat, sub_name) if part)
+    mapping = {"path":path,"raw_trade":trade_keyword,"source_raw_trade":source_raw_trade,"raw_type":raw_type,"raw_brands":"; ".join(brands_list),
+        "brands": brands_list,
+        "explicit_category":explicit_cat if not main_name else main_name, "explicit_subcategory":sub_name,
+        "source_discipline":discipline, "unrecognized_discipline": unrecognized_discipline,
+        "fallback_discipline": normalized_fallback_discipline,
+        "is_structured_17col": bool(explicit_cat or sub_name or raw_discipline or brands_list),
         "city":city,"description":desc,"unit":unit,"contact_category":contact_category,"contact_material":desc,"contact_ids":contact_ids,
-        "contacts_updated":contacts_updated} if raw_trade or raw_type or row.get("Brands") or contact_category or desc else None
+        "contacts_updated":contacts_updated} if raw_trade or raw_type or brands_list or contact_category or explicit_cat or sub_name or desc else None
     if mapping:
         # Save the exact employee-to-source responsibility before attempting any
         # taxonomy mapping. A company-level capability alone loses this detail.
@@ -454,22 +547,71 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
     return org, created, missing, contact_warnings, contacts_added, mapping
 
 
-def _process_supplier_capability(db,org,mapping,batch,user,row,number):
+def _process_supplier_capability(db,org,mapping,batch,user,row,number,*,category_cache=None,material_cache=None):
     if not mapping:return None
+    if category_cache is None:
+        category_cache = {}
     trade=ensure_trade_record(db,org,batch,raw_trade=mapping["source_raw_trade"] or mapping.get('description') or mapping.get('contact_category', ''),raw_type=mapping["path"] or mapping.get('contact_category') or mapping["raw_type"],
         raw_brands=mapping["raw_brands"],raw_location=mapping["city"])
+    if mapping.get('unrecognized_discipline'):
+        trade.mapping_status = 'unreviewed'
+        return {
+            'status': 'pending',
+            'field': 'Discipline',
+            'code': 'UNRESOLVED_DISCIPLINE',
+            'reason': f"Unrecognized discipline '{mapping['unrecognized_discipline']}'; valid disciplines are Civil, Electrical, or Mechanical",
+        }
+    effective_discipline = mapping.get('source_discipline') or mapping.get('fallback_discipline') or ''
+    if mapping.get('explicit_category'):
+        if mapping.get('explicit_subcategory'):
+            main, sub = _find_supplier_category_path(db, mapping['explicit_category'], mapping['explicit_subcategory'], category_cache, discipline=effective_discipline)
+            if not main or not sub:
+                trade.mapping_status = 'unreviewed'
+                return {
+                    'status': 'pending',
+                    'field': 'Subcategory' if main else 'Category',
+                    'code': 'UNRESOLVED_SUBCATEGORY' if main else 'UNRESOLVED_CATEGORY',
+                    'reason': 'Category/subcategory needs review; existing taxonomy has no unique matching path',
+                }
+            result = _supplier_contact_category_capability(db, org, dict(mapping,
+                contact_category=f'{main.name_en} / {sub.name_en}',
+                resolved_category=sub,
+                contact_material=mapping.get('description', ''),
+                allow_create_material=False), category_cache=category_cache, material_cache=material_cache)
+            trade.mapping_status = 'material_pending_review' if result.get('material_warning') else 'mapped'
+            return result
+        main, _ = _find_supplier_category_path(db, mapping['explicit_category'], '', category_cache, discipline=effective_discipline)
+        if main:
+            result = _supplier_contact_category_capability(db, org, dict(mapping,
+                contact_category=main.name_en,
+                resolved_category=main,
+                contact_material=mapping.get('description', ''),
+                allow_create_material=not mapping.get('is_structured_17col', False)), category_cache=category_cache, material_cache=material_cache)
+            trade.mapping_status = 'material_pending_review' if result.get('material_warning') else 'mapped'
+            return result
+        if mapping.get('is_structured_17col'):
+            trade.mapping_status = 'unreviewed'
+            return {
+                'status': 'pending',
+                'field': 'Category',
+                'code': 'UNRESOLVED_CATEGORY',
+                'reason': f"Category needs review; no matching active category for '{mapping['explicit_category']}'",
+            }
     if not mapping["path"] and mapping.get('raw_trade'):
         # Reuse a unique approved category by its full name regardless of depth.
         key = _category_key(mapping['raw_trade'])
-        matches = db.scalars(select(Category).where(Category.active.is_(True), or_(
-            func.lower(Category.name_en) == key, Category.normalized_name == key))).all()
+        if "_lookup" not in category_cache:
+            category_cache["_lookup"] = build_category_lookup(db)
+        matches = category_cache["_lookup"]["all_by_key"].get(key, [])
         if len(matches) == 1:
             category = matches[0]
-            mapping = dict(mapping, path=(f'{db.get(Category, category.parent_id).name_en} / ' if category.parent_id else '') + category.name_en)
+            parent = category_cache["_lookup"]["by_id"].get(category.parent_id) if category.parent_id else None
+            mapping = dict(mapping, path=(f'{parent.name_en} / ' if parent else '') + category.name_en)
     if not mapping["path"]:
         return _supplier_contact_category_capability(db, org, dict(mapping,
             contact_category=mapping.get('raw_trade', ''),
-            contact_material=mapping.get('description') or mapping.get('raw_trade', '')))
+            contact_material=mapping.get('description') or mapping.get('raw_trade', '')),
+            category_cache=category_cache, material_cache=material_cache)
     return apply_supplier_trade_mapping(db,org=org,trade=trade,raw_path=mapping["path"],
         raw_trade=mapping["raw_trade"],city=mapping["city"],description=mapping["description"],
         unit=mapping["unit"],actor=user,batch_id=batch.id,row_number=row.get("_source_row",number),auto_confirm=True)
@@ -491,22 +633,27 @@ def _link_contact_capability(db,org_id,contact_ids,capability_id,material_ids=No
     return created
 
 
-def _supplier_contact_category_capability(db,org,mapping):
+def _supplier_contact_category_capability(db,org,mapping,*,category_cache=None,material_cache=None):
+    if category_cache is None:
+        category_cache = {}
     raw_category=_clean(mapping.get('contact_category'))
-    parts=[part.strip() for part in raw_category.split('/') if part.strip()]
-    category=None
+    category=mapping.get('resolved_category')
     categories_created = 0
-    if len(parts)>=2:
-        main,sub=_find_supplier_category_path(db,parts[-2],parts[-1],{})
-        category=sub
-    else:
-        key=_category_key(raw_category)
-        matches=db.scalars(select(Category).where(Category.active.is_(True),or_(
-            func.lower(func.trim(Category.name_en))==key,func.lower(func.trim(Category.normalized_name))==key))).all()
-        if key in DISCIPLINES:
-            matches = [item for item in matches if item.parent_id is None]
-        category=matches[0] if len(matches)==1 else None
     if not category:
+        parts=[part.strip() for part in raw_category.split('/') if part.strip()]
+        effective_discipline = mapping.get('source_discipline') or mapping.get('fallback_discipline') or ''
+        if len(parts)>=2:
+            main,sub=_find_supplier_category_path(db,parts[-2],parts[-1],category_cache,discipline=effective_discipline)
+            category=sub
+        else:
+            key=_category_key(raw_category)
+            if "_lookup" not in category_cache:
+                category_cache["_lookup"] = build_category_lookup(db)
+            matches = list(category_cache["_lookup"]["all_by_key"].get(key, ()))
+            if key in DISCIPLINES:
+                matches = [item for item in matches if item.parent_id is None]
+            category=matches[0] if len(matches)==1 else None
+    if not category and raw_category:
         # A source trade can be the name of an approved material rather than a
         # category. Reuse it only when its category is unambiguous.
         material_matches = db.scalars(select(Material).where(Material.active.is_(True),
@@ -516,37 +663,69 @@ def _supplier_contact_category_capability(db,org,mapping):
             candidate = db.get(Category, next(iter(material_categories)))
             if candidate and candidate.active:
                 category = candidate
-    if not category:
+    if not category and raw_category:
         resolved = resolve_supplier_path(db, raw_path=raw_category, create=True)
         category = resolved.category
         categories_created = resolved.categories_created
-        if not category:
-            return {'status':'pending','reason':f'Category mapping needs review: {raw_category}','capability_created':False,'capability_id':None}
+        if categories_created and "_lookup" in category_cache:
+            category_cache.pop("_lookup", None)
+    if not category:
+        return {'status':'pending','field':'Category','code':'UNRESOLVED_CATEGORY','reason':f'Category mapping needs review: {raw_category}','capability_created':False,'capability_id':None}
     city=_clean(mapping.get('city'))
     capability=db.scalar(select(Capability).where(Capability.org_id==org.id,Capability.category_id==category.id,
         func.lower(func.trim(Capability.city))==city.casefold()).with_for_update())
     created=capability is None
     if created:
-        capability=Capability(org_id=org.id,category_id=category.id,city=city,material_ids=[],trade_keywords='',
+        capability=Capability(org_id=org.id,category_id=category.id,city=city,material_ids=[],brands=[],trade_keywords='',
             confirmed=True,accepts_rfqs=True,eligibility_status='enabled',mapping_source='admin_import')
         db.add(capability);db.flush()
+    brands = mapping.get('brands') or parse_brands(mapping.get('raw_brands'))
+    if brands:
+        existing_brands = list(capability.brands or [])
+        seen_brands = {b.casefold() for b in existing_brands if isinstance(b, str)}
+        merged_brands = list(existing_brands)
+        for brand in brands:
+            if brand.casefold() not in seen_brands:
+                seen_brands.add(brand.casefold())
+                merged_brands.append(brand)
+        if len(merged_brands) != len(existing_brands):
+            capability.brands = merged_brands
     material_name=_clean(mapping.get('contact_material'))
     warning=None
     materials_created = 0
     assigned_material_ids = []
+    unmatched_materials: list[str] = []
     if material_name:
-        names = list(dict.fromkeys(part.strip() for part in re.split(r'[;\n]+', material_name) if part.strip()))
+        names = parse_semicolon_list(material_name)
         keys = {normalize_text(name) for name in names}
-        materials = db.scalars(select(Material).where(Material.active.is_(True),Material.normalized_description.in_(keys),
-            or_(Material.category_id==category.id,Material.main_category_id==category.id,Material.subcategory_id==category.id))).all()
-        capability.material_ids = list(dict.fromkeys([*(capability.material_ids or []), *(material.id for material in materials)]))
-        assigned_material_ids.extend(material.id for material in materials)
-        matched = {material.normalized_description for material in materials}
+        matched_materials = []
+        if material_cache is not None and "_by_norm" in material_cache:
+            by_norm = material_cache["_by_norm"]
+            for k in keys:
+                for m_id, m_cat, m_main, m_sub in by_norm.get(k, ()):
+                    if category.id in (m_cat, m_main, m_sub):
+                        matched_materials.append((m_id, k))
+            matched_ids = [m_id for m_id, _ in matched_materials]
+            matched = {k for _, k in matched_materials}
+        else:
+            materials = db.scalars(select(Material).where(Material.active.is_(True),Material.normalized_description.in_(keys),
+                or_(Material.category_id==category.id,Material.main_category_id==category.id,Material.subcategory_id==category.id))).all()
+            matched_ids = [material.id for material in materials]
+            matched = {material.normalized_description for material in materials}
+        if matched_ids:
+            existing_mids = list(capability.material_ids or [])
+            merged_mids = list(dict.fromkeys([*existing_mids, *matched_ids]))
+            if len(merged_mids) != len(existing_mids):
+                capability.material_ids = merged_mids
+            assigned_material_ids.extend(matched_ids)
         missing = [name for name in names if normalize_text(name) not in matched]
         root = db.get(Category, category.parent_id) if category.parent_id else category
-        discipline = DISCIPLINES.get(_category_key(root.name_en))
+        discipline = normalize_discipline(mapping.get('source_discipline')) or DISCIPLINES.get(_category_key(root.name_en)) or normalize_discipline(mapping.get('fallback_discipline'))
         unresolved = []
         for name in missing:
+            if mapping.get('allow_create_material') is False:
+                unresolved.append(name)
+                continue
             normalized = normalize_text(name)
             unit = mapping.get('unit') or ('No.' if normalized in COUNTABLE_SUPPLIER_MATERIALS else '')
             if not discipline or not unit:
@@ -568,13 +747,16 @@ def _supplier_contact_category_capability(db,org,mapping):
                 materials_created += int(made)
             capability.material_ids = list(dict.fromkeys([*(capability.material_ids or []), material.id]))
             assigned_material_ids.append(material.id)
-        missing = unresolved
-        if missing:warning=f'Material was not matched to the selected category: {"; ".join(missing)}'
+        unmatched_materials = unresolved
+        if unmatched_materials:
+            warning=f'Material was not matched to the selected category: {"; ".join(unmatched_materials)}'
     if mapping.get('source_trade_id'):
         source_trade = db.get(ImportedSupplierTrade, mapping['source_trade_id'])
         source_trade.mapping_status = 'material_pending_review' if warning else 'mapped'
     return {'status':'saved','reason':None,'capability_id':capability.id,'capability_created':created,
         'material_ids': list(dict.fromkeys(assigned_material_ids)),
+        'material_mappings_created': len(dict.fromkeys(assigned_material_ids)),
+        'unmatched_materials': unmatched_materials,
         'material_warning':warning,'categories_created':categories_created,'materials_created':materials_created}
 
 
@@ -601,17 +783,49 @@ def _category_key(value):
     return " ".join(unicodedata.normalize("NFKC", _clean(value)).casefold().split())
 
 
-def _find_supplier_category_path(db, main_name, sub_name, category_cache):
-    key = (_category_key(main_name), _category_key(sub_name))
-    if key not in category_cache:
-        all_categories = db.scalars(select(Category).where(Category.active.is_(True))).all()
-        mains = [item for item in all_categories if item.parent_id is None and
-            key[0] in {_category_key(item.name_en), _category_key(item.normalized_name)}]
+def build_category_lookup(db):
+    all_categories = db.scalars(select(Category).where(Category.active.is_(True))).all()
+    by_id = {c.id: c for c in all_categories}
+    mains_by_key: dict[str, list[Category]] = {}
+    subs_by_parent_key: dict[tuple[str, str], list[Category]] = {}
+    all_by_key: dict[str, list[Category]] = {}
+    for c in all_categories:
+        keys = {_category_key(c.name_en), _category_key(c.normalized_name)} - {""}
+        for k in keys:
+            all_by_key.setdefault(k, []).append(c)
+            if c.parent_id is None:
+                mains_by_key.setdefault(k, []).append(c)
+            else:
+                subs_by_parent_key.setdefault((c.parent_id, k), []).append(c)
+    return {
+        "by_id": by_id,
+        "mains_by_key": mains_by_key,
+        "subs_by_parent_key": subs_by_parent_key,
+        "all_by_key": all_by_key,
+        "path_cache": {},
+    }
+
+
+def _find_supplier_category_path(db, main_name, sub_name, category_cache, discipline: str | None = None):
+    if "_lookup" not in category_cache:
+        category_cache["_lookup"] = build_category_lookup(db)
+    lookup = category_cache["_lookup"]
+    disc_norm = normalize_discipline(discipline) if discipline else ""
+    key = (_category_key(main_name), _category_key(sub_name), disc_norm)
+    path_cache = lookup["path_cache"]
+    if key not in path_cache:
+        mains = list(lookup["mains_by_key"].get(key[0], ()))
+        if len(mains) > 1 and disc_norm:
+            by_disc = [m for m in mains if normalize_discipline(getattr(m, "discipline", None)) == disc_norm]
+            if len(by_disc) == 1:
+                mains = by_disc
         main = mains[0] if len(mains) == 1 else None
-        subs = [item for item in all_categories if main and item.parent_id == main.id and
-            key[1] in {_category_key(item.name_en), _category_key(item.normalized_name)}]
-        category_cache[key] = (main, subs[0] if len(subs) == 1 else None)
-    return category_cache[key]
+        sub = None
+        if main and key[1]:
+            subs = list(lookup["subs_by_parent_key"].get((main.id, key[1]), ()))
+            sub = subs[0] if len(subs) == 1 else None
+        path_cache[key] = (main, sub)
+    return path_cache[key]
 
 
 def _supplier_capability(db, org, row, batch, number, cap_cache, category_cache, material_cache):
@@ -660,8 +874,13 @@ def _supplier_capability(db, org, row, batch, number, cap_cache, category_cache,
 
 
 def _supplier_identity_key(row):
-    name = " ".join(unicodedata.normalize("NFKC", _clean(row.get("Company Name"))).casefold().split())
-    if name: return "name:" + name
+    name = normalize_company_name(row.get("Company Name"))
+    country = " ".join(unicodedata.normalize("NFKC", _clean(row.get("Country"))).casefold().split())
+    if name: return "name:" + name + ":" + country
+    cr = _category_key(row.get("CR Number"))
+    if cr: return "cr:" + cr
+    vat = _category_key(row.get("VAT Number"))
+    if vat: return "vat:" + vat
     emails = [item["value"].casefold() for item in _supplier_emails(row.get("Contact Email") or row.get("Email")) if item["valid"]]
     if emails: return "email:" + emails[0]
     phones = [item["normalized"] for item in _supplier_phones(row.get("Contact Phone") or row.get("Phone")) if item["normalized"] and not item["fax"]]

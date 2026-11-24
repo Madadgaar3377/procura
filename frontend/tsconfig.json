@@ -60,7 +60,9 @@
     ".next-saudi-policy/types/**/*.ts",
     ".next-saudi-policy/dev/types/**/*.ts",
     ".next-contact-delivery-build/types/**/*.ts",
-    ".next-contact-delivery-build/dev/types/**/*.ts"
+    ".next-contact-delivery-build/dev/types/**/*.ts",
+    ".next-procumaterial-check/types/**/*.ts",
+    ".next-procumaterial-check/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

@@ -79,9 +79,9 @@ def test_template_has_required_columns_examples_and_instructions_sheet():
     async def consume():return b''.join([chunk async for chunk in response.body_iterator])
     content=asyncio.run(consume());book=load_workbook(BytesIO(content),data_only=True)
     assert book.sheetnames==['Supplier Import','Instructions']
-    assert list(book['Supplier Import'].values)[0]==tuple(bulk.SUPPLIER_HEADERS)
-    assert book['Supplier Import'].max_row==6
-    assert book['Supplier Import']['A2'].value=='Sydney Fine' and book['Supplier Import']['A5'].value=='ABC Trading'
+    assert list(book['Supplier Import'].values)[0]==tuple(bulk.SUPPLIER_TEMPLATE_HEADERS)
+    assert book['Supplier Import'].max_row==4
+    assert book['Supplier Import']['A2'].value=='Example Trading' and book['Supplier Import']['A4'].value=='Example Trading'
     assert any('multiple rows' in str(row[0]).casefold() for row in list(book['Instructions'].values)[1:])
     book.close();engine.dispose()
 

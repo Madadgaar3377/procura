@@ -62,13 +62,15 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
                 materials = link.material_ids if link.material_ids is not None else cap.material_ids or []
                 if item.material_id and item.material_id in materials:
                     ranks.append((0, not link.is_primary))
-                elif not link.material_ids and cap.category_id == item.subcategory_id:
+                elif not link.material_ids and item.subcategory_id and cap.category_id == item.subcategory_id:
                     ranks.append((1, not link.is_primary))
+                elif not link.material_ids and item.main_category_id and cap.category_id == item.main_category_id:
+                    ranks.append((2, not link.is_primary))
             if ranks:
                 rank, secondary = min(ranks)
                 ranked.append((rank, secondary, contact.id, contact))
             elif contact.is_primary and not scopes:
-                ranked.append((2, False, contact.id, contact))
+                ranked.append((3, False, contact.id, contact))
         candidates = {'email': [], 'sms': []}
         if any(c.fax for c in contacts) or any(c.kind == 'fax' for c in channels):
             reasons['sms'].append('invalid_contact')
@@ -79,7 +81,7 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
                 if legacy:
                     values.append(legacy)
                 for value in dict.fromkeys(values):
-                    candidates[channel].append((value, contact.id, contact.name, ['material', 'subcategory', 'primary'][rank], None))
+                    candidates[channel].append((value, contact.id, contact.name, ['material', 'subcategory', 'category', 'primary'][rank], None))
         # Opted-out account destinations cannot re-enter through another identity.
         account_optouts = {'email': set(), 'sms': set()}
         # Authorized account roles are primary procurement fallbacks, never viewers.

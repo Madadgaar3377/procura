@@ -62,7 +62,9 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=2, ge=0, le=50, validation_alias=AliasChoices('db_max_overflow', 'DB_MAX_OVERFLOW'))
     db_pool_timeout: int = Field(default=10, ge=1, le=60, validation_alias=AliasChoices('db_pool_timeout', 'DB_POOL_TIMEOUT'))
     db_pool_recycle: int = Field(default=1800, ge=60, le=7200, validation_alias=AliasChoices('db_pool_recycle', 'DB_POOL_RECYCLE'))
-    supplier_import_batch_size: int = Field(default=10, ge=1, le=35)
+    supplier_import_batch_size: int = Field(default=10, ge=1, le=500)
+    supplier_import_max_rows: int = Field(default=100_000, ge=1000, le=500_000)
+    supplier_import_max_bytes: int = Field(default=25_000_000, ge=1_000_000, le=100_000_000)
     mock_notifications: bool = True
     auth_delivery_auto_dispatch: bool = True
     recovery_minutes: int = Field(default=10, ge=5, le=30)
@@ -153,8 +155,24 @@ class Settings(BaseSettings):
     matching_batch_size: int = 5
     gemini_api_key: SecretStr = SecretStr('')
     gemini_model: str = Field(default='gemini-2.5-flash',pattern=r'^[a-zA-Z0-9.-]+$')
-    gemini_timeout_seconds: float = Field(default=10,ge=0.1,le=30)
+    gemini_enabled: bool = Field(default=True, validation_alias=AliasChoices('gemini_enabled', 'GEMINI_ENABLED'))
+    gemini_timeout_seconds: float = Field(default=10, ge=0.1, le=180)
+    gemini_max_retries: int = Field(default=2, ge=0, le=5, validation_alias=AliasChoices('gemini_max_retries', 'GEMINI_MAX_RETRIES'))
+    material_match_high_threshold: int = Field(default=90, ge=50, le=100)
+    material_match_medium_threshold: int = Field(default=65, ge=30, le=95)
     require_capability_approval: bool = False
+
+    @field_validator('gemini_timeout_seconds', mode='before')
+    @classmethod
+    def _normalize_gemini_timeout(cls, value: object) -> float:
+        try:
+            numeric = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 10.0
+        # Convert accidental millisecond values (e.g. 180000) to seconds safely.
+        if numeric > 1000:
+            numeric = numeric / 1000.0
+        return max(0.1, min(180.0, numeric))
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / '.env', extra='ignore')
 
     @property
