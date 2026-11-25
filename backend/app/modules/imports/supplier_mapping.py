@@ -159,35 +159,45 @@ def ensure_import_verification(db: Session, org, admin: User | None, *, reason: 
 
 
 def ensure_trade_record(db: Session, org: Organization, batch: ImportBatch, *, raw_trade: str,
-                        raw_type: str, raw_brands: str = "", raw_location: str = "",
+                        raw_type: str, raw_brands: str = "", raw_location: str = "", raw_products: str = "",
                         trade_cache: dict | None = None) -> ImportedSupplierTrade:
-    values = (raw_trade.strip(), raw_type.strip(), raw_brands.strip(), raw_location.strip())
+    values = (raw_trade.strip(), raw_type.strip(), raw_brands.strip(), raw_location.strip(), raw_products.strip())
     if trade_cache is not None:
         org_trades = trade_cache.get(org.id)
         if org_trades is None:
             existing = db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id == org.id)).all()
             org_trades = {
-                (it.raw_trade.strip(), it.raw_type.strip(), it.raw_brands.strip(), it.raw_location.strip()): it
+                (it.raw_trade.strip(), it.raw_type.strip(), it.raw_brands.strip(), it.raw_location.strip(), (it.raw_products or '').strip()): it
                 for it in existing
             }
             trade_cache[org.id] = org_trades
         found = org_trades.get(values)
         if found is not None:
             return found
+        legacy = org_trades.get((*values[:4], ''))
+        if legacy is not None and values[4]:
+            legacy.raw_products = values[4]
+            org_trades.pop((*values[:4], ''), None)
+            org_trades[values] = legacy
+            return legacy
         item = ImportedSupplierTrade(org_id=org.id, import_batch_id=batch.id,
             raw_trade=values[0], raw_type=values[1][:150], raw_brands=values[2],
-            raw_location=values[3][:150], mapping_status="unreviewed")
+            raw_location=values[3][:150], raw_products=values[4], mapping_status="unreviewed")
         db.add(item)
         db.flush()
         org_trades[values] = item
         return item
     candidates = db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id == org.id)).all()
     for item in candidates:
-        if (item.raw_trade.strip(), item.raw_type.strip(), item.raw_brands.strip(), item.raw_location.strip()) == values:
+        if (item.raw_trade.strip(), item.raw_type.strip(), item.raw_brands.strip(), item.raw_location.strip(), (item.raw_products or '').strip()) == values:
+            return item
+    for item in candidates:
+        if (item.raw_trade.strip(), item.raw_type.strip(), item.raw_brands.strip(), item.raw_location.strip()) == values[:4] and not item.raw_products and values[4]:
+            item.raw_products = values[4]
             return item
     item = ImportedSupplierTrade(org_id=org.id, import_batch_id=batch.id,
         raw_trade=values[0], raw_type=values[1][:150], raw_brands=values[2],
-        raw_location=values[3][:150], mapping_status="unreviewed")
+        raw_location=values[3][:150], raw_products=values[4], mapping_status="unreviewed")
     db.add(item)
     db.flush()
     return item

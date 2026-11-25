@@ -428,6 +428,7 @@ class ImportedSupplierTrade(TimeID, Base):
     org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
     import_batch_id: Mapped[str] = mapped_column(ForeignKey('import_batches.id'))
     raw_trade: Mapped[str] = mapped_column(Text, default='')
+    raw_products: Mapped[str] = mapped_column(Text, default='', server_default='')
     raw_brands: Mapped[str] = mapped_column(Text, default='')
     raw_type: Mapped[str] = mapped_column(String(150), default='')
     raw_location: Mapped[str] = mapped_column(String(150), default='')

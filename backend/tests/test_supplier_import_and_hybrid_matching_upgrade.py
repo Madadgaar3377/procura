@@ -198,6 +198,9 @@ def test_preview_start_multi_row_brands_idempotency_and_review_report(env):
         assert db.scalar(select(Material).where(Material.name_en == 'Unmatched Cable X')) is None
         pending_trade = db.scalar(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id == alpha.id, ImportedSupplierTrade.mapping_status == 'material_pending_review'))
         assert pending_trade is not None
+        source_products = {trade.raw_products for trade in db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id == alpha.id))}
+        assert {'Cat6a Socket; Unmatched Cable X', 'LED Panel', 'PVC Pipe 20mm; UPVC Pipe'} <= source_products
+        assert alpha.description == 'MEP supplier'
 
     # 3. Download Review Report contains 17 columns + 5 audit columns
     rep = client.get(f"/api/v1/imports/bulk/suppliers/jobs/{prev['batch_id']}/review-report")
@@ -222,6 +225,7 @@ def test_preview_start_multi_row_brands_idempotency_and_review_report(env):
         assert db.scalar(select(func.count()).select_from(Organization)) == 3
         assert db.scalar(select(func.count()).select_from(Contact)) == 2
         assert db.scalar(select(func.count()).select_from(Capability)) == 4
+        assert db.scalar(select(func.count()).select_from(ImportedSupplierTrade)) == 5
 
 
 def test_job_cancellation_and_history(env):

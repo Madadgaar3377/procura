@@ -189,7 +189,7 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
         discipline=parts[0] if parts and parts[0].casefold() in {'civil','electrical','mechanical'} else None
         hierarchy=parts[1:] if discipline else parts
         inspection.append({'id':trade.id,'discipline':discipline,'main_category':hierarchy[0] if hierarchy else None,
-            'subcategory':hierarchy[1] if len(hierarchy)>1 else None,'products':trade.raw_trade or None,
+            'subcategory':hierarchy[1] if len(hierarchy)>1 else None,'products':trade.raw_products or trade.raw_trade or None,
             'brands':[item.strip() for item in trade.raw_brands.split(';') if item.strip()],
             'contact_ids':list(dict.fromkeys(trade_contacts[trade.id])), 'mapping_status':trade.mapping_status})
     for cap in cap_items:

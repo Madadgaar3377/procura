@@ -534,6 +534,7 @@ def _supplier_row(db, row, number, batch, user, org_cache, cap_cache, category_c
         trade_cache = cap_cache.setdefault('_trades', {})
         source_trade = ensure_trade_record(db, org, batch, raw_trade=source_raw_trade or desc or contact_category,
             raw_type=path or contact_category or raw_type, raw_brands=_clean(row.get('Brands')), raw_location=city,
+            raw_products=desc or trade_keyword,
             trade_cache=trade_cache)
         mapping['_trade_cache'] = trade_cache
         mapping['source_trade_id'] = source_trade.id
@@ -567,7 +568,7 @@ def _process_supplier_capability(db,org,mapping,batch,user,row,number,*,category
     if category_cache is None:
         category_cache = {}
     trade=ensure_trade_record(db,org,batch,raw_trade=mapping["source_raw_trade"] or mapping.get('description') or mapping.get('contact_category', ''),raw_type=mapping["path"] or mapping.get('contact_category') or mapping["raw_type"],
-        raw_brands=mapping["raw_brands"],raw_location=mapping["city"],trade_cache=mapping.get('_trade_cache'))
+        raw_brands=mapping["raw_brands"],raw_location=mapping["city"],raw_products=mapping.get('description') or mapping.get('raw_trade', ''),trade_cache=mapping.get('_trade_cache'))
     if mapping.get('unrecognized_discipline'):
         trade.mapping_status = 'unreviewed'
         return {
