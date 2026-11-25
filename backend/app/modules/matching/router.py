@@ -195,7 +195,8 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         {value for item in rfq_items for value in (item.main_category_id,item.subcategory_id) if value}))).all())
     for match,org in match_rows:
         covered=[reason[5:] for reason in (match.reasons or []) if reason.startswith('item:')]
-        public=published_details(db,org.id)
+        directory_visible=bool(org.is_supplier and org.is_active and org.verified_status=='verified')
+        public=published_details(db,org.id) if directory_visible else {}
         invitation_status,quotation_status=invitation_by_supplier.get(org.id,(None,None))
         # Internal markers remain persisted for legacy consumers, never display them.
         internal=('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:','keyword_item:','ai_semantic_item:')
@@ -222,7 +223,8 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
                 else 'unverified — confirm requested brands in quotation'),
             'service_coverage_status':'covered' if match.status in {'eligible','partial'} else ('not covered' if match.status=='location_mismatch' else 'unknown'),
             'invitation_review_required':historical_review,
-            'invitation_status':invitation_status,'quotation_status':quotation_status,'profile_url':f'/suppliers/{org.id}'})
+            'invitation_status':invitation_status,'quotation_status':quotation_status,
+            'profile_url':f'/suppliers/{org.id}' if directory_visible else None})
     invitation_rows=db.execute(select(Invitation,Organization.name,Quotation.status).join(Organization,Organization.id==Invitation.supplier_org_id).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id).order_by(Invitation.id).limit(limit).offset(offset)).all()
     jobs={status:count for status,count in db.execute(select(Outbox.status,func.count()).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).group_by(Outbox.status)).all()}
     latest_job=db.scalar(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc(),Outbox.id.desc()).limit(1))

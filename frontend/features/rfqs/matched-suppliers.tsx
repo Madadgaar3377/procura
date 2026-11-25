@@ -49,7 +49,7 @@ function SupplierRow({ match, city, favorite, toggle, tr }: {
   return <article className={styles.supplier} data-recommended={recommended}>
     <div className={styles.identity}>
       <span className={styles.avatar} aria-hidden="true">{(match.supplier_name || '').slice(0, 2)}</span>
-      <div><h3><Link href={`/suppliers/${encodeURIComponent(match.supplier_org_id)}`}>{match.supplier_name || tr('Supplier profile')}</Link></h3>
+      <div><h3>{match.profile_url?<Link href={match.profile_url}>{match.supplier_name || tr('Supplier profile')}</Link>:match.supplier_name || tr('Supplier profile')}</h3>
         <span className={styles.verification}>{match.verification_status === 'verified'
           ? <><IconCircleCheck size={14}/>{tr('Verified company')}</>
           : tr('Verification pending')}</span>
@@ -68,7 +68,7 @@ function SupplierRow({ match, city, favorite, toggle, tr }: {
       <span className={styles.invitationStatus}>{match.invitation_status === 'accepted' ? tr('Invitation accepted')
         : match.invitation_status === 'declined' ? tr('Invitation declined')
         : match.invitation_status ? tr('Invitation recorded') : tr('No invitation recorded')}</span>
-      <div><Link className={styles.profileLink} href={`/suppliers/${encodeURIComponent(match.supplier_org_id)}`}>{tr('View profile')}<IconArrowUpRight size={15}/></Link>
+      <div>{match.profile_url&&<Link className={styles.profileLink} href={match.profile_url}>{tr('View profile')}<IconArrowUpRight size={15}/></Link>}
         <button type="button" className={styles.favorite} disabled={busy}
           aria-label={`${favorite ? tr('Remove from favorites') : tr('Save as favorite')}: ${match.supplier_name}`}
           aria-pressed={favorite} onClick={async () => { setBusy(true); try { await toggle(match.supplier_org_id, favorite); } finally { setBusy(false); } }}>

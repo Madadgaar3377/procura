@@ -4,7 +4,7 @@ import '@/app/supplier-profile.css';
 import SupplierProducts from './supplier-products';
 import PromotionBadges from './promotion-badges';
 import Link from 'next/link';
-import {useEffect, useState} from 'react';
+import {useState} from 'react';
 import {IconBolt, IconBuilding, IconSettings, IconMapPin, IconPhone, IconMail, IconWorld, IconChevronDown} from '@tabler/icons-react';
 import {useApi} from '@/lib/api/use-api';
 import {assetUrl} from '@/lib/api/client';
@@ -21,16 +21,6 @@ export default function SupplierProfile({id,initialData}:{id:string;initialData?
  const tr=(en:string,ar:string)=>arabic?ar:en;
  const label=(category:Category)=>arabic&&category.name_ar?category.name_ar:category.name_en;
  const [search,setSearch]=useState('');
- const [canManage,setCanManage]=useState(false);
- useEffect(()=>{
-  // The existing endpoint authorizes only this company's owners/managers.
-  // This optional check never gates public profile or related supplier loading.
-  const controller=new AbortController();setCanManage(false);
-  fetch(`/api/backend/organizations/${encodeURIComponent(id)}/public-profile`,{credentials:'same-origin',cache:'no-store',signal:controller.signal})
-   .then(async response=>{if(response.ok){const preferences=await response.json();if(!controller.signal.aborted)setCanManage(Array.isArray(preferences.fields));}})
-   .catch(()=>{});
-  return()=>controller.abort();
- },[id]);
  const supplier=useApi<Supplier>(`directory/suppliers/${encodeURIComponent(id)}?include_profile=true&include_categories=true`);
  const related=useApi<Supplier[]>(`directory/suppliers/${encodeURIComponent(id)}/related?limit=4`);
  const data=supplier.data||initialData;const profile=data?.profile;
@@ -45,7 +35,6 @@ export default function SupplierProfile({id,initialData}:{id:string;initialData?
   <nav className="sp-breadcrumb" aria-label={tr('Breadcrumb','مسار التنقل')}><Link href={`/?lang=${arabic?'ar':'en'}`}>{tr('Home','الرئيسية')}</Link><span aria-hidden="true">/</span><Link href={`/suppliers?lang=${arabic?'ar':'en'}`}>{tr('Supplier Directory','دليل الموردين')}</Link><span aria-hidden="true">/</span><span>{data?.name||tr('Company profile','ملف الشركة')}</span></nav>
   {supplier.error?<div className="sp-state" role="alert"><h1>{unavailable?tr('Company unavailable','الشركة غير متاحة'):tr('Unable to load supplier','تعذر تحميل المورد')}</h1><p>{unavailable?tr('This company is unavailable in the public directory.','هذه الشركة غير متاحة في الدليل العام.'):tr('Please try again. Your navigation has been preserved.','يرجى المحاولة مرة أخرى.')}</p>{!unavailable&&<button className="pm-button pm-button-primary" onClick={supplier.reload}>{tr('Retry','إعادة المحاولة')}</button>}<Link className="pm-text-link" href="/suppliers">{tr('Back to directory','العودة إلى الدليل')}</Link></div>:!data?<div className="sp-loading" role="status" aria-label={tr('Loading company profile','جارٍ تحميل ملف الشركة')}><h1 className="sr-only">{tr('Company profile','ملف الشركة')}</h1><div className="sp-header sp-skeleton"><i/><i/><i/></div><div className="sp-columns"><div className="sp-panel sp-skeleton"><i/><i/><i/></div><div className="sp-panel sp-skeleton"><i/><i/></div></div><div className="sp-related-grid">{[0,1,2].map(i=><div className="sp-panel sp-skeleton" key={i}><i/><i/></div>)}</div></div>:<>
   <header className="sp-header"><div className="sp-identity"><div className="sp-monogram" aria-hidden="true" style={{overflow:'hidden'}}>{data.logo_url?<img src={assetUrl(data.logo_url)} alt={data.name} style={{width:'100%',height:'100%',objectFit:'cover'}}/>:Array.from(data.name.trim())[0]}</div><div>{data.verified&&<span className="sp-verified">✓ {tr('Verified Company','شركة موثقة')}</span>}<PromotionBadges id={data.id}/><h1 dir="auto">{data.name}</h1>{profile?.trading_name&&profile.trading_name!==data.name&&<p className="sp-trading" dir="auto">{profile.trading_name}</p>}<p className="sp-byline">{companyType&&<span>{companyType}</span>}{data.city&&<span>{tr('Office City: ','مدينة المكتب: ')}<bdi>{data.city}</bdi>{profile?.country&&<span><bdi>{profile.country}</bdi></span>}{profile?.region&&<> ? <bdi>{profile.region}</bdi></>}</span>}</p><div className="sp-chips">{groups.map(group=><a href="#supply-capabilities" key={group.id}>{label(group)}</a>)}</div>{profile?.description&&<p className="sp-introduction" dir="auto">{profile.description}</p>}</div></div><div className="sp-header-actions"><span className="sp-eyebrow">{tr('START A CONVERSATION','ابدأ التواصل')}</span>{contacts}<MarketingCTA role="buyer">{tr('Create RFQ','إنشاء طلب عرض سعر')}</MarketingCTA><small>{tr('RFQ invitations depend on category matching and current eligibility.','تعتمد الدعوات على مطابقة الفئات والأهلية الحالية.')}</small></div></header>
-  {canManage&&<div className="sp-owner-note"><span>{tr('Your company profile. Update missing details, publication preferences or pending supply selections.','ملف شركتك. حدّث بياناتك وتفضيلات النشر وفئات التوريد.')}</span><Link className="pm-text-link" prefetch={false} href="/app/supplier/company">{tr('Manage company profile','إدارة ملف الشركة')}</Link></div>}
   <div className="sp-columns"><div className="sp-main">
    <section className="sp-panel"><span className="sp-eyebrow">{tr('THE COMPANY','عن الشركة')}</span><h2>{tr('About Company','نبذة عن الشركة')}</h2><p className="sp-description" dir="auto">{profile?.description||tr('Information not provided.','لم يتم توفير المعلومات.')}</p>{companyType&&<p>{tr('Business classification: ','تصنيف النشاط: ')}{companyType}</p>}</section>
    <SupplierProducts id={data.id} groups={groups}/>   <section className="sp-panel"><span className="sp-eyebrow">{tr('WHERE THEY SERVE','نطاق الخدمة')}</span><h2>{tr('Service Locations','مناطق الخدمة')}</h2><p>{tr('Saved service coverage, separate from the company office location.','نطاق الخدمة المسجل، وهو مستقل عن موقع مكتب الشركة.')}</p><div className="sp-chips sp-locations">{data.service_cities?.length?data.service_cities.map(city=><span key={city}><span aria-hidden="true">⌖ </span><bdi>{city}</bdi></span>):<p className="sp-muted">{tr('Service coverage not provided.','لم يتم توفير نطاق الخدمة.')}</p>}</div></section>

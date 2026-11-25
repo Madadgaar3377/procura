@@ -5,7 +5,6 @@ export class ApiError extends Error {
     const profileMigration=status===503&&detail==='Saving extended company details requires the pending supplier profile database migration. No changes were saved.';
     super(profileMigration?'Company profile updates require the pending database migration. No changes were saved.':status>=500 ? fallback[status]||'The service is temporarily unavailable. Please try again.' : typeof detail === 'string' ? detail : Array.isArray(detail) ? detail.map(e=>`${e.loc?.filter((x:unknown)=>x!=='body').join('.') || 'Request'}: ${e.msg || 'Invalid value'}`).join('; ') : fallback[status] || 'The request could not be completed.');
     this.name = 'ApiError';
-    if(requestId)this.message += ` Request ID: ${requestId}`;
     if(status===422&&Array.isArray(detail))for(const item of detail){
       const key=Array.isArray(item.loc)?item.loc.filter((part:unknown)=>part!=='body'&&part!=='query').join('.'):'';
       if(key)this.fieldErrors[key]=String(item.msg||'Invalid value').replace(/^Value error, /,'');
