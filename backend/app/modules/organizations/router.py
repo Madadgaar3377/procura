@@ -127,7 +127,7 @@ def _contact_data(contact,db):
     responsibilities = db.scalars(select(ImportedSupplierTrade).join(ContactSupplierTrade,
         ContactSupplierTrade.trade_id == ImportedSupplierTrade.id).where(
             ContactSupplierTrade.contact_id.in_(related_ids), ImportedSupplierTrade.org_id == contact.org_id)).all()
-    return {**{key:getattr(contact,key) for key in ('id','name','role','email','raw_email','phone','raw_phone','phone_normalized','fax','needs_review','is_primary','created_at')},'emails':emails,'phones':phones,'faxes':faxes,'import_sources':[{'source_reference':s.source_reference,'raw_name':s.raw_name,'raw_email':s.raw_email,'raw_phone':s.raw_phone} for s in sources],'source':'imported' if sources else 'admin', 'source_responsibilities':[{'id':item.id,'material':item.raw_trade,'category':item.raw_type,'mapping_status':item.mapping_status} for item in responsibilities]}
+    return {**{key:getattr(contact,key) for key in ('id','name','role','email','raw_email','phone','raw_phone','phone_normalized','fax','needs_review','is_primary','created_at')},'emails':emails,'phones':phones,'faxes':faxes,'import_sources':[{'source_reference':s.source_reference,'raw_name':s.raw_name,'raw_email':s.raw_email,'raw_phone':s.raw_phone} for s in sources],'source':'imported' if sources else 'admin', 'source_responsibilities':[{'id':item.id,'material':item.raw_trade,'brands':item.raw_brands,'category':item.raw_type,'mapping_status':item.mapping_status} for item in responsibilities]}
 
 @router.get('/admin/suppliers')
 def admin_supplier_list(q:str='', status_filter:str='all', limit:int=Query(26,ge=1,le=100), offset:int=Query(0,ge=0), admin:User=Depends(admin_user), db:Session=Depends(get_db)):
@@ -175,8 +175,32 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
         category=db.get(Category,cap.category_id)
         parent=db.get(Category,category.parent_id) if category and category.parent_id else None
         materials=db.scalars(select(Material).where(Material.id.in_(cap.material_ids or []))).all() if cap.material_ids else []
-        cap_items.append({'id':cap.id,'main_category':parent.name_en if parent else (category.name_en if category else None),'subcategory':category.name_en if parent else None,'category_id':cap.category_id,'materials':[{'id':m.id,'name':m.name_en,'unit':m.unit} for m in materials],'units':sorted({m.unit for m in materials if m.unit}),'trade_keywords':cap.trade_keywords,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status,'mapping_source':cap.mapping_source,'created_at':cap.created_at,'city':cap.city})
+        cap_items.append({'id':cap.id,'main_category':parent.name_en if parent else (category.name_en if category else None),'subcategory':category.name_en if parent else None,'category_id':cap.category_id,'materials':[{'id':m.id,'name':m.name_en,'unit':m.unit} for m in materials],'brands':cap.brands or [],'units':sorted({m.unit for m in materials if m.unit}),'trade_keywords':cap.trade_keywords,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status,'mapping_source':cap.mapping_source,'created_at':cap.created_at,'city':cap.city})
     trades=db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==org_id).order_by(ImportedSupplierTrade.created_at)).all()
+    trade_contacts={trade.id:[] for trade in trades}
+    if trades and contacts:
+        for trade_id, contact_id in db.execute(select(ContactSupplierTrade.trade_id,ContactSupplierTrade.contact_id).where(
+            ContactSupplierTrade.trade_id.in_([trade.id for trade in trades]),
+            ContactSupplierTrade.contact_id.in_([contact.id for contact in contacts]))):
+            trade_contacts[trade_id].append(contact_id)
+    inspection=[]
+    for trade in trades:
+        parts=[part.strip() for part in trade.raw_type.split('/') if part.strip()]
+        discipline=parts[0] if parts and parts[0].casefold() in {'civil','electrical','mechanical'} else None
+        hierarchy=parts[1:] if discipline else parts
+        inspection.append({'id':trade.id,'discipline':discipline,'main_category':hierarchy[0] if hierarchy else None,
+            'subcategory':hierarchy[1] if len(hierarchy)>1 else None,'products':trade.raw_trade or None,
+            'brands':[item.strip() for item in trade.raw_brands.split(';') if item.strip()],
+            'contact_ids':list(dict.fromkeys(trade_contacts[trade.id])), 'mapping_status':trade.mapping_status})
+    for cap in cap_items:
+        if any((item['main_category'] or '').casefold()==(cap['main_category'] or '').casefold() and
+               (item['subcategory'] or '').casefold()==(cap['subcategory'] or '').casefold() for item in inspection):
+            continue
+        inspection.append({'id':cap['id'],'discipline':None,'main_category':cap['main_category'],
+            'subcategory':cap['subcategory'],'products':'; '.join(m['name'] for m in cap['materials']) or cap['trade_keywords'] or None,
+            'brands':cap['brands'],'contact_ids':list(dict.fromkeys(c.id for c in contacts if any(
+                link['capability_id']==cap['id'] for link in contact_capabilities[c.id]))),
+            'mapping_status':cap['eligibility_status']})
     files=db.scalars(select(StoredFile).where(StoredFile.organization_id==org_id,StoredFile.status=='available',StoredFile.deleted_at.is_(None))).all()
     docs=[{'id':v.id,'name':v.document_key.rsplit('/',1)[-1] if v.document_key else 'Verification document','status':v.status,'download_url':f'/organizations/admin/review/verification/{v.id}/document-url'} for v in verifications if v.document_key]
     for f in files:
@@ -186,7 +210,7 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
     return {'company':{key:getattr(org,key) for key in ('id','name','country','city','address','cr_number','vat_number','website','description','source','created_at','contact_name','designation','business_email','business_phone')},
         'contacts':[{**_contact_data(c,db),'assigned_capabilities':contact_capabilities[c.id]} for c in contacts],
         'status':{'profile_status':org.profile_status,'verification_status':org.verified_status,'onboarding_status':'complete' if db.scalar(select(Member.id).where(Member.organization_id==org_id)) else 'pending_onboarding','source':org.source,'last_updated_at':last_audit or org.created_at,'verified_by':latest.reviewer_id if latest and latest.status=='approved' else None,'verified_at':latest.reviewed_at if latest and latest.status=='approved' else None,'rejected_by':latest.reviewer_id if latest and latest.status=='rejected' else None,'rejected_at':latest.reviewed_at if latest and latest.status=='rejected' else None,'rejection_reason':latest.reviewer_notes if latest and latest.status=='rejected' else None},
-        'capabilities':cap_items,'pending_category_mappings':[{'id':x.id,'raw_trade':x.raw_trade,'raw_type':x.raw_type,'raw_location':x.raw_location,'mapping_status':x.mapping_status} for x in trades if x.mapping_status not in {'approved','mapped'}],
+        'capabilities':cap_items,'capability_inspection':inspection,'pending_category_mappings':[{'id':x.id,'raw_trade':x.raw_trade,'raw_type':x.raw_type,'raw_location':x.raw_location,'mapping_status':x.mapping_status} for x in trades if x.mapping_status not in {'approved','mapped'}],
         'documents':docs,'verification_history':[{'id':v.id,'status':v.status,'cr_number':v.cr_number,'reviewer_id':v.reviewer_id,'reviewer_notes':v.reviewer_notes,'reviewed_at':v.reviewed_at,'created_at':v.created_at} for v in verifications]}
 
 @router.patch('/admin/suppliers/{org_id}')

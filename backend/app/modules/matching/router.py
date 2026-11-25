@@ -14,6 +14,8 @@ from app.security import as_utc, audit, current_user, org_member
 from app.serializers import record
 
 router=APIRouter(prefix='/matching',tags=['Supplier Matching'])
+from app.modules.matching.guest import router as guest_router
+router.include_router(guest_router)
 
 @router.get('/admin/rfqs/{rfq_id}/diagnostics',response_model=MatchingDiagnosticOut)
 def admin_diagnostics(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -223,17 +225,19 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
             'invitation_status':invitation_status,'quotation_status':quotation_status,'profile_url':f'/suppliers/{org.id}'})
     invitation_rows=db.execute(select(Invitation,Organization.name,Quotation.status).join(Organization,Organization.id==Invitation.supplier_org_id).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id).order_by(Invitation.id).limit(limit).offset(offset)).all()
     jobs={status:count for status,count in db.execute(select(Outbox.status,func.count()).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).group_by(Outbox.status)).all()}
+    latest_job=db.scalar(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc(),Outbox.id.desc()).limit(1))
+    job_status=latest_job.status if latest_job else None
     matched=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id,RFQMatch.status.in_({'eligible','partial'}))) or 0)
     evaluated=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id)) or 0)
     status_counts={status:count for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
     invited=int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0)
     if rfq.status=='draft':progress='draft'
     elif rfq.status not in {'published','collecting_quotes'} or as_utc(rfq.response_deadline)<=datetime.now(UTC):progress='closed'
-    elif jobs.keys() & {'pending','retry','processing'}:
-        progress='matching_in_progress' if matched or jobs.get('processing') else 'matching_queued'
-    elif jobs.keys() & {'failed','uncertain'}:progress='matching_failed'
+    elif job_status in {'pending','retry','processing'}:
+        progress='matching_in_progress' if matched or job_status=='processing' else 'matching_queued'
+    elif job_status in {'failed','uncertain'}:progress='matching_failed'
     elif invited:progress='invitations_available'
-    elif jobs and set(jobs)=={'processed'}:progress='no_eligible_suppliers'
+    elif job_status=='processed':progress='no_eligible_suppliers'
     else:progress='matching_queued'
     from datetime import timedelta
 
@@ -250,7 +254,9 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     recent=db.scalar(select(func.max(Outbox.created_at)).where(Outbox.event=='rfq.deadline.reminder',Outbox.payload['rfq_id'].as_string()==rfq.id))
     available=(recent.replace(tzinfo=UTC) if recent and recent.tzinfo is None else recent)+timedelta(hours=24) if recent else None
     explanation=None
-    if matched:
+    if progress=='matching_failed':
+        explanation='Supplier matching failed. Existing matches and invitations are retained; an administrator can retry the job.'
+    elif matched:
         explanation=f'{matched} supplier(s) qualify based on approved category capability and configured eligibility; technical compliance remains subject to quotation review.'
     elif status_counts.get('location_mismatch'):
         explanation=f"{status_counts['location_mismatch']} supplier(s) match the requested category but do not cover delivery city {rfq.city}."
@@ -271,7 +277,8 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         explanation='No evaluated supplier currently satisfies the RFQ eligibility requirements.'
     elif progress=='no_eligible_suppliers':
         explanation='No active supplier has an approved capability for the selected category and subcategory.'
-    return {'matches':matches, 'invitations':[{**record(i),'supplier_name':name,'quotation_status':quote,'reminder_eligible':i.supplier_org_id in pending} for i,name,quote in invitation_rows], 'progress':progress,
+    matching_status=('failed' if progress=='matching_failed' else 'completed' if progress in {'invitations_available','no_eligible_suppliers','closed'} else 'processing' if progress=='matching_in_progress' else 'queued')
+    return {'matches':matches, 'invitations':[{**record(i),'supplier_name':name,'quotation_status':quote,'reminder_eligible':i.supplier_org_id in pending} for i,name,quote in invitation_rows], 'progress':progress,'matching_status':matching_status,
             'pending_invitation_ids':[i.id for i,_,_ in invitation_rows if i.supplier_org_id in pending],
             'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':len(pending),'suppliers_evaluated':evaluated,
             'explanation':explanation,'deliveries':deliveries,'reminder_available_at':available.isoformat() if available else None,'limit':limit,'offset':offset}

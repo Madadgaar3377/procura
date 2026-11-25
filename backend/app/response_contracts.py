@@ -172,7 +172,7 @@ class InvitationSummary(InvitationOut):
     title: str
     item_descriptions: list[str]
 QuotationOut = contract('QuotationOut', models.Quotation)
-QuoteLineOut = contract('QuoteLineOut', models.QuoteLine)
+QuoteLineOut = contract('QuoteLineOut', models.QuoteLine, ('source_rate_snapshot',))
 NotificationOut = contract('NotificationOut', models.Notification)
 PlanOut = contract('PlanOut', models.MembershipPlan)
 SubscriptionOut = contract('SubscriptionOut', models.Subscription)
@@ -241,6 +241,7 @@ class Totals(ResponseModel):
     currency: str
 
 class QuoteDetail(ResponseModel):
+    document: dict[str,Any] = Field(default_factory=dict)
     quotation: QuotationOut
     lines: list[QuoteLineOut]
     totals: Totals | None = None
@@ -268,6 +269,7 @@ class MatchResults(ResponseModel):
     matches: list[MatchSummary]
     invitations: list[BuyerInvitation]
     progress: Literal['draft', 'published', 'matching_queued', 'matching_in_progress', 'matching_completed', 'matching_failed', 'invitations_available', 'no_eligible_suppliers', 'closed']
+    matching_status: Literal['queued', 'processing', 'completed', 'failed']
     pending_invitation_ids: list[str]
     matched_suppliers: int = 0
     invited_suppliers: int = 0

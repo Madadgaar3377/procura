@@ -20,11 +20,14 @@ def test_one_queue_failure_does_not_starve_other_queues(monkeypatch):
     calls = []
     sessions = []
 
-    @contextmanager
-    def session():
-        db = object()
-        sessions.append(db)
-        yield db
+    class PollSession:
+        def __init__(self):
+            self.closed=False
+            self.rollbacks=0
+            sessions.append(self)
+        def rollback(self):self.rollbacks+=1
+        def in_transaction(self):return True
+        def close(self):self.closed=True
 
     def process(name, fail=False):
         def run(db):
@@ -34,14 +37,15 @@ def test_one_queue_failure_does_not_starve_other_queues(monkeypatch):
             return []
         return run
 
-    monkeypatch.setattr(worker, 'SessionLocal', session)
+    monkeypatch.setattr(worker, 'SessionLocal', PollSession)
     names = ['process_queued_material_imports', 'process_queued_supplier_imports',
-             'process_supplier_jobs', 'process_pricing_jobs', 'process_rfq_import_jobs']
+             'process_supplier_jobs', 'process_pricing_jobs', 'process_rfq_import_jobs', 'process_outbox_batch']
     for i, name in enumerate(names):
         monkeypatch.setattr(worker, name, process(name, fail=i in (0, 4)))
     assert worker.process_once() is False
     assert calls == names
-    assert len({id(db) for db in sessions}) == 5
+    assert len({id(db) for db in sessions}) == 6
+    assert all(db.closed and db.rollbacks>=1 for db in sessions)
 
 
 def test_duplicate_dedicated_worker_exits_without_polling(monkeypatch, tmp_path):

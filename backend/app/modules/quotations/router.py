@@ -21,13 +21,15 @@ def snapshot(db,quote,lines=None):
     attachments=[{'id':f.id,'filename':f.safe_filename,'content_type':f.content_type,'size':f.size_bytes}
         for f in db.scalars(select(StoredFile).where(StoredFile.entity_type=='quotation',StoredFile.entity_id==quote.id,
             StoredFile.purpose=='quotation_attachment',StoredFile.status=='available',StoredFile.deleted_at.is_(None)).order_by(StoredFile.created_at)).all()]
-    return {'quotation':record(quote),'lines':[record(l) for l in lines],'attachments':attachments}
+    from app.modules.quotations.document import quotation_document
+    return {'quotation':record(quote),'lines':[record(l) for l in lines],'attachments':attachments,
+        'document':quotation_document(db,quote,lines)}
 
 def invoice(db,quote,lines=None):
     if lines is None:
         lines=db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()
     subtotal=sum((Decimal(l.quantity)*Decimal(l.unit_price) for l in lines),Decimal('0')).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
-    vat=(subtotal*Decimal(quote.vat_rate)).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
+    vat=sum((Decimal(l.quantity)*Decimal(l.unit_price)*Decimal(l.vat_rate if l.vat_rate is not None else quote.vat_rate) for l in lines),Decimal('0')).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
     return {'subtotal':str(subtotal),'vat':str(vat),'total':str(subtotal+vat),'currency':quote.currency}
 
 @router.get('',response_model=list[QuotationSummary])
@@ -83,11 +85,17 @@ def edit(quotation_id:str,payload:QuoteIn,user:User=Depends(current_user),db:Ses
         if line.rfq_item_id not in valid or line.rfq_item_id in used:raise HTTPException(422,'Invalid or duplicate quoted item')
         if line.compliance not in {'compliant','partial','noncompliant','unconfirmed'}:raise HTTPException(422,'Invalid compliance')
         used.add(line.rfq_item_id)
-    for current in db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all():db.delete(current)
+    originals={line.rfq_item_id:line for line in db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id))}
+    for current in originals.values():db.delete(current)
     db.flush()
-    for line in payload.lines:db.add(QuoteLine(quotation_id=quote.id,**line.model_dump()))
+    for line in payload.lines:
+        original=originals.get(line.rfq_item_id)
+        provenance={key:getattr(original,key) for key in ('source_rate_id','source_rate_version','source_rate_snapshot')} if original else {}
+        db.add(QuoteLine(quotation_id=quote.id,**line.model_dump(),**provenance))
     if payload.price_basis not in {'supply','supply_install'}:raise HTTPException(422,'Invalid price basis')
     quote.price_basis=payload.price_basis;quote.vat_rate=payload.vat_rate
+    quote.currency=payload.currency
+    quote.commercial_terms=payload.commercial_terms.model_dump(mode='json')
     audit(db,user,'quotation.draft_updated',quote.supplier_org_id,quote.id);db.commit()
     return snapshot(db,quote)
 

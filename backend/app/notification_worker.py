@@ -49,7 +49,9 @@ def deliver(db,event,now):
     # Reconcile accepted SMS even after a code expires or its destination changes.
     # Polling never submits another message and must not be gated by OTP validity.
     if channel=='sms' and event.provider_message_id and event.delivery_status not in {'submitting','unknown',None}:
-        result=get_sms_status(event.provider_message_id)
+        provider_id=event.provider_message_id
+        db.commit()
+        result=get_sms_status(provider_id)
         event.status_checks+=1;apply_sms(db,event,result,now);return
     if not user or not user.is_active:
         event.status='skipped';event.delivery_status='recipient_inactive';event.secret_ciphertext=None;return
@@ -118,7 +120,9 @@ def deliver(db,event,now):
     if ttl is None:
         event.status='skipped';event.delivery_status='code_expired';event.secret_ciphertext=None;return
     if channel=='sms' and event.provider_message_id:
-        try:result=get_sms_status(event.provider_message_id)
+        provider_id=event.provider_message_id
+        db.commit()
+        try:result=get_sms_status(provider_id)
         except DeliveryError as exc:
             if getattr(exc,'status_code',None)!=404 or event.delivery_status not in {'submitting','unknown'}:raise
         else:event.status_checks+=1;apply_sms(db,event,result,now);return
@@ -139,11 +143,12 @@ def deliver(db,event,now):
         render_context['url']=base+'/reset-password#token='+recovery['link_token']
     subject,plain,html=render_message(template,render_context,secret)
     event.delivery_status='submitting';event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_message_id(event.id)
-    update_delivery_notification(db,event.id,'sending');db.commit()
+    delivery_id=event.id
+    update_delivery_notification(db,delivery_id,'sending');db.commit()
     if channel=='sms':
-        result=send_sms(recipient,plain,event.id,ttl_seconds=ttl);event.attempts+=1;apply_sms(db,event,result,now)
+        result=send_sms(recipient,plain,delivery_id,ttl_seconds=ttl);event.attempts+=1;apply_sms(db,event,result,now)
     else:
-        event.provider_message_id=send_email(recipient,subject,plain,html,event.id);event.attempts+=1
+        event.provider_message_id=send_email(recipient,subject,plain,html,delivery_id);event.attempts+=1
         event.delivery_status='accepted';event.status='processed';event.next_attempt_at=None
         event.payload={**event.payload,'smtp_accepted':True}
         update_delivery_notification(db,event.id,'accepted')
@@ -158,8 +163,10 @@ def deliver_procurement(db, event, now):
     payload=event.payload;context=payload['context'];channel=payload['channel']
     # Once submitted, reconcile only. Never resubmit because authorization changed.
     if channel=='sms' and event.provider_message_id:
+        provider_id=event.provider_message_id
+        db.commit()
         try:
-            result=get_sms_status(event.provider_message_id)
+            result=get_sms_status(provider_id)
         except DeliveryError as exc:
             if getattr(exc,'status_code',None)==404 and event.delivery_status in {'submitting','unknown'}:
                 event.status='uncertain';event.next_attempt_at=None
@@ -184,16 +191,20 @@ def deliver_procurement(db, event, now):
         event.status='skipped';event.delivery_status=reason;return
     if channel=='email' and get_settings().is_production and not get_settings().smtp_reply_to:
         raise core.PermanentOutboxError('Configure a monitored SMTP_REPLY_TO before sending RFQ email')
-    subject,plain,html=render_message(payload['template'],{**context,'channel':channel})
+    from app.modules.matching.guest import invitation_token
+    guest_token=invitation_token(invitation,rfq,payload)
+    guest_url=get_settings().frontend_url.rstrip('/')+'/rfq-invitation#token='+guest_token
+    subject,plain,html=render_message(payload['template'],{**context,'channel':channel,'url':guest_url})
     event.payload={**payload,'last_attempt_at':now.isoformat()}
     event.delivery_status='submitting'
     event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_message_id(event.id)
+    delivery_id=event.id
     db.commit()
     if channel=='sms':
-        result=send_sms(payload['destination'],plain,event.id)
+        result=send_sms(payload['destination'],plain,delivery_id)
         event.attempts+=1;apply_sms(db,event,result,now)
     else:
-        event.provider_message_id=send_email(payload['destination'],subject,plain,html,event.id)
+        event.provider_message_id=send_email(payload['destination'],subject,plain,html,delivery_id)
         event.attempts+=1;event.delivery_status='accepted';event.status='processed';event.next_attempt_at=None
         event.payload={**event.payload,'smtp_accepted':not get_settings().mock_notifications}
     if get_settings().mock_notifications:
@@ -218,12 +229,7 @@ def process_batch(db,limit=25,now=None,event_ids=None):
             if not event:continue
             event.status='processing';event.lock_until=now+timedelta(seconds=300);db.commit()
             if event.event=='rfq.published':
-                from app.models import RFQ
-                from app.modules.matching.service import match_and_invite
-                rfq=db.scalar(select(RFQ).where(RFQ.id==event.payload.get('rfq_id')).with_for_update())
-                if not rfq or rfq.status not in {'published','collecting_quotes'}:
-                    raise core.PermanentOutboxError('RFQ is not dispatchable')
-                match_and_invite(db,rfq,after_supplier_id=event.payload.get('after_supplier_id'),bounded=True)
+                core._process_event(db,event,now)
             elif event.event=='notification.delivery':deliver(db,event,now)
             elif event.event=='company.verification_updated':
                 from app.modules.notifications.procurement import company_notice
@@ -242,13 +248,10 @@ def process_batch(db,limit=25,now=None,event_ids=None):
                 quotation_notice(db,event)
             elif event.event in {'rfq.invitation','rfq.deadline.reminder'}:
                 from app.modules.notifications.procurement import prepare
+                if event.event == 'rfq.invitation' and event.payload.get('invitation_id'):
+                    from app.modules.quotations.automation import prepare_invitation_quote
+                    prepare_invitation_quote(db, event.payload['invitation_id'])
                 prepare(db,event)
-                if event.status != 'skipped' and event.event == 'rfq.invitation' and event.payload.get('invitation_id'):
-                    try:
-                        from app.modules.quotations.automation import prepare_authorized_quote
-                        prepare_authorized_quote(db, event.payload['invitation_id'])
-                    except Exception:
-                        log.warning('Automatic quotation check for invitation=%s failed; manual submission remains open', event.payload.get('invitation_id'))
             else:core._process_event(db,event,now)
             event.lock_until=None
             if event.status=='processing':event.status='processed'

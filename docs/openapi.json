@@ -4414,13 +4414,491 @@
         ]
       }
     },
+    "/api/v1/taxonomy/review/analyze": {
+      "get": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Analyze Review Queue",
+        "description": "Analyze all active categories and classify pending review issues without mutating records.",
+        "operationId": "analyze_review_queue_api_v1_taxonomy_review_analyze_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "issue_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Issue Type"
+            }
+          },
+          {
+            "name": "conflicts_only",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Conflicts Only"
+            }
+          },
+          {
+            "name": "include_resolved",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Include Resolved"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 100,
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 250,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryReviewAnalysisOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/taxonomy/review/auto-fix": {
+      "post": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Auto Fix Safe Records",
+        "description": "Preview or apply safe category review fixes in short committed batches of 30 (up to 300/job).",
+        "operationId": "auto_fix_safe_records_api_v1_taxonomy_review_auto_fix_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkCategoryFixIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkCategoryFixOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/taxonomy/review/approve-valid": {
+      "post": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Approve All Valid",
+        "description": "Preview or explicitly retain valid empty categories in short committed batches of 30.",
+        "operationId": "approve_all_valid_api_v1_taxonomy_review_approve_valid_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkApproveValidIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkApproveValidOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/taxonomy/review/categories/{category_id}/decision": {
+      "post": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Submit Category Decision",
+        "description": "Record an explicit admin review decision (approve, retain_empty, reclassify, merge_duplicate, archive).",
+        "operationId": "submit_category_decision_api_v1_taxonomy_review_categories__category_id__decision_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Category Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CategoryReviewDecisionIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CategoryReviewDecisionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/taxonomy/review/categories/{category_id}/history": {
+      "get": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Category Review History",
+        "description": "Return audit history of explicit review decisions for a category.",
+        "operationId": "category_review_history_api_v1_taxonomy_review_categories__category_id__history_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Category Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CategoryReviewHistoryItemOut"
+                  },
+                  "title": "Response Category Review History Api V1 Taxonomy Review Categories  Category Id  History Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/taxonomy/review/hierarchy-repairs/preview": {
+      "get": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Preview Hierarchy Repairs",
+        "description": "Analyze all depth > 2 hierarchy issues and preview safe vs manual-review repairs without mutating data.",
+        "operationId": "preview_hierarchy_repairs_api_v1_taxonomy_review_hierarchy_repairs_preview_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 200,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HierarchyRepairPreviewOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/taxonomy/review/hierarchy-repairs": {
+      "post": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Apply Hierarchy Repairs",
+        "description": "Start (or resume) a durable batched hierarchy repair job (30/batch, up to 300/job).\n\nReturns immediately with a job_id when async_mode=True so long repairs never block HTTP requests.",
+        "operationId": "apply_hierarchy_repairs_api_v1_taxonomy_review_hierarchy_repairs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HierarchyRepairJobIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HierarchyRepairJobOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/taxonomy/review/hierarchy-repairs/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "Material Master",
+          "Category Review"
+        ],
+        "summary": "Hierarchy Repair Job Status",
+        "description": "Return persisted progress for a running or completed hierarchy repair job.",
+        "operationId": "hierarchy_repair_job_status_api_v1_taxonomy_review_hierarchy_repairs_jobs__job_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HierarchyRepairJobOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/taxonomy/industry-review-candidates": {
       "get": {
         "tags": [
           "Material Master"
         ],
         "summary": "Industry Review Candidates",
-        "description": "Read-only review queue for suspicious active labels or missing discipline assignments.",
+        "description": "Read-only review queue with separated issue types and explicit decision filtering.",
         "operationId": "industry_review_candidates_api_v1_taxonomy_industry_review_candidates_get",
         "security": [
           {
@@ -4636,6 +5114,16 @@
               "type": "boolean",
               "default": false,
               "title": "Roots Only"
+            }
+          },
+          {
+            "name": "with_active_materials",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "With Active Materials"
             }
           }
         ],
@@ -5422,6 +5910,53 @@
             }
           }
         }
+      }
+    },
+    "/api/v1/taxonomy/materials/group": {
+      "post": {
+        "tags": [
+          "Material Master"
+        ],
+        "summary": "Save Material Group",
+        "description": "Save at most 30 definitions atomically. Exact retries reuse stable master IDs.\n\nNo quantities or supplier rates are accepted. Category IDs must already exist.",
+        "operationId": "save_material_group_api_v1_taxonomy_materials_group_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialGroupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MaterialGroupOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
       }
     },
     "/api/v1/taxonomy/materials/{material_id}": {
@@ -6474,6 +7009,59 @@
       }
     },
     "/api/v1/imports/bulk/suppliers/jobs": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "List Jobs",
+        "operationId": "list_jobs_api_v1_imports_bulk_suppliers_jobs_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 50,
+              "minimum": 1,
+              "default": 15,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SupplierJobProgress"
+                  },
+                  "title": "Response List Jobs Api V1 Imports Bulk Suppliers Jobs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": [
           "Supplier & Material Imports",
@@ -6481,11 +7069,58 @@
         ],
         "summary": "Enqueue",
         "operationId": "enqueue_api_v1_imports_bulk_suppliers_jobs_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "multipart/form-data": {
               "schema": {
                 "$ref": "#/components/schemas/Body_enqueue_api_v1_imports_bulk_suppliers_jobs_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierJobProgress"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/jobs/preview": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Preview",
+        "operationId": "preview_api_v1_imports_bulk_suppliers_jobs_preview_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_api_v1_imports_bulk_suppliers_jobs_preview_post"
               }
             }
           },
@@ -6518,6 +7153,102 @@
             "HTTPBearer": []
           }
         ]
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/jobs/{batch_id}/start": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Start",
+        "operationId": "start_api_v1_imports_bulk_suppliers_jobs__batch_id__start_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierJobProgress"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/jobs/{batch_id}/cancel": {
+      "post": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Cancel",
+        "operationId": "cancel_api_v1_imports_bulk_suppliers_jobs__batch_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SupplierJobProgress"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/imports/bulk/suppliers/jobs/{batch_id}": {
@@ -6600,6 +7331,52 @@
                 "schema": {
                   "$ref": "#/components/schemas/SupplierJobProgress"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/imports/bulk/suppliers/jobs/{batch_id}/review-report": {
+      "get": {
+        "tags": [
+          "Supplier & Material Imports",
+          "Bulk Materials and Suppliers"
+        ],
+        "summary": "Review Report",
+        "operationId": "review_report_api_v1_imports_bulk_suppliers_jobs__batch_id__review_report_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -7959,6 +8736,649 @@
         }
       }
     },
+    "/api/v1/rfqs/imports/template": {
+      "get": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Template",
+        "operationId": "template_api_v1_rfqs_imports_template_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/recent": {
+      "get": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Recent",
+        "operationId": "recent_api_v1_rfqs_imports_recent_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "draft_key",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Draft Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RFQImportJob"
+                  },
+                  "title": "Response Recent Api V1 Rfqs Imports Recent Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Upload Job",
+        "operationId": "upload_job_api_v1_rfqs_imports_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_job_api_v1_rfqs_imports_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}": {
+      "get": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Get Job",
+        "operationId": "get_job_api_v1_rfqs_imports__batch_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "include_rows",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Include Rows"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/options": {
+      "put": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Options",
+        "operationId": "options_api_v1_rfqs_imports__batch_id__options_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportOptions"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/rows/{row_id}": {
+      "put": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Edit Row",
+        "operationId": "edit_row_api_v1_rfqs_imports__batch_id__rows__row_id__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          },
+          {
+            "name": "row_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Row Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportEdit"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportRow"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/review": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Review",
+        "operationId": "review_api_v1_rfqs_imports__batch_id__review_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportReview"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/retry": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Retry",
+        "operationId": "retry_api_v1_rfqs_imports__batch_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RFQImportRetry"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportJob"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/imports/{batch_id}/confirm": {
+      "post": {
+        "tags": [
+          "Buyer RFQs",
+          "Buyer RFQ Material Imports"
+        ],
+        "summary": "Confirm",
+        "operationId": "confirm_api_v1_rfqs_imports__batch_id__confirm_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "batch_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Batch Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RFQImportConfirmation"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/{rfq_id}/export.xlsx": {
+      "get": {
+        "tags": [
+          "Buyer RFQs"
+        ],
+        "summary": "Export Rfq Excel",
+        "operationId": "export_rfq_excel_api_v1_rfqs__rfq_id__export_xlsx_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(en|ar)$",
+              "default": "en",
+              "title": "Lang"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/{rfq_id}/export.pdf": {
+      "get": {
+        "tags": [
+          "Buyer RFQs"
+        ],
+        "summary": "Export Rfq Pdf",
+        "operationId": "export_rfq_pdf_api_v1_rfqs__rfq_id__export_pdf_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(en|ar)$",
+              "default": "en",
+              "title": "Lang"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/classify-material": {
+      "post": {
+        "tags": [
+          "Buyer RFQs"
+        ],
+        "summary": "Classify Material",
+        "description": "Hybrid material classification for buyer RFQ entry (deterministic first, Gemini only if unresolved/ambiguous).",
+        "operationId": "classify_material_api_v1_rfqs_classify_material_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialClassifyIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/api/v1/rfqs": {
       "post": {
         "tags": [
@@ -8596,13 +10016,97 @@
         }
       }
     },
+    "/api/v1/matching/guest-invitations/open": {
+      "post": {
+        "tags": [
+          "Supplier Matching",
+          "Supplier Matching"
+        ],
+        "summary": "Open Invitation",
+        "operationId": "open_invitation_api_v1_matching_guest_invitations_open_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestAccess"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestInvitationOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/matching/guest-invitations/quotation": {
+      "post": {
+        "tags": [
+          "Supplier Matching",
+          "Supplier Matching"
+        ],
+        "summary": "Save Quotation",
+        "operationId": "save_quotation_api_v1_matching_guest_invitations_quotation_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuestQuote"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestQuoteOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/matching/admin/rfqs/{rfq_id}/diagnostics": {
       "get": {
         "tags": [
           "Supplier Matching"
         ],
         "summary": "Admin Diagnostics",
-        "description": "Explain persisted match outcomes and queue state to authorized administrators.",
+        "description": "Explain persisted match outcomes, item classification, AI candidates, exclusions, and delivery state to admins.",
         "operationId": "admin_diagnostics_api_v1_matching_admin_rfqs__rfq_id__diagnostics_get",
         "security": [
           {
@@ -9004,6 +10508,57 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PriceOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/pricebooks/group": {
+      "post": {
+        "tags": [
+          "Private Supplier Rates"
+        ],
+        "summary": "Create Group",
+        "description": "Atomic private rates for one approved category pair; exact retries reuse rates.",
+        "operationId": "create_group_api_v1_pricebooks_group_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PriceGroupIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "integer"
+                  },
+                  "type": "object",
+                  "title": "Response Create Group Api V1 Pricebooks Group Post"
                 }
               }
             }
@@ -13818,6 +15373,94 @@
         ]
       }
     },
+    "/api/v1/materials/match": {
+      "post": {
+        "tags": [
+          "Material Matching"
+        ],
+        "summary": "Match Material",
+        "operationId": "match_material_api_v1_materials_match_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MaterialMatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/materials/match/bulk": {
+      "post": {
+        "tags": [
+          "Material Matching"
+        ],
+        "summary": "Match Materials Bulk",
+        "operationId": "match_materials_bulk_api_v1_materials_match_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkMaterialMatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
     "/health/live": {
       "get": {
         "tags": [
@@ -13854,600 +15497,6 @@
             }
           }
         }
-      }
-    },
-    "/api/v1/rfqs/imports/template": {
-      "get": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Template",
-        "operationId": "template_api_v1_rfqs_imports_template_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "org_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Org Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response"
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/rfqs/imports/recent": {
-      "get": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Recent",
-        "operationId": "recent_api_v1_rfqs_imports_recent_get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "org_id",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Org Id"
-            }
-          },
-          {
-            "name": "draft_key",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Draft Key"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/RFQImportJob"
-                  },
-                  "title": "Response Recent Api V1 Rfqs Imports Recent Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/rfqs/imports": {
-      "post": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Upload Job",
-        "operationId": "upload_job_api_v1_rfqs_imports_post",
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_upload_job_api_v1_rfqs_imports_post"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQImportJob"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/v1/rfqs/imports/{batch_id}": {
-      "get": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Get Job",
-        "operationId": "get_job_api_v1_rfqs_imports__batch_id__get",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Batch Id"
-            }
-          },
-          {
-            "name": "include_rows",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean",
-              "default": true,
-              "title": "Include Rows"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQImportJob"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/rfqs/imports/{batch_id}/options": {
-      "put": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Options",
-        "operationId": "options_api_v1_rfqs_imports__batch_id__options_put",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Batch Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RFQImportOptions"
-              }
-            }
-          }
-        },
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQImportJob"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/rfqs/imports/{batch_id}/rows/{row_id}": {
-      "put": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Edit Row",
-        "operationId": "edit_row_api_v1_rfqs_imports__batch_id__rows__row_id__put",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Batch Id"
-            }
-          },
-          {
-            "name": "row_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Row Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RFQImportEdit"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQImportRow"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/rfqs/imports/{batch_id}/review": {
-      "post": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Review",
-        "operationId": "review_api_v1_rfqs_imports__batch_id__review_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Batch Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RFQImportReview"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQImportJob"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/rfqs/imports/{batch_id}/retry": {
-      "post": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Retry",
-        "operationId": "retry_api_v1_rfqs_imports__batch_id__retry_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Batch Id"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RFQImportRetry"
-              }
-            }
-          }
-        },
-        "responses": {
-          "202": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQImportJob"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/rfqs/imports/{batch_id}/confirm": {
-      "post": {
-        "tags": [
-          "Buyer RFQs",
-          "Buyer RFQ Material Imports"
-        ],
-        "summary": "Confirm",
-        "operationId": "confirm_api_v1_rfqs_imports__batch_id__confirm_post",
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ],
-        "parameters": [
-          {
-            "name": "batch_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "title": "Batch Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RFQImportConfirmation"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/taxonomy/materials/group": {
-      "post": {
-        "tags": [
-          "Material Master"
-        ],
-        "summary": "Save Material Group",
-        "description": "Save at most 30 definitions atomically. Exact retries reuse stable master IDs.\n\nNo quantities or supplier rates are accepted. Category IDs must already exist.",
-        "operationId": "save_material_group_api_v1_taxonomy_materials_group_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MaterialGroupIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MaterialGroupOut"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
-      }
-    },
-    "/api/v1/pricebooks/group": {
-      "post": {
-        "tags": [
-          "Private Supplier Rates"
-        ],
-        "summary": "Create Group",
-        "description": "Atomic private rates for one approved category pair; exact retries reuse rates.",
-        "operationId": "create_group_api_v1_pricebooks_group_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PriceGroupIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": {
-                    "type": "integer"
-                  },
-                  "type": "object",
-                  "title": "Response Create Group Api V1 Pricebooks Group Post"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "HTTPBearer": []
-          }
-        ]
       }
     }
   },
@@ -15239,6 +16288,28 @@
             "type": "string",
             "contentMediaType": "application/octet-stream",
             "title": "File"
+          },
+          "fallback_discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Discipline"
+          },
+          "default_country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Country"
           }
         },
         "type": "object",
@@ -15246,6 +16317,42 @@
           "file"
         ],
         "title": "Body_enqueue_api_v1_imports_bulk_suppliers_jobs_post"
+      },
+      "Body_preview_api_v1_imports_bulk_suppliers_jobs_preview_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "fallback_discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fallback Discipline"
+          },
+          "default_country": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Country"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_preview_api_v1_imports_bulk_suppliers_jobs_preview_post"
       },
       "Body_preview_api_v1_imports_materials_preview_post": {
         "properties": {
@@ -15477,6 +16584,46 @@
         ],
         "title": "Body_upload_document_api_v1_organizations__org_id__documents_post"
       },
+      "Body_upload_job_api_v1_rfqs_imports_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          },
+          "org_id": {
+            "type": "string",
+            "title": "Org Id"
+          },
+          "draft_key": {
+            "type": "string",
+            "title": "Draft Key"
+          },
+          "rfq_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rfq Id"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "file",
+          "org_id",
+          "draft_key"
+        ],
+        "title": "Body_upload_job_api_v1_rfqs_imports_post"
+      },
       "Body_upload_logo_api_v1_organizations__org_id__logo_post": {
         "properties": {
           "file": {
@@ -15573,6 +16720,338 @@
           "authenticated"
         ],
         "title": "BrowserSessionOut"
+      },
+      "BulkApproveValidIn": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "include_empty": {
+            "type": "boolean",
+            "title": "Include Empty",
+            "default": true
+          },
+          "category_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Ids"
+          },
+          "cursor_after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor After Id"
+          },
+          "job_limit": {
+            "type": "integer",
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Job Limit",
+            "default": 300
+          },
+          "batch_size": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "default": 30
+          }
+        },
+        "type": "object",
+        "title": "BulkApproveValidIn"
+      },
+      "BulkApproveValidOut": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "job_size": {
+            "type": "integer",
+            "title": "Job Size"
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size"
+          },
+          "batches_executed": {
+            "type": "integer",
+            "title": "Batches Executed"
+          },
+          "total_eligible": {
+            "type": "integer",
+            "title": "Total Eligible",
+            "default": 0
+          },
+          "retained_empty": {
+            "type": "integer",
+            "title": "Retained Empty"
+          },
+          "approved": {
+            "type": "integer",
+            "title": "Approved"
+          },
+          "approved_count": {
+            "type": "integer",
+            "title": "Approved Count",
+            "default": 0
+          },
+          "skipped_already_approved": {
+            "type": "integer",
+            "title": "Skipped Already Approved",
+            "default": 0
+          },
+          "remaining_valid": {
+            "type": "integer",
+            "title": "Remaining Valid"
+          },
+          "excluded_count": {
+            "type": "integer",
+            "title": "Excluded Count",
+            "default": 0
+          },
+          "excluded_by_issue_type": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Excluded By Issue Type"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "preview_items": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryFixPreviewItemOut"
+            },
+            "type": "array",
+            "title": "Preview Items"
+          },
+          "excluded_preview_items": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryFixPreviewItemOut"
+            },
+            "type": "array",
+            "title": "Excluded Preview Items"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dry_run",
+          "job_size",
+          "batch_size",
+          "batches_executed",
+          "retained_empty",
+          "approved",
+          "remaining_valid",
+          "has_more"
+        ],
+        "title": "BulkApproveValidOut"
+      },
+      "BulkCategoryFixIn": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "default": false
+          },
+          "category_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Ids"
+          },
+          "cursor_after_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cursor After Id"
+          },
+          "job_limit": {
+            "type": "integer",
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Job Limit",
+            "default": 300
+          },
+          "batch_size": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "default": 30
+          }
+        },
+        "type": "object",
+        "title": "BulkCategoryFixIn"
+      },
+      "BulkCategoryFixOut": {
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run"
+          },
+          "job_size": {
+            "type": "integer",
+            "title": "Job Size"
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size"
+          },
+          "batches_executed": {
+            "type": "integer",
+            "title": "Batches Executed"
+          },
+          "categories_processed": {
+            "type": "integer",
+            "title": "Categories Processed"
+          },
+          "categories_resolved": {
+            "type": "integer",
+            "title": "Categories Resolved"
+          },
+          "materials_updated": {
+            "type": "integer",
+            "title": "Materials Updated"
+          },
+          "duplicates_merged": {
+            "type": "integer",
+            "title": "Duplicates Merged"
+          },
+          "parent_links_repaired": {
+            "type": "integer",
+            "title": "Parent Links Repaired"
+          },
+          "skipped_ambiguous": {
+            "type": "integer",
+            "title": "Skipped Ambiguous"
+          },
+          "remaining_safe": {
+            "type": "integer",
+            "title": "Remaining Safe"
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          },
+          "preview_items": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryFixPreviewItemOut"
+            },
+            "type": "array",
+            "title": "Preview Items"
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "dry_run",
+          "job_size",
+          "batch_size",
+          "batches_executed",
+          "categories_processed",
+          "categories_resolved",
+          "materials_updated",
+          "duplicates_merged",
+          "parent_links_repaired",
+          "skipped_ambiguous",
+          "remaining_safe",
+          "has_more"
+        ],
+        "title": "BulkCategoryFixOut"
+      },
+      "BulkMaterialMatchRequest": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialMatchRequest"
+            },
+            "type": "array",
+            "maxItems": 200,
+            "minItems": 1,
+            "title": "Items"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "title": "BulkMaterialMatchRequest"
       },
       "BuyerInvitation": {
         "properties": {
@@ -15728,6 +17207,11 @@
             "type": "array",
             "title": "Material Ids"
           },
+          "brands": {
+            "items": {},
+            "type": "array",
+            "title": "Brands"
+          },
           "trade_keywords": {
             "type": "string",
             "title": "Trade Keywords"
@@ -15783,6 +17267,7 @@
           "city",
           "qualifications",
           "material_ids",
+          "brands",
           "trade_keywords",
           "mapping_source",
           "confirmed",
@@ -15836,6 +17321,11 @@
             "items": {},
             "type": "array",
             "title": "Material Ids"
+          },
+          "brands": {
+            "items": {},
+            "type": "array",
+            "title": "Brands"
           },
           "trade_keywords": {
             "type": "string",
@@ -15933,6 +17423,7 @@
           "city",
           "qualifications",
           "material_ids",
+          "brands",
           "trade_keywords",
           "mapping_source",
           "confirmed",
@@ -16077,6 +17568,76 @@
           "name_en"
         ],
         "title": "CategoryEdit"
+      },
+      "CategoryFixPreviewItemOut": {
+        "properties": {
+          "category_id": {
+            "type": "string",
+            "title": "Category Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "parent_name_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Name En"
+          },
+          "issue_type": {
+            "type": "string",
+            "title": "Issue Type"
+          },
+          "proposed_action": {
+            "type": "string",
+            "title": "Proposed Action"
+          },
+          "proposed_discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Discipline"
+          },
+          "materials_to_update": {
+            "type": "integer",
+            "title": "Materials To Update",
+            "default": 0
+          },
+          "duplicate_count": {
+            "type": "integer",
+            "title": "Duplicate Count",
+            "default": 0
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id",
+          "code",
+          "name_en",
+          "issue_type",
+          "proposed_action",
+          "reason"
+        ],
+        "title": "CategoryFixPreviewItemOut"
       },
       "CategoryImportPreview": {
         "properties": {
@@ -16416,6 +17977,526 @@
           "created_at"
         ],
         "title": "CategoryOut"
+      },
+      "CategoryReviewAnalysisOut": {
+        "properties": {
+          "total_pending": {
+            "type": "integer",
+            "title": "Total Pending"
+          },
+          "total_filtered": {
+            "type": "integer",
+            "title": "Total Filtered"
+          },
+          "total_safe_auto_fix": {
+            "type": "integer",
+            "title": "Total Safe Auto Fix"
+          },
+          "total_safe_hierarchy_repairs": {
+            "type": "integer",
+            "title": "Total Safe Hierarchy Repairs",
+            "default": 0
+          },
+          "total_hierarchy_conflicts": {
+            "type": "integer",
+            "title": "Total Hierarchy Conflicts",
+            "default": 0
+          },
+          "total_valid_approvable": {
+            "type": "integer",
+            "title": "Total Valid Approvable"
+          },
+          "total_conflicts": {
+            "type": "integer",
+            "title": "Total Conflicts"
+          },
+          "counts_by_issue_type": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts By Issue Type"
+          },
+          "counts_by_action": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts By Action"
+          },
+          "preview_token": {
+            "type": "string",
+            "title": "Preview Token"
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size"
+          },
+          "job_size": {
+            "type": "integer",
+            "title": "Job Size"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CategoryReviewItemOut"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_pending",
+          "total_filtered",
+          "total_safe_auto_fix",
+          "total_valid_approvable",
+          "total_conflicts",
+          "counts_by_issue_type",
+          "counts_by_action",
+          "preview_token",
+          "batch_size",
+          "job_size",
+          "limit",
+          "offset",
+          "items"
+        ],
+        "title": "CategoryReviewAnalysisOut"
+      },
+      "CategoryReviewDecisionIn": {
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "approve",
+              "retain_empty",
+              "reclassify",
+              "merge_duplicate",
+              "archive"
+            ],
+            "title": "Decision"
+          },
+          "discipline": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "Civil",
+                  "Electrical",
+                  "Mechanical"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline"
+          },
+          "target_parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Parent Id"
+          },
+          "material_disciplines": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "Civil",
+                    "Electrical",
+                    "Mechanical"
+                  ]
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Disciplines"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "title": "CategoryReviewDecisionIn"
+      },
+      "CategoryReviewDecisionOut": {
+        "properties": {
+          "category_id": {
+            "type": "string",
+            "title": "Category Id"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "materials_updated": {
+            "type": "integer",
+            "title": "Materials Updated",
+            "default": 0
+          },
+          "merged_into_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merged Into Category Id"
+          },
+          "archived_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Archived Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id",
+          "decision"
+        ],
+        "title": "CategoryReviewDecisionOut"
+      },
+      "CategoryReviewHistoryItemOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "category_id": {
+            "type": "string",
+            "title": "Category Id"
+          },
+          "decision": {
+            "type": "string",
+            "title": "Decision"
+          },
+          "issue_type": {
+            "type": "string",
+            "title": "Issue Type"
+          },
+          "discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline"
+          },
+          "merged_into_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Merged Into Category Id"
+          },
+          "actor_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor User Id"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          },
+          "details": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Details"
+          },
+          "is_current": {
+            "type": "boolean",
+            "title": "Is Current"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "category_id",
+          "decision",
+          "issue_type",
+          "is_current",
+          "created_at"
+        ],
+        "title": "CategoryReviewHistoryItemOut"
+      },
+      "CategoryReviewItemOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "name_ar": {
+            "type": "string",
+            "title": "Name Ar",
+            "default": ""
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "parent_name_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Name En"
+          },
+          "hierarchy_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Hierarchy Path"
+          },
+          "proposed_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Proposed Path"
+          },
+          "hierarchy_repair_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Hierarchy Repair Action"
+          },
+          "hierarchy_repair_safe": {
+            "type": "boolean",
+            "title": "Hierarchy Repair Safe",
+            "default": false
+          },
+          "affected_capabilities_count": {
+            "type": "integer",
+            "title": "Affected Capabilities Count",
+            "default": 0
+          },
+          "issue_type": {
+            "type": "string",
+            "title": "Issue Type"
+          },
+          "issue_label": {
+            "type": "string",
+            "title": "Issue Label"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason"
+          },
+          "secondary_issues": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Secondary Issues"
+          },
+          "active_material_count": {
+            "type": "integer",
+            "title": "Active Material Count",
+            "default": 0
+          },
+          "inactive_material_count": {
+            "type": "integer",
+            "title": "Inactive Material Count",
+            "default": 0
+          },
+          "missing_discipline_count": {
+            "type": "integer",
+            "title": "Missing Discipline Count",
+            "default": 0
+          },
+          "unsupported_discipline_count": {
+            "type": "integer",
+            "title": "Unsupported Discipline Count",
+            "default": 0
+          },
+          "duplicate_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Duplicate Ids"
+          },
+          "duplicate_canonical_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Canonical Id"
+          },
+          "duplicate_safe": {
+            "type": "boolean",
+            "title": "Duplicate Safe",
+            "default": false
+          },
+          "proposed_action": {
+            "type": "string",
+            "title": "Proposed Action"
+          },
+          "proposed_discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Discipline"
+          },
+          "safe_to_auto_fix": {
+            "type": "boolean",
+            "title": "Safe To Auto Fix",
+            "default": false
+          },
+          "can_approve": {
+            "type": "boolean",
+            "title": "Can Approve",
+            "default": false
+          },
+          "can_retain_empty": {
+            "type": "boolean",
+            "title": "Can Retain Empty",
+            "default": false
+          },
+          "can_merge": {
+            "type": "boolean",
+            "title": "Can Merge",
+            "default": false
+          },
+          "can_archive": {
+            "type": "boolean",
+            "title": "Can Archive",
+            "default": false
+          },
+          "requires_manual_review": {
+            "type": "boolean",
+            "title": "Requires Manual Review",
+            "default": false
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Evidence"
+          },
+          "current_decision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Decision"
+          },
+          "materials_preview": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewMaterialPreviewOut"
+            },
+            "type": "array",
+            "title": "Materials Preview"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name_en",
+          "issue_type",
+          "issue_label",
+          "reason",
+          "proposed_action"
+        ],
+        "title": "CategoryReviewItemOut"
       },
       "CategorySummary": {
         "properties": {
@@ -16911,6 +18992,54 @@
           "has_owner"
         ],
         "title": "ClaimableSupplierMatch"
+      },
+      "CommercialTerms": {
+        "properties": {
+          "quotation_reference": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Quotation Reference",
+            "default": ""
+          },
+          "delivery_terms": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Delivery Terms",
+            "default": ""
+          },
+          "payment_terms": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Payment Terms",
+            "default": ""
+          },
+          "validity_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Validity Until"
+          },
+          "terms_and_conditions": {
+            "type": "string",
+            "maxLength": 10000,
+            "title": "Terms And Conditions",
+            "default": ""
+          },
+          "template_key": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Template Key",
+            "default": "pending_client_approval"
+          }
+        },
+        "type": "object",
+        "title": "CommercialTerms"
       },
       "Comparison": {
         "properties": {
@@ -18052,6 +20181,195 @@
         ],
         "title": "Feature"
       },
+      "GuestAccess": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 20,
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "GuestAccess"
+      },
+      "GuestInvitationOut": {
+        "properties": {
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "invitation_id": {
+            "type": "string",
+            "title": "Invitation Id"
+          },
+          "supplier_name": {
+            "type": "string",
+            "title": "Supplier Name"
+          },
+          "reference": {
+            "type": "string",
+            "title": "Reference"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "city": {
+            "type": "string",
+            "title": "City"
+          },
+          "response_deadline": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Response Deadline"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/RFQItemOut"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "quotation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quotation Id"
+          },
+          "quotation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quotation Status"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/GuestLine"
+            },
+            "type": "array",
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "currency",
+          "invitation_id",
+          "supplier_name",
+          "reference",
+          "title",
+          "city",
+          "response_deadline",
+          "items",
+          "quotation_id",
+          "quotation_status",
+          "lines"
+        ],
+        "title": "GuestInvitationOut"
+      },
+      "GuestLine": {
+        "properties": {
+          "rfq_item_id": {
+            "type": "string",
+            "title": "Rfq Item Id"
+          },
+          "unit_price": {
+            "type": "string",
+            "title": "Unit Price"
+          },
+          "quantity": {
+            "type": "string",
+            "title": "Quantity"
+          },
+          "brand": {
+            "type": "string",
+            "title": "Brand"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "offered_specs": {
+            "type": "string",
+            "title": "Offered Specs"
+          },
+          "lead_days": {
+            "type": "integer",
+            "title": "Lead Days"
+          },
+          "compliance": {
+            "type": "string",
+            "title": "Compliance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "rfq_item_id",
+          "unit_price",
+          "quantity",
+          "brand",
+          "model",
+          "offered_specs",
+          "lead_days",
+          "compliance"
+        ],
+        "title": "GuestLine"
+      },
+      "GuestQuote": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 4096,
+            "minLength": 20,
+            "title": "Token"
+          },
+          "quotation": {
+            "$ref": "#/components/schemas/QuoteIn"
+          },
+          "confirm_submission": {
+            "type": "boolean",
+            "title": "Confirm Submission",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "quotation"
+        ],
+        "title": "GuestQuote"
+      },
+      "GuestQuoteOut": {
+        "properties": {
+          "quotation_id": {
+            "type": "string",
+            "title": "Quotation Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "quotation_id",
+          "status"
+        ],
+        "title": "GuestQuoteOut"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -18064,6 +20382,329 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "HierarchyRepairItemOut": {
+        "properties": {
+          "category_id": {
+            "type": "string",
+            "title": "Category Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          },
+          "parent_name_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Name En"
+          },
+          "grandparent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grandparent Id"
+          },
+          "grandparent_name_en": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grandparent Name En"
+          },
+          "current_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Current Path"
+          },
+          "proposed_path": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Proposed Path"
+          },
+          "repair_action": {
+            "type": "string",
+            "title": "Repair Action"
+          },
+          "target_parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Parent Id"
+          },
+          "target_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Category Id"
+          },
+          "affected_materials_count": {
+            "type": "integer",
+            "title": "Affected Materials Count",
+            "default": 0
+          },
+          "affected_capabilities_count": {
+            "type": "integer",
+            "title": "Affected Capabilities Count",
+            "default": 0
+          },
+          "safe": {
+            "type": "boolean",
+            "title": "Safe",
+            "default": false
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "reason": {
+            "type": "string",
+            "title": "Reason",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id",
+          "code",
+          "name_en",
+          "repair_action",
+          "status"
+        ],
+        "title": "HierarchyRepairItemOut"
+      },
+      "HierarchyRepairJobIn": {
+        "properties": {
+          "category_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Ids"
+          },
+          "job_limit": {
+            "type": "integer",
+            "maximum": 300.0,
+            "minimum": 1.0,
+            "title": "Job Limit",
+            "default": 300
+          },
+          "batch_size": {
+            "type": "integer",
+            "maximum": 30.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "default": 30
+          },
+          "async_mode": {
+            "type": "boolean",
+            "title": "Async Mode",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "HierarchyRepairJobIn"
+      },
+      "HierarchyRepairJobOut": {
+        "properties": {
+          "job_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Job Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "total_records": {
+            "type": "integer",
+            "title": "Total Records",
+            "default": 0
+          },
+          "completed_records": {
+            "type": "integer",
+            "title": "Completed Records",
+            "default": 0
+          },
+          "repaired_count": {
+            "type": "integer",
+            "title": "Repaired Count",
+            "default": 0
+          },
+          "skipped_count": {
+            "type": "integer",
+            "title": "Skipped Count",
+            "default": 0
+          },
+          "failed_count": {
+            "type": "integer",
+            "title": "Failed Count",
+            "default": 0
+          },
+          "batches_executed": {
+            "type": "integer",
+            "title": "Batches Executed",
+            "default": 0
+          },
+          "materials_updated": {
+            "type": "integer",
+            "title": "Materials Updated",
+            "default": 0
+          },
+          "references_moved": {
+            "type": "integer",
+            "title": "References Moved",
+            "default": 0
+          },
+          "remaining_safe": {
+            "type": "integer",
+            "title": "Remaining Safe",
+            "default": 0
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "default": false
+          },
+          "errors": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Errors"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "title": "HierarchyRepairJobOut"
+      },
+      "HierarchyRepairPreviewOut": {
+        "properties": {
+          "total_hierarchy_issues": {
+            "type": "integer",
+            "title": "Total Hierarchy Issues"
+          },
+          "safe_repairs": {
+            "type": "integer",
+            "title": "Safe Repairs"
+          },
+          "manual_review_count": {
+            "type": "integer",
+            "title": "Manual Review Count"
+          },
+          "affected_materials": {
+            "type": "integer",
+            "title": "Affected Materials"
+          },
+          "affected_capabilities": {
+            "type": "integer",
+            "title": "Affected Capabilities"
+          },
+          "counts_by_action": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Counts By Action"
+          },
+          "batch_size": {
+            "type": "integer",
+            "title": "Batch Size"
+          },
+          "job_size": {
+            "type": "integer",
+            "title": "Job Size"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/HierarchyRepairItemOut"
+            },
+            "type": "array",
+            "title": "Items"
+          }
+        },
+        "type": "object",
+        "required": [
+          "total_hierarchy_issues",
+          "safe_repairs",
+          "manual_review_count",
+          "affected_materials",
+          "affected_capabilities",
+          "batch_size",
+          "job_size"
+        ],
+        "title": "HierarchyRepairPreviewOut"
       },
       "ImportBatchOut": {
         "properties": {
@@ -18406,6 +21047,38 @@
           "reason": {
             "type": "string",
             "title": "Reason"
+          },
+          "issue_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue Type"
+          },
+          "active_material_count": {
+            "type": "integer",
+            "title": "Active Material Count",
+            "default": 0
+          },
+          "proposed_action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Proposed Action"
+          },
+          "safe_to_auto_fix": {
+            "type": "boolean",
+            "title": "Safe To Auto Fix",
+            "default": false
           }
         },
         "type": "object",
@@ -18582,6 +21255,16 @@
             ],
             "title": "Progress"
           },
+          "matching_status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "processing",
+              "completed",
+              "failed"
+            ],
+            "title": "Matching Status"
+          },
           "pending_invitation_ids": {
             "items": {
               "type": "string"
@@ -18659,6 +21342,7 @@
           "matches",
           "invitations",
           "progress",
+          "matching_status",
           "pending_invitation_ids"
         ],
         "title": "MatchResults"
@@ -18862,6 +21546,16 @@
             "type": "integer",
             "title": "Rfq Items"
           },
+          "classified_items": {
+            "type": "integer",
+            "title": "Classified Items",
+            "default": 0
+          },
+          "unclassified_items": {
+            "type": "integer",
+            "title": "Unclassified Items",
+            "default": 0
+          },
           "active_suppliers_checked": {
             "type": "integer",
             "title": "Active Suppliers Checked"
@@ -18873,6 +21567,21 @@
           "approved_matching_capabilities": {
             "type": "integer",
             "title": "Approved Matching Capabilities"
+          },
+          "exact_matches": {
+            "type": "integer",
+            "title": "Exact Matches",
+            "default": 0
+          },
+          "category_matches": {
+            "type": "integer",
+            "title": "Category Matches",
+            "default": 0
+          },
+          "ai_assisted_candidates": {
+            "type": "integer",
+            "title": "Ai Assisted Candidates",
+            "default": 0
           },
           "rejected_by_location": {
             "type": "integer",
@@ -18889,6 +21598,41 @@
           "invitations_created": {
             "type": "integer",
             "title": "Invitations Created"
+          },
+          "delivery_summary": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Delivery Summary"
+          },
+          "invitation_statuses": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Invitation Statuses"
+          },
+          "item_diagnostics": {
+            "items": {
+              "$ref": "#/components/schemas/MatchingItemDiagnostic"
+            },
+            "type": "array",
+            "title": "Item Diagnostics"
+          },
+          "eligible_suppliers": {
+            "items": {
+              "$ref": "#/components/schemas/MatchingEligibleSupplierDiagnostic"
+            },
+            "type": "array",
+            "title": "Eligible Suppliers"
+          },
+          "excluded_suppliers": {
+            "items": {
+              "$ref": "#/components/schemas/MatchingSupplierDiagnostic"
+            },
+            "type": "array",
+            "title": "Excluded Suppliers"
           },
           "job_status": {
             "items": {
@@ -18920,6 +21664,163 @@
           "supplier_reasons"
         ],
         "title": "MatchingDiagnosticOut"
+      },
+      "MatchingEligibleSupplierDiagnostic": {
+        "properties": {
+          "supplier_org_id": {
+            "type": "string",
+            "title": "Supplier Org Id"
+          },
+          "supplier_name": {
+            "type": "string",
+            "title": "Supplier Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "score": {
+            "type": "integer",
+            "title": "Score"
+          },
+          "match_levels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Match Levels"
+          },
+          "coverage": {
+            "type": "string",
+            "title": "Coverage",
+            "default": "Not recorded"
+          },
+          "invitation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invitation Status"
+          },
+          "quotation_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quotation Status"
+          },
+          "ai_assisted": {
+            "type": "boolean",
+            "title": "Ai Assisted",
+            "default": false
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Reasons"
+          }
+        },
+        "type": "object",
+        "required": [
+          "supplier_org_id",
+          "supplier_name",
+          "status",
+          "score"
+        ],
+        "title": "MatchingEligibleSupplierDiagnostic"
+      },
+      "MatchingItemDiagnostic": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "main_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category Id"
+          },
+          "main_category_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category Name"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "subcategory_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Name"
+          },
+          "classified": {
+            "type": "boolean",
+            "title": "Classified"
+          },
+          "matched_supplier_count": {
+            "type": "integer",
+            "title": "Matched Supplier Count",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "description",
+          "classified"
+        ],
+        "title": "MatchingItemDiagnostic"
       },
       "MatchingRerunOut": {
         "properties": {
@@ -18985,6 +21886,44 @@
         ],
         "title": "MatchingSupplierDiagnostic"
       },
+      "MaterialClassifyIn": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 250,
+            "minLength": 2,
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Specifications",
+            "default": ""
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "title": "MaterialClassifyIn"
+      },
       "MaterialFilterPage": {
         "properties": {
           "items": {
@@ -19021,6 +21960,105 @@
           "offset"
         ],
         "title": "MaterialFilterPage"
+      },
+      "MaterialGroupIn": {
+        "properties": {
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "discipline": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "Civil",
+                  "Mechanical",
+                  "Electrical"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/MaterialGroupRow"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "minItems": 1,
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "main_category_id",
+          "rows"
+        ],
+        "title": "MaterialGroupIn"
+      },
+      "MaterialGroupOut": {
+        "properties": {
+          "materials": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Materials"
+          },
+          "created": {
+            "type": "integer",
+            "title": "Created"
+          },
+          "reused": {
+            "type": "integer",
+            "title": "Reused"
+          }
+        },
+        "type": "object",
+        "required": [
+          "materials",
+          "created",
+          "reused"
+        ],
+        "title": "MaterialGroupOut"
+      },
+      "MaterialGroupRow": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 250,
+            "minLength": 3,
+            "title": "Description"
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Unit"
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "unit"
+        ],
+        "title": "MaterialGroupRow"
       },
       "MaterialImportPreview": {
         "properties": {
@@ -19522,6 +22560,80 @@
           "unit"
         ],
         "title": "MaterialMasterIn"
+      },
+      "MaterialMatchRequest": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 1,
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "maxLength": 1000,
+            "title": "Specifications",
+            "default": ""
+          },
+          "unit": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 40
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit"
+          },
+          "discipline": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline"
+          },
+          "main_category": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 180
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category"
+          },
+          "subcategory": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 180
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "description"
+        ],
+        "title": "MaterialMatchRequest"
       },
       "MaterialOut": {
         "properties": {
@@ -21613,8 +24725,63 @@
         "type": "object",
         "title": "PlatformSettingsUpdate"
       },
+      "PriceGroupIn": {
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "title": "Org Id"
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/PriceIn"
+            },
+            "type": "array",
+            "maxItems": 30,
+            "minItems": 1,
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "org_id",
+          "main_category_id",
+          "rows"
+        ],
+        "title": "PriceGroupIn"
+      },
       "PriceIn": {
         "properties": {
+          "vat_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vat Rate"
+          },
           "org_id": {
             "type": "string",
             "title": "Org Id"
@@ -21730,7 +24897,13 @@
           },
           "currency": {
             "type": "string",
-            "const": "SAR",
+            "enum": [
+              "SAR",
+              "USD",
+              "EUR",
+              "AED",
+              "GBP"
+            ],
             "title": "Currency",
             "default": "SAR"
           },
@@ -21863,6 +25036,17 @@
             ],
             "title": "Min Order Quantity"
           },
+          "vat_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vat Rate"
+          },
           "lead_days": {
             "type": "integer",
             "title": "Lead Days"
@@ -21966,6 +25150,7 @@
           "offered_specs",
           "unit_price",
           "min_order_quantity",
+          "vat_rate",
           "lead_days",
           "valid_until",
           "version",
@@ -22678,6 +25863,11 @@
             ],
             "title": "Policy Revision"
           },
+          "commercial_terms": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Commercial Terms"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -22703,6 +25893,7 @@
           "review_required",
           "review_reasons",
           "policy_revision",
+          "commercial_terms",
           "id",
           "created_at"
         ],
@@ -22778,6 +25969,11 @@
             ],
             "title": "Policy Revision"
           },
+          "commercial_terms": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Commercial Terms"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -22818,6 +26014,7 @@
           "review_required",
           "review_reasons",
           "policy_revision",
+          "commercial_terms",
           "id",
           "created_at",
           "supplier_name",
@@ -23040,6 +26237,11 @@
       },
       "QuoteDetail": {
         "properties": {
+          "document": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Document"
+          },
           "quotation": {
             "$ref": "#/components/schemas/QuotationOut"
           },
@@ -23104,6 +26306,21 @@
       },
       "QuoteIn": {
         "properties": {
+          "currency": {
+            "type": "string",
+            "enum": [
+              "SAR",
+              "USD",
+              "EUR",
+              "AED",
+              "GBP"
+            ],
+            "title": "Currency",
+            "default": "SAR"
+          },
+          "commercial_terms": {
+            "$ref": "#/components/schemas/CommercialTerms"
+          },
           "lines": {
             "items": {
               "$ref": "#/components/schemas/QuoteLineIn"
@@ -23294,6 +26511,17 @@
             ],
             "title": "Source Rate Version"
           },
+          "vat_rate": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vat Rate"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -23319,6 +26547,7 @@
           "offered_description",
           "source_rate_id",
           "source_rate_version",
+          "vat_rate",
           "id",
           "created_at"
         ],
@@ -23391,6 +26620,508 @@
           "items"
         ],
         "title": "RFQDetail"
+      },
+      "RFQImportCandidate": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "category": {
+            "type": "string",
+            "title": "Category"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "score": {
+            "type": "number",
+            "title": "Score"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "description",
+          "main_category_id",
+          "category",
+          "unit",
+          "score"
+        ],
+        "title": "RFQImportCandidate"
+      },
+      "RFQImportConfirmation": {
+        "properties": {
+          "batch_id": {
+            "type": "string",
+            "title": "Batch Id"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/RFQImportConfirmedLine"
+            },
+            "type": "array",
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "batch_id",
+          "lines"
+        ],
+        "title": "RFQImportConfirmation"
+      },
+      "RFQImportConfirmedLine": {
+        "properties": {
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "main_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 3,
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "maxLength": 10000,
+            "title": "Specifications",
+            "default": ""
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Unit"
+          },
+          "quantity": {
+            "type": "string",
+            "title": "Quantity"
+          },
+          "key": {
+            "type": "string",
+            "title": "Key"
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "unit",
+          "quantity",
+          "key"
+        ],
+        "title": "RFQImportConfirmedLine"
+      },
+      "RFQImportEdit": {
+        "properties": {
+          "expected_version": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Expected Version"
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 3,
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "maxLength": 10000,
+            "title": "Specifications",
+            "default": ""
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "minLength": 1,
+            "title": "Unit"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "main_category_id": {
+            "type": "string",
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted",
+            "default": false
+          },
+          "removed": {
+            "type": "boolean",
+            "title": "Removed",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "expected_version",
+          "description",
+          "unit",
+          "quantity",
+          "main_category_id"
+        ],
+        "title": "RFQImportEdit"
+      },
+      "RFQImportJob": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "stage": {
+            "type": "string",
+            "title": "Stage"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "processed": {
+            "type": "integer",
+            "title": "Processed"
+          },
+          "matched": {
+            "type": "integer",
+            "title": "Matched"
+          },
+          "needs_review": {
+            "type": "integer",
+            "title": "Needs Review"
+          },
+          "unmatched": {
+            "type": "integer",
+            "title": "Unmatched"
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled"
+          },
+          "failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failure Reason"
+          },
+          "headers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Headers"
+          },
+          "column_mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Column Mapping"
+          },
+          "rows": {
+            "items": {
+              "$ref": "#/components/schemas/RFQImportRow"
+            },
+            "type": "array",
+            "title": "Rows"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "status",
+          "stage",
+          "total",
+          "processed",
+          "matched",
+          "needs_review",
+          "unmatched",
+          "failed",
+          "ai_enabled"
+        ],
+        "title": "RFQImportJob"
+      },
+      "RFQImportOptions": {
+        "properties": {
+          "column_mapping": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "maxProperties": 8,
+            "title": "Column Mapping"
+          }
+        },
+        "type": "object",
+        "title": "RFQImportOptions"
+      },
+      "RFQImportRetry": {
+        "properties": {
+          "row_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 300,
+            "title": "Row Ids"
+          }
+        },
+        "type": "object",
+        "title": "RFQImportRetry"
+      },
+      "RFQImportReview": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "accept_high_confidence",
+              "remove"
+            ],
+            "title": "Action"
+          },
+          "row_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 300,
+            "title": "Row Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "RFQImportReview"
+      },
+      "RFQImportRow": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "row_number": {
+            "type": "integer",
+            "title": "Row Number"
+          },
+          "original_description": {
+            "type": "string",
+            "title": "Original Description"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "specifications": {
+            "type": "string",
+            "title": "Specifications",
+            "default": ""
+          },
+          "main_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category Id"
+          },
+          "subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory Id"
+          },
+          "material_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Id"
+          },
+          "unit": {
+            "type": "string",
+            "title": "Unit"
+          },
+          "quantity": {
+            "type": "string",
+            "title": "Quantity"
+          },
+          "group": {
+            "type": "string",
+            "title": "Group",
+            "default": ""
+          },
+          "attributes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Attributes"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/RFQImportCandidate"
+            },
+            "type": "array",
+            "title": "Candidates"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 0
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "accepted": {
+            "type": "boolean",
+            "title": "Accepted",
+            "default": false
+          },
+          "removed": {
+            "type": "boolean",
+            "title": "Removed",
+            "default": false
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue"
+          },
+          "ai_fallback": {
+            "type": "boolean",
+            "title": "Ai Fallback",
+            "default": false
+          },
+          "version": {
+            "type": "integer",
+            "title": "Version",
+            "default": 1
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "row_number",
+          "original_description",
+          "description",
+          "unit",
+          "quantity",
+          "status"
+        ],
+        "title": "RFQImportRow"
       },
       "RFQIn": {
         "properties": {
@@ -24430,6 +28161,66 @@
         "type": "object",
         "title": "RetryDelivery"
       },
+      "ReviewMaterialPreviewOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "code": {
+            "type": "string",
+            "title": "Code"
+          },
+          "name_en": {
+            "type": "string",
+            "title": "Name En"
+          },
+          "current_discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Discipline"
+          },
+          "inferred_discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Inferred Discipline"
+          },
+          "safe": {
+            "type": "boolean",
+            "title": "Safe"
+          },
+          "evidence": {
+            "type": "string",
+            "title": "Evidence"
+          },
+          "issue": {
+            "type": "string",
+            "title": "Issue"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "code",
+          "name_en",
+          "safe",
+          "evidence",
+          "issue"
+        ],
+        "title": "ReviewMaterialPreviewOut"
+      },
       "ReviewQueue": {
         "properties": {
           "verifications": {
@@ -24554,6 +28345,50 @@
               }
             ],
             "title": "Sheet"
+          },
+          "company_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Company Name"
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
           }
         },
         "type": "object",
@@ -25109,6 +28944,16 @@
             "type": "string",
             "title": "Batch Id"
           },
+          "filename": {
+            "type": "string",
+            "title": "Filename",
+            "default": ""
+          },
+          "file_checksum": {
+            "type": "string",
+            "title": "File Checksum",
+            "default": ""
+          },
           "status": {
             "type": "string",
             "title": "Status"
@@ -25128,13 +28973,126 @@
             ],
             "title": "Message"
           },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
           "total_rows": {
             "type": "integer",
             "title": "Total Rows"
           },
+          "processed_rows": {
+            "type": "integer",
+            "title": "Processed Rows",
+            "default": 0
+          },
           "total_supplier_records_identified": {
             "type": "integer",
             "title": "Total Supplier Records Identified"
+          },
+          "new_suppliers_estimated": {
+            "type": "integer",
+            "title": "New Suppliers Estimated",
+            "default": 0
+          },
+          "existing_suppliers_estimated": {
+            "type": "integer",
+            "title": "Existing Suppliers Estimated",
+            "default": 0
+          },
+          "contacts_detected": {
+            "type": "integer",
+            "title": "Contacts Detected",
+            "default": 0
+          },
+          "disciplines_detected": {
+            "type": "integer",
+            "title": "Disciplines Detected",
+            "default": 0
+          },
+          "categories_detected": {
+            "type": "integer",
+            "title": "Categories Detected",
+            "default": 0
+          },
+          "subcategories_detected": {
+            "type": "integer",
+            "title": "Subcategories Detected",
+            "default": 0
+          },
+          "material_values_detected": {
+            "type": "integer",
+            "title": "Material Values Detected",
+            "default": 0
+          },
+          "existing_materials_matched": {
+            "type": "integer",
+            "title": "Existing Materials Matched",
+            "default": 0
+          },
+          "unresolved_material_mappings": {
+            "type": "integer",
+            "title": "Unresolved Material Mappings",
+            "default": 0
+          },
+          "brands_detected": {
+            "type": "integer",
+            "title": "Brands Detected",
+            "default": 0
+          },
+          "duplicate_source_rows": {
+            "type": "integer",
+            "title": "Duplicate Source Rows",
+            "default": 0
+          },
+          "valid_rows": {
+            "type": "integer",
+            "title": "Valid Rows",
+            "default": 0
+          },
+          "warning_rows": {
+            "type": "integer",
+            "title": "Warning Rows",
+            "default": 0
+          },
+          "review_required_rows": {
+            "type": "integer",
+            "title": "Review Required Rows",
+            "default": 0
+          },
+          "invalid_rows": {
+            "type": "integer",
+            "title": "Invalid Rows",
+            "default": 0
           },
           "batch_size": {
             "type": "integer",
@@ -25210,6 +29168,11 @@
           "capabilities_skipped": {
             "type": "integer",
             "title": "Capabilities Skipped",
+            "default": 0
+          },
+          "material_mappings_created": {
+            "type": "integer",
+            "title": "Material Mappings Created",
             "default": 0
           },
           "categories_created": {
@@ -26139,686 +30102,6 @@
           "org_id"
         ],
         "title": "WorkspaceSelectionIn"
-      },
-      "Body_upload_job_api_v1_rfqs_imports_post": {
-        "properties": {
-          "file": {
-            "type": "string",
-            "contentMediaType": "application/octet-stream",
-            "title": "File"
-          },
-          "org_id": {
-            "type": "string",
-            "title": "Org Id"
-          },
-          "draft_key": {
-            "type": "string",
-            "title": "Draft Key"
-          },
-          "rfq_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Rfq Id"
-          },
-          "ai_enabled": {
-            "type": "boolean",
-            "title": "Ai Enabled",
-            "default": true
-          }
-        },
-        "type": "object",
-        "required": [
-          "file",
-          "org_id",
-          "draft_key"
-        ],
-        "title": "Body_upload_job_api_v1_rfqs_imports_post"
-      },
-      "MaterialGroupIn": {
-        "properties": {
-          "main_category_id": {
-            "type": "string",
-            "title": "Main Category Id"
-          },
-          "subcategory_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subcategory Id"
-          },
-          "discipline": {
-            "anyOf": [
-              {
-                "type": "string",
-                "enum": [
-                  "Civil",
-                  "Mechanical",
-                  "Electrical"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Discipline"
-          },
-          "rows": {
-            "items": {
-              "$ref": "#/components/schemas/MaterialGroupRow"
-            },
-            "type": "array",
-            "maxItems": 30,
-            "minItems": 1,
-            "title": "Rows"
-          }
-        },
-        "type": "object",
-        "required": [
-          "main_category_id",
-          "rows"
-        ],
-        "title": "MaterialGroupIn"
-      },
-      "MaterialGroupOut": {
-        "properties": {
-          "materials": {
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array",
-            "title": "Materials"
-          },
-          "created": {
-            "type": "integer",
-            "title": "Created"
-          },
-          "reused": {
-            "type": "integer",
-            "title": "Reused"
-          }
-        },
-        "type": "object",
-        "required": [
-          "materials",
-          "created",
-          "reused"
-        ],
-        "title": "MaterialGroupOut"
-      },
-      "MaterialGroupRow": {
-        "properties": {
-          "description": {
-            "type": "string",
-            "maxLength": 250,
-            "minLength": 3,
-            "title": "Description"
-          },
-          "unit": {
-            "type": "string",
-            "maxLength": 30,
-            "minLength": 1,
-            "title": "Unit"
-          }
-        },
-        "type": "object",
-        "required": [
-          "description",
-          "unit"
-        ],
-        "title": "MaterialGroupRow"
-      },
-      "PriceGroupIn": {
-        "properties": {
-          "org_id": {
-            "type": "string",
-            "title": "Org Id"
-          },
-          "main_category_id": {
-            "type": "string",
-            "title": "Main Category Id"
-          },
-          "subcategory_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subcategory Id"
-          },
-          "rows": {
-            "items": {
-              "$ref": "#/components/schemas/PriceIn"
-            },
-            "type": "array",
-            "maxItems": 30,
-            "minItems": 1,
-            "title": "Rows"
-          }
-        },
-        "type": "object",
-        "required": [
-          "org_id",
-          "main_category_id",
-          "rows"
-        ],
-        "title": "PriceGroupIn"
-      },
-      "RFQImportCandidate": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description"
-          },
-          "main_category_id": {
-            "type": "string",
-            "title": "Main Category Id"
-          },
-          "subcategory_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subcategory Id"
-          },
-          "category": {
-            "type": "string",
-            "title": "Category"
-          },
-          "unit": {
-            "type": "string",
-            "title": "Unit"
-          },
-          "score": {
-            "type": "number",
-            "title": "Score"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "description",
-          "main_category_id",
-          "category",
-          "unit",
-          "score"
-        ],
-        "title": "RFQImportCandidate"
-      },
-      "RFQImportConfirmation": {
-        "properties": {
-          "batch_id": {
-            "type": "string",
-            "title": "Batch Id"
-          },
-          "lines": {
-            "items": {
-              "$ref": "#/components/schemas/RFQImportConfirmedLine"
-            },
-            "type": "array",
-            "title": "Lines"
-          }
-        },
-        "type": "object",
-        "required": [
-          "batch_id",
-          "lines"
-        ],
-        "title": "RFQImportConfirmation"
-      },
-      "RFQImportConfirmedLine": {
-        "properties": {
-          "material_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Material Id"
-          },
-          "main_category_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Main Category Id"
-          },
-          "subcategory_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subcategory Id"
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 4000,
-            "minLength": 3,
-            "title": "Description"
-          },
-          "specifications": {
-            "type": "string",
-            "maxLength": 10000,
-            "title": "Specifications",
-            "default": ""
-          },
-          "unit": {
-            "type": "string",
-            "maxLength": 30,
-            "minLength": 1,
-            "title": "Unit"
-          },
-          "quantity": {
-            "type": "string",
-            "title": "Quantity"
-          },
-          "key": {
-            "type": "string",
-            "title": "Key"
-          }
-        },
-        "type": "object",
-        "required": [
-          "description",
-          "unit",
-          "quantity",
-          "key"
-        ],
-        "title": "RFQImportConfirmedLine"
-      },
-      "RFQImportEdit": {
-        "properties": {
-          "expected_version": {
-            "type": "integer",
-            "minimum": 1.0,
-            "title": "Expected Version"
-          },
-          "description": {
-            "type": "string",
-            "maxLength": 4000,
-            "minLength": 3,
-            "title": "Description"
-          },
-          "specifications": {
-            "type": "string",
-            "maxLength": 10000,
-            "title": "Specifications",
-            "default": ""
-          },
-          "unit": {
-            "type": "string",
-            "maxLength": 30,
-            "minLength": 1,
-            "title": "Unit"
-          },
-          "quantity": {
-            "anyOf": [
-              {
-                "type": "number",
-                "exclusiveMinimum": 0.0
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "title": "Quantity"
-          },
-          "main_category_id": {
-            "type": "string",
-            "title": "Main Category Id"
-          },
-          "subcategory_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subcategory Id"
-          },
-          "material_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Material Id"
-          },
-          "accepted": {
-            "type": "boolean",
-            "title": "Accepted",
-            "default": false
-          },
-          "removed": {
-            "type": "boolean",
-            "title": "Removed",
-            "default": false
-          }
-        },
-        "type": "object",
-        "required": [
-          "expected_version",
-          "description",
-          "unit",
-          "quantity",
-          "main_category_id"
-        ],
-        "title": "RFQImportEdit"
-      },
-      "RFQImportJob": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "stage": {
-            "type": "string",
-            "title": "Stage"
-          },
-          "total": {
-            "type": "integer",
-            "title": "Total"
-          },
-          "processed": {
-            "type": "integer",
-            "title": "Processed"
-          },
-          "matched": {
-            "type": "integer",
-            "title": "Matched"
-          },
-          "needs_review": {
-            "type": "integer",
-            "title": "Needs Review"
-          },
-          "unmatched": {
-            "type": "integer",
-            "title": "Unmatched"
-          },
-          "failed": {
-            "type": "integer",
-            "title": "Failed"
-          },
-          "ai_enabled": {
-            "type": "boolean",
-            "title": "Ai Enabled"
-          },
-          "failure_reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Reason"
-          },
-          "headers": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "title": "Headers"
-          },
-          "column_mapping": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "title": "Column Mapping"
-          },
-          "rows": {
-            "items": {
-              "$ref": "#/components/schemas/RFQImportRow"
-            },
-            "type": "array",
-            "title": "Rows"
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "status",
-          "stage",
-          "total",
-          "processed",
-          "matched",
-          "needs_review",
-          "unmatched",
-          "failed",
-          "ai_enabled"
-        ],
-        "title": "RFQImportJob"
-      },
-      "RFQImportOptions": {
-        "properties": {
-          "column_mapping": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "type": "object",
-            "maxProperties": 8,
-            "title": "Column Mapping"
-          }
-        },
-        "type": "object",
-        "title": "RFQImportOptions"
-      },
-      "RFQImportRetry": {
-        "properties": {
-          "row_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 300,
-            "title": "Row Ids"
-          }
-        },
-        "type": "object",
-        "title": "RFQImportRetry"
-      },
-      "RFQImportReview": {
-        "properties": {
-          "action": {
-            "type": "string",
-            "enum": [
-              "accept_high_confidence",
-              "remove"
-            ],
-            "title": "Action"
-          },
-          "row_ids": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array",
-            "maxItems": 300,
-            "title": "Row Ids"
-          }
-        },
-        "type": "object",
-        "required": [
-          "action"
-        ],
-        "title": "RFQImportReview"
-      },
-      "RFQImportRow": {
-        "properties": {
-          "id": {
-            "type": "string",
-            "title": "Id"
-          },
-          "row_number": {
-            "type": "integer",
-            "title": "Row Number"
-          },
-          "original_description": {
-            "type": "string",
-            "title": "Original Description"
-          },
-          "description": {
-            "type": "string",
-            "title": "Description"
-          },
-          "specifications": {
-            "type": "string",
-            "title": "Specifications",
-            "default": ""
-          },
-          "main_category_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Main Category Id"
-          },
-          "subcategory_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Subcategory Id"
-          },
-          "material_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Material Id"
-          },
-          "unit": {
-            "type": "string",
-            "title": "Unit"
-          },
-          "quantity": {
-            "type": "string",
-            "title": "Quantity"
-          },
-          "group": {
-            "type": "string",
-            "title": "Group",
-            "default": ""
-          },
-          "attributes": {
-            "additionalProperties": true,
-            "type": "object",
-            "title": "Attributes"
-          },
-          "candidates": {
-            "items": {
-              "$ref": "#/components/schemas/RFQImportCandidate"
-            },
-            "type": "array",
-            "title": "Candidates"
-          },
-          "confidence": {
-            "type": "number",
-            "title": "Confidence",
-            "default": 0
-          },
-          "status": {
-            "type": "string",
-            "title": "Status"
-          },
-          "accepted": {
-            "type": "boolean",
-            "title": "Accepted",
-            "default": false
-          },
-          "removed": {
-            "type": "boolean",
-            "title": "Removed",
-            "default": false
-          },
-          "issue": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Issue"
-          },
-          "ai_fallback": {
-            "type": "boolean",
-            "title": "Ai Fallback",
-            "default": false
-          },
-          "version": {
-            "type": "integer",
-            "title": "Version",
-            "default": 1
-          }
-        },
-        "type": "object",
-        "required": [
-          "id",
-          "row_number",
-          "original_description",
-          "description",
-          "unit",
-          "quantity",
-          "status"
-        ],
-        "title": "RFQImportRow"
       }
     },
     "securitySchemes": {

@@ -62,9 +62,9 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
                 materials = link.material_ids if link.material_ids is not None else cap.material_ids or []
                 if item.material_id and item.material_id in materials:
                     ranks.append((0, not link.is_primary))
-                elif not link.material_ids and item.subcategory_id and cap.category_id == item.subcategory_id:
+                elif not materials and item.subcategory_id and cap.category_id == item.subcategory_id:
                     ranks.append((1, not link.is_primary))
-                elif not link.material_ids and item.main_category_id and cap.category_id == item.main_category_id:
+                elif not materials and item.main_category_id and cap.category_id == item.main_category_id:
                     ranks.append((2, not link.is_primary))
             if ranks:
                 rank, secondary = min(ranks)
@@ -152,3 +152,32 @@ def current_recipient(db, payload):
     context = payload['context']
     recipients = resolve(db, context['org_id'], context['rfq_id'], payload['template'])
     return any(r.get('destination') == payload.get('destination') for r in recipients[payload['channel']])
+
+
+def queue_invitation_in_app(db, invitation, rfq):
+    from app.models import Notification
+    members=db.execute(select(Member,User).join(User,User.id==Member.user_id).where(
+        Member.organization_id==invitation.supplier_org_id,User.is_active.is_(True),
+        Member.role.in_({'owner','manager','supplier'}))).all()
+    if not members:return
+    # Imported organizations often have no accounts; do not repeat matching for them.
+    # A sole owner is the company fallback regardless of the external employee route.
+    resolved=resolve(db,invitation.supplier_org_id,rfq.id) if len(members)>1 or members[0][0].role=='supplier' else {}
+    destinations={r['destination'] for rows in resolved.values() for r in rows if r.get('destination')}
+    selected=[]
+    for member,user in members:
+        for channel,value in [('email',user.email),('sms',user.phone_e164 or user.phone)]:
+            if not value:continue
+            try:matches=normalize_destination(channel,value) in destinations
+            except ValueError:matches=False
+            if matches:selected.append(user);break
+    if not selected:selected=[user for member,user in members if member.role in {'owner','manager'}]
+    event_id=db.scalar(select(Outbox.id).where(Outbox.dedupe_key==f'rfq-invitation:{invitation.id}'))
+    for user in selected:
+        prefs=db.get(AccountPreference,user.id)
+        if prefs and (not prefs.in_app_enabled or not prefs.events.get('rfq_invitation',True)):continue
+        if not db.scalar(select(Notification.id).where(Notification.delivery_outbox_id==event_id,
+            Notification.recipient_user_id==user.id,Notification.event=='rfq.invitation')):
+            db.add(Notification(recipient_user_id=user.id,event='rfq.invitation',
+                message=f'New RFQ: {rfq.reference}',status='delivered',channel='in_app',delivery_outbox_id=event_id))
+    db.flush()

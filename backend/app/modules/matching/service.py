@@ -161,6 +161,7 @@ def match_and_invite(
     limit: int | None = None,
     after_supplier_id: str | None = None,
     bounded: bool = False,
+    single_batch: bool = False,
 ) -> dict:
     """Drain relevant SQL pages; legacy limit is the page size, never a discovery cap."""
     db.scalar(select(RFQ).where(RFQ.id == rfq.id).with_for_update())
@@ -177,11 +178,12 @@ def match_and_invite(
         for key in summary:
             if key == 'invitations':
                 summary[key].extend(batch.get(key, []))
-            else:
+            elif key != 'next_cursor':
                 summary[key] += batch.get(key, 0)
         db.flush()
         cursor = batch.get('next_cursor')
-        if not cursor:
+        summary['next_cursor'] = cursor
+        if single_batch or not cursor:
             return summary
 
 
@@ -194,6 +196,7 @@ def _match_batch(
     bounded: bool = False,
     evaluate_only: bool = False,
     supplier_ids: list[str] | None = None,
+    semantic_enabled: bool = False,
 ) -> dict:
     """Filter candidates in PostgreSQL, evaluate hybrid eligibility, and write matches/invitations."""
     if rfq.status not in {'published', 'collecting_quotes'} or as_utc(rfq.response_deadline) <= datetime.now(timezone.utc):
@@ -246,7 +249,7 @@ def _match_batch(
     main_ids = {main for main, _ in item_scope.values() if main}
     all_keywords = {kw for kws in item_keywords.values() for kw in kws}
 
-    batch_size = max(1, min(limit if limit is not None else 500, 500))
+    batch_size = max(1, min(limit if limit is not None else 50, 100))
     relevant = capability_scope(
         db,
         exact_material_ids,
@@ -322,10 +325,11 @@ def _match_batch(
         candidate_ids = candidate_ids[:batch_size]
 
     # Batch-fetch capabilities, organizations, pricebook items, and imported trades (no N+1)
+    candidate_page = (candidate_query.limit(batch_size) if bounded else candidate_query).subquery()
     rows = db.execute(
         select(Capability, Organization)
         .join(Organization, Organization.id == Capability.org_id)
-        .where(Capability.org_id.in_(candidate_ids))
+        .join(candidate_page, candidate_page.c.id == Organization.id)
     ).all() if candidate_ids else []
 
     suppliers_caps: dict[str, list[Capability]] = {}
@@ -583,7 +587,7 @@ def _match_batch(
     covered_by_any = {item_id for cand in eligible_candidates.values() for item_id in cand['covered']}
     unresolved_item_ids = [item_id for item_id in item_scope if item_id not in covered_by_any]
     settings = get_settings()
-    if unresolved_item_ids and not evaluate_only and getattr(settings, 'gemini_enabled', True) and settings.gemini_api_key.get_secret_value():
+    if semantic_enabled and unresolved_item_ids and not evaluate_only and getattr(settings, 'gemini_enabled', True) and settings.gemini_api_key.get_secret_value():
         # If ai_pool_orgs is empty, fetch a small bounded slice of active approved suppliers covering the RFQ city
         if not ai_pool_orgs and supplier_ids is None:
             extra_rows = db.execute(
@@ -869,18 +873,6 @@ def _match_batch(
 
     if invitations:
         db.flush()
-        member_rows = db.execute(
-            select(Member.organization_id, Member.user_id)
-            .join(User, User.id == Member.user_id)
-            .where(
-                User.is_active.is_(True),
-                Member.organization_id.in_([inv.supplier_org_id for inv in invitations]),
-            )
-        ).all()
-        members_by_org: dict[str, list[str]] = {}
-        for org_id, user_id in member_rows:
-            members_by_org.setdefault(org_id, []).append(user_id)
-
         for invitation in invitations:
             db.add(Outbox(
                 event='rfq.invitation',
@@ -892,19 +884,14 @@ def _match_batch(
                 dedupe_key=f'rfq-invitation:{invitation.id}',
             ))
 
-        recipients = [
-            user_id for invitation in invitations
-            for user_id in members_by_org.get(invitation.supplier_org_id, [])
-        ]
-        db.add_all(
-            Notification(
-                recipient_user_id=user_id,
-                event='rfq.invitation',
-                message=f'New RFQ: {rfq.reference}',
-                status='delivered',
-            )
-            for user_id in recipients
-        )
+        # Route in-app alerts through the same responsibility mapping as email/SMS.
+        from app.modules.notifications.recipients import queue_invitation_in_app
+        db.flush()
+        member_orgs=set(db.scalars(select(Member.organization_id).join(User,User.id==Member.user_id).where(
+            Member.organization_id.in_([inv.supplier_org_id for inv in invitations]),User.is_active.is_(True))).all())
+        for invitation in invitations:
+            if invitation.supplier_org_id in member_orgs:
+                queue_invitation_in_app(db, invitation, rfq)
 
         rfq.status = 'collecting_quotes'
     elif invited:

@@ -87,12 +87,19 @@ def prepare(db, event):
             event.status = "skipped"
             event.delivery_status = "eligibility_review_required"
             return
+        quote=db.scalar(select(Quotation).where(Quotation.invitation_id==invitation.id))
+        from app.models import QuoteLine
+        quoted=set(db.scalars(select(QuoteLine.rfq_item_id).where(QuoteLine.quotation_id==quote.id))) if quote else set()
+        missing=db.scalars(select(RFQItem.description).where(RFQItem.rfq_id==rfq.id,RFQItem.id.not_in(quoted))).all()
+        pricing_message=('A private quotation draft is prepared. Review and confirm before submitting.' if quote and quote.status=='draft' else
+            'Your authorized automatic quotation has been submitted.' if quote else 'Please prepare a manual quotation.')
+        if missing:pricing_message+=' Please provide prices for: '+', '.join(missing)
         enqueue_rfq_notice(
             db,
             org_id=org.id,
             template="rfq_invitation",
             context={**context, "supplier_name": org.name, "org_id": org.id,
-                     "invitation_id": invitation.id},
+                     "invitation_id": invitation.id,"pricing_message":pricing_message},
             source_key=f"rfq-invitation:{invitation.id}",
         )
     else:

@@ -132,13 +132,15 @@ def test_contact_outbox_delivery_uses_existing_email_provider(monkeypatch, kind,
         provider_message_id=None, delivery_status=None, next_attempt_at=datetime.now(timezone.utc), id='outbox-id',
     )
     captured = {}
+    committed=[]
 
     def send_email(address, subject, plain, html, key):
+        assert committed, 'Release the database transaction before SMTP delivery'
         captured.update(address=address, subject=subject, plain=plain, html=html, key=key)
         return 'provider-id'
 
     monkeypatch.setattr(worker, 'send_email', send_email)
-    _deliver_contact_inquiry(SimpleNamespace(get=lambda model, key: inquiry), event)
+    _deliver_contact_inquiry(SimpleNamespace(get=lambda model, key: inquiry,commit=lambda:committed.append(True)), event)
 
     assert captured['address'] == recipient
     assert captured['key'] == event.id

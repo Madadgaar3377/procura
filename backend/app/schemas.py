@@ -447,6 +447,7 @@ class SupplierTradeMappingIn(Model):
     city:str=Field(default='',max_length=100)
 
 class PriceIn(Model):
+    vat_rate: Decimal | None = Field(default=None, ge=0, le=1, decimal_places=4)
     org_id:str
     material_id:str|None=None
     main_category_id:str|None=None
@@ -460,7 +461,7 @@ class PriceIn(Model):
     remarks:str=Field(default='',max_length=4000)
     unit_price:Decimal=Field(gt=0,max_digits=14,decimal_places=2)
     min_order_quantity:Decimal|None=Field(default=None,gt=0,max_digits=14,decimal_places=3)
-    currency:Literal['SAR']='SAR'
+    currency:Literal['SAR','USD','EUR','AED','GBP']='SAR'
     price_basis:Literal['supply','supply_install']='supply'
     lead_days:int=Field(default=7,ge=0,le=3650)
     valid_until:datetime|None=None
@@ -567,7 +568,18 @@ class QuoteLineIn(Model):
     lead_days:int=Field(ge=0,le=3650)
     note:str=Field(default='',max_length=4000)
 
+class CommercialTerms(Model):
+    quotation_reference:str=Field(default='',max_length=100)
+    delivery_terms:str=Field(default='',max_length=4000)
+    payment_terms:str=Field(default='',max_length=4000)
+    validity_until:datetime|None=None
+    terms_and_conditions:str=Field(default='',max_length=10000)
+    template_key:str=Field(default='pending_client_approval',max_length=100)
+
+
 class QuoteIn(Model):
+    currency:Literal['SAR','USD','EUR','AED','GBP']='SAR'
+    commercial_terms:CommercialTerms=Field(default_factory=CommercialTerms)
     lines:list[QuoteLineIn]=Field(min_length=1,max_length=100)
     vat_rate:Decimal=Field(default=Decimal('0.15'),ge=0,le=1)
     price_basis:str='supply'

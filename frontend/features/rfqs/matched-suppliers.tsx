@@ -114,6 +114,7 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
   const invitations = progressResult.data?.invitations || [];
   const state = matchingState(data, stalled);
   const busyProgress = data?.progress === 'matching_queued' || data?.progress === 'matching_in_progress';
+  const [pollState] = useState(() => ({ key: '', started: 0, count: 0 }));
 
   const choose = (value: string) => {
     setSelected(value);
@@ -138,13 +139,20 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
   }, [favorites.data, favorites.fetching, favoriteOffset]);
   useEffect(() => {
     if (!busyProgress || state.inconsistent) return;
-    // Bound polling: a stale job flag must never produce an endless spinner.
-    const deadline = Date.now() + 90_000;
-    const timer = window.setInterval(() => {
-      if (Date.now() >= deadline) { setStalled(true); window.clearInterval(timer); return; }
-      if (document.visibilityState === 'visible') { results.reload(); if (invitationOffset !== offset) invitationResults.reload(); }
-    }, 5000);
-    return () => window.clearInterval(timer);
+    const key = `${currentId}:${pollRevision}`;
+    if (pollState.key !== key) { pollState.key = key; pollState.started = Date.now(); pollState.count = 0; }
+    let timer: number;
+    const poll = () => {
+      if (Date.now() - pollState.started >= 90_000) { setStalled(true); return; }
+      if (document.visibilityState === 'visible') {
+        results.reload();
+        if (invitationOffset !== offset) invitationResults.reload();
+        pollState.count += 1;
+      }
+      timer = window.setTimeout(poll, Math.min(30_000, 5000 * 2 ** Math.min(pollState.count, 3)));
+    };
+    timer = window.setTimeout(poll, 5000);
+    return () => window.clearTimeout(timer);
   }, [currentId, busyProgress, state.inconsistent, pollRevision, results.reload, invitationResults.reload, invitationOffset, offset]);
   useEffect(() => {
     const available = data?.reminder_available_at;

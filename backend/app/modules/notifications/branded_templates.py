@@ -177,6 +177,8 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
     if template == 'password_changed':
         heading = 'تم تغيير كلمة المرور' if arabic else 'Password changed'
         plain = 'تم تغيير كلمة مرور حسابك في Procumaterial. إذا لم تقم بذلك، تواصل مع فريق الدعم فوراً.' if arabic else 'Your Procumaterial password was changed. If this was not you, contact support immediately.'
+    if template=='rfq_invitation' and context.get('pricing_message'):
+        plain+='\n\n'+str(context['pricing_message'])
     subject = f"Procumaterial | {heading}" + (f" — {ref}" if ref else "")
     url = str(context.get("url", "")) if not security or template=='password_reset' else ""
     parsed = urlsplit(url)
@@ -208,6 +210,8 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         f'<p style="font-size:14px;line-height:1.6;margin-top:28px">{"فريق Procumaterial" if arabic else "Procumaterial Team"}<br>{TAGLINE}</p>'
         "</td></tr></table></td></tr></table></body></html>"
     )
+    if sms and template in {'rfq_invitation','deadline_reminder'} and url:
+        plain += f' {url}'
     if not sms:
         plain = (
             f"Procumaterial — {TAGLINE}\n\n{plain}"

@@ -152,7 +152,7 @@ class Settings(BaseSettings):
     r2_max_image_bytes: int = Field(default=10_485_760, ge=1)
     r2_max_document_bytes: int = Field(default=26_214_400, ge=1)
     r2_allowed_origins: str = ''
-    matching_batch_size: int = 5
+    matching_batch_size: int = Field(default=5, ge=1, le=100)
     gemini_api_key: SecretStr = SecretStr('')
     gemini_model: str = Field(default='gemini-2.5-flash',pattern=r'^[a-zA-Z0-9.-]+$')
     gemini_enabled: bool = Field(default=True, validation_alias=AliasChoices('gemini_enabled', 'GEMINI_ENABLED'))

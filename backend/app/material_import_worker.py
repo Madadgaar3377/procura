@@ -13,6 +13,7 @@ from app.modules.imports.router import process_queued_supplier_imports
 from app.modules.imports.supplier_jobs import process_supplier_jobs
 from app.modules.pricebooks.worker import process_pricing_jobs
 from app.modules.rfqs.imports import process_rfq_import_jobs
+from app.worker import process_batch as process_outbox_batch
 
 
 def process_once() -> bool:
@@ -24,7 +25,8 @@ def process_once() -> bool:
     success = True
     logger = logging.getLogger(__name__)
     for process in (process_queued_material_imports, process_queued_supplier_imports,
-                    process_supplier_jobs, process_pricing_jobs, process_rfq_import_jobs):
+                    process_supplier_jobs, process_pricing_jobs, process_rfq_import_jobs,
+                    process_outbox_batch):
         db = SessionLocal()
         try:
             started = time.monotonic()

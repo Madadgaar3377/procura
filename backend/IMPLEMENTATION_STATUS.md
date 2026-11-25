@@ -1,3 +1,5 @@
+> Procurement automation review ? 2026-11-25: Core API/database workflow verified on isolated PostgreSQL and SQLite (25 passed, 1 intentional SQLite lock skip); matching/contact/price-book regression checks passed (48). Live database recovery and real SMTP/SMS delivery remain unverified because the remote PostgreSQL connection fails certificate validation. Frontend typecheck passes; build compiles and renders pages but exits at the installed Next.js security advisory gate. Full-suite failures and deployment steps are recorded in [the procurement review](docs/PROCUREMENT_AUTOMATION_REVIEW.md). This is not production sign-off.
+
 # Implementation status — 2026-10-20
 
 > RFQ import verification note: the latest full-suite repeat had 283 passes, 12 skips and the existing intermittent R2/SQLite concurrent-avatar failure. The preceding complete run had 284 passes/12 skips. Final focused RFQ import/search/publication tests passed (34), and the focused run including the R2 retry passed (35). Frontend build/typecheck and the real local browser workflow passed; live-provider validation remains outstanding. See the RFQ Excel guide below for details.

@@ -1,4 +1,4 @@
-﻿from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from fastapi import FastAPI
@@ -14,9 +14,10 @@ from app.modules.rfqs.router import router as rfq_router
 from app.security import current_user
 
 
-def setup_matching_app(delivery_city=''):
-    engine=create_engine('sqlite:///:memory:',connect_args={'check_same_thread':False},poolclass=StaticPool)
-    Base.metadata.create_all(engine)
+def setup_matching_app(delivery_city='', *, engine=None):
+    if engine is None:
+        engine=create_engine('sqlite:///:memory:',connect_args={'check_same_thread':False},poolclass=StaticPool)
+        Base.metadata.create_all(engine)
     sessions=sessionmaker(bind=engine,expire_on_commit=False)
     with sessions() as db:
         buyer=Organization(name='Buyer Company',name_normalized='buyer company',is_buyer=True,is_supplier=False,city='Buyer Office')
@@ -50,7 +51,7 @@ def test_publish_runs_bounded_match_without_waiting_for_outbox_worker():
     try:
         response=client.post(f"/api/v1/rfqs/{ids['rfq']}/publish")
         assert response.status_code==200,response.text
-        assert response.json()['matching_status']=='processed'
+        assert response.json()['matching_status']=='completed'
         assert response.json()['matched_suppliers']==1
         assert response.json()['invited_suppliers']==1
         with sessions() as db:
@@ -70,6 +71,42 @@ def test_publish_runs_bounded_match_without_waiting_for_outbox_worker():
         with sessions() as db:
             assert len(db.scalars(select(RFQMatch).where(RFQMatch.rfq_id==ids['rfq'])).all())==1
             assert len(db.scalars(select(Invitation).where(Invitation.rfq_id==ids['rfq'])).all())==1
+    finally:engine.dispose()
+
+
+def test_publication_continues_in_durable_batches_without_duplicate_invitations():
+    client,sessions,engine,ids=setup_matching_app('')
+    try:
+        with sessions() as db:
+            category=db.scalar(select(Category).where(Category.code=='TOILET-ACC'))
+            for number in range(12):
+                org=Organization(name=f'Additional Supplier {number}',name_normalized=f'additional supplier {number}',
+                    is_supplier=True,is_active=True,verified_status='verified')
+                db.add(org);db.flush()
+                db.add(Capability(org_id=org.id,category_id=category.id,city='ABC',
+                    confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[]))
+            db.commit()
+        response=client.post(f"/api/v1/rfqs/{ids['rfq']}/publish")
+        assert response.status_code==200,response.text
+        assert response.json()['matching_status']=='processing'
+        with sessions() as db:
+            job=db.scalar(select(Outbox).where(Outbox.dedupe_key==f"rfq-published:{ids['rfq']}"))
+            assert job.status=='pending' and job.payload.get('cursor')
+        from app.worker import process_batch
+        for _ in range(10):
+            with sessions() as db:
+                process_batch(db)
+            with sessions() as db:
+                job=db.scalar(select(Outbox).where(Outbox.dedupe_key==f"rfq-published:{ids['rfq']}"))
+                if job.status=='processed':break
+        assert job.status=='processed'
+        with sessions() as db:
+            assert len(db.scalars(select(Invitation).where(Invitation.rfq_id==ids['rfq'])).all())==13
+            assert len(db.scalars(select(RFQMatch).where(RFQMatch.rfq_id==ids['rfq'])).all())==13
+            process_batch(db)
+            assert len(db.scalars(select(Invitation).where(Invitation.rfq_id==ids['rfq'])).all())==13
+        result=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results")
+        assert result.status_code==200 and result.json()['matching_status']=='completed'
     finally:engine.dispose()
 
 

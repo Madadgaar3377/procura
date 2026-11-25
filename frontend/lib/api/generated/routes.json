@@ -232,6 +232,30 @@
   "taxonomy/categories/duplicates/merge": [
     "POST"
   ],
+  "taxonomy/review/analyze": [
+    "GET"
+  ],
+  "taxonomy/review/auto-fix": [
+    "POST"
+  ],
+  "taxonomy/review/approve-valid": [
+    "POST"
+  ],
+  "taxonomy/review/categories/{category_id}/decision": [
+    "POST"
+  ],
+  "taxonomy/review/categories/{category_id}/history": [
+    "GET"
+  ],
+  "taxonomy/review/hierarchy-repairs/preview": [
+    "GET"
+  ],
+  "taxonomy/review/hierarchy-repairs": [
+    "POST"
+  ],
+  "taxonomy/review/hierarchy-repairs/jobs/{job_id}": [
+    "GET"
+  ],
   "taxonomy/industry-review-candidates": [
     "GET"
   ],
@@ -271,6 +295,9 @@
   ],
   "taxonomy/materials/manage": [
     "GET"
+  ],
+  "taxonomy/materials/group": [
+    "POST"
   ],
   "taxonomy/materials/{material_id}": [
     "GET",
@@ -340,6 +367,16 @@
     "GET"
   ],
   "imports/bulk/suppliers/jobs": [
+    "GET",
+    "POST"
+  ],
+  "imports/bulk/suppliers/jobs/preview": [
+    "POST"
+  ],
+  "imports/bulk/suppliers/jobs/{batch_id}/start": [
+    "POST"
+  ],
+  "imports/bulk/suppliers/jobs/{batch_id}/cancel": [
     "POST"
   ],
   "imports/bulk/suppliers/jobs/{batch_id}": [
@@ -347,6 +384,9 @@
   ],
   "imports/bulk/suppliers/jobs/{batch_id}/retry": [
     "POST"
+  ],
+  "imports/bulk/suppliers/jobs/{batch_id}/review-report": [
+    "GET"
   ],
   "imports/suppliers/reprocess/preview": [
     "GET"
@@ -408,6 +448,42 @@
   "directory/suppliers/{supplier_id}/related": [
     "GET"
   ],
+  "rfqs/imports/template": [
+    "GET"
+  ],
+  "rfqs/imports/recent": [
+    "GET"
+  ],
+  "rfqs/imports": [
+    "POST"
+  ],
+  "rfqs/imports/{batch_id}": [
+    "GET"
+  ],
+  "rfqs/imports/{batch_id}/options": [
+    "PUT"
+  ],
+  "rfqs/imports/{batch_id}/rows/{row_id}": [
+    "PUT"
+  ],
+  "rfqs/imports/{batch_id}/review": [
+    "POST"
+  ],
+  "rfqs/imports/{batch_id}/retry": [
+    "POST"
+  ],
+  "rfqs/imports/{batch_id}/confirm": [
+    "POST"
+  ],
+  "rfqs/{rfq_id}/export.xlsx": [
+    "GET"
+  ],
+  "rfqs/{rfq_id}/export.pdf": [
+    "GET"
+  ],
+  "rfqs/classify-material": [
+    "POST"
+  ],
   "rfqs": [
     "POST",
     "GET"
@@ -435,6 +511,12 @@
     "GET",
     "DELETE"
   ],
+  "matching/guest-invitations/open": [
+    "POST"
+  ],
+  "matching/guest-invitations/quotation": [
+    "POST"
+  ],
   "matching/admin/rfqs/{rfq_id}/diagnostics": [
     "GET"
   ],
@@ -457,6 +539,9 @@
     "GET"
   ],
   "pricebooks": [
+    "POST"
+  ],
+  "pricebooks/group": [
     "POST"
   ],
   "pricebooks/{org_id}/page": [
@@ -696,37 +781,10 @@
   "files/admin/summary": [
     "GET"
   ],
-  "rfqs/imports/template": [
-    "GET"
-  ],
-  "rfqs/imports/recent": [
-    "GET"
-  ],
-  "rfqs/imports": [
+  "materials/match": [
     "POST"
   ],
-  "rfqs/imports/{batch_id}": [
-    "GET"
-  ],
-  "rfqs/imports/{batch_id}/options": [
-    "PUT"
-  ],
-  "rfqs/imports/{batch_id}/rows/{row_id}": [
-    "PUT"
-  ],
-  "rfqs/imports/{batch_id}/review": [
-    "POST"
-  ],
-  "rfqs/imports/{batch_id}/retry": [
-    "POST"
-  ],
-  "rfqs/imports/{batch_id}/confirm": [
-    "POST"
-  ],
-  "taxonomy/materials/group": [
-    "POST"
-  ],
-  "pricebooks/group": [
+  "materials/match/bulk": [
     "POST"
   ]
 }

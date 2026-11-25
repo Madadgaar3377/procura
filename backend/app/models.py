@@ -477,6 +477,7 @@ class PriceBookItem(TimeID, Base):
     offered_specs: Mapped[str] = mapped_column(Text, default='')
     unit_price: Mapped[Decimal] = mapped_column(Numeric(14,2))
     min_order_quantity: Mapped[Decimal | None] = mapped_column(Numeric(14,3), nullable=True)
+    vat_rate: Mapped[Decimal | None] = mapped_column(Numeric(5,4), nullable=True)
     lead_days: Mapped[int] = mapped_column(Integer, default=7)
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
@@ -552,6 +553,7 @@ class Quotation(TimeID, Base):
     review_required: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
     review_reasons: Mapped[list] = mapped_column(JSON, default=list, server_default=text("'[]'"))
     policy_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    commercial_terms: Mapped[dict] = mapped_column(JSON, default=dict, server_default=text("'{}'"))
 
 class QuoteLine(TimeID, Base):
     __tablename__='quotation_lines'
@@ -570,6 +572,8 @@ class QuoteLine(TimeID, Base):
     offered_description: Mapped[str] = mapped_column(Text, default='', server_default='')
     source_rate_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     source_rate_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source_rate_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    vat_rate: Mapped[Decimal | None] = mapped_column(Numeric(5,4), nullable=True)
 
 class Notification(TimeID, Base):
     __tablename__='notifications'

@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import and_, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
 from app.database import SessionLocal
@@ -127,7 +127,7 @@ def _remaining_code_ttl(db: Session, template: str, context: dict, now: datetime
 
 def _deliver(db: Session, event: Outbox, now: datetime) -> None:
     payload = event.payload
-    if payload.get('template') in {'password_reset','password_changed'}:
+    if payload.get('procurement_recipient') or payload.get('template') in {'password_reset','password_changed'}:
         # Both worker entry points must enforce the same recovery state and
         # decode the encrypted delivery envelope before rendering a message.
         from app.notification_worker import deliver
@@ -169,9 +169,14 @@ def _deliver(db: Session, event: Outbox, now: datetime) -> None:
 
     secret = decrypt_delivery_secret(event.secret_ciphertext) if event.secret_ciphertext else None
     subject, plain_text, html_body = render_message(template, payload.get('context') or {}, secret)
+    # Persist the lease and release the database transaction before provider I/O.
+    # The provider's idempotency key is the durable outbox event id.
+    delivery_id=event.id
+    provider_id=event.provider_message_id
+    db.commit()
     if channel == 'sms':
-        if event.provider_message_id:
-            result = get_sms_status(event.provider_message_id)
+        if provider_id:
+            result = get_sms_status(provider_id)
             event.status_checks += 1
             state = str(result.get('state', 'Unknown'))
             event.delivery_status = state
@@ -199,7 +204,7 @@ def _deliver(db: Session, event: Outbox, now: datetime) -> None:
                 event.next_attempt_at = now + timedelta(seconds=STATUS_POLL_SECONDS)
             return
 
-        result = send_sms(recipient, plain_text, event.id, ttl_seconds=ttl_seconds)
+        result = send_sms(recipient, plain_text, delivery_id, ttl_seconds=ttl_seconds)
         event.attempts += 1
         event.provider_message_id = result['id']
         state = str(result.get('state', 'Pending'))
@@ -219,7 +224,7 @@ def _deliver(db: Session, event: Outbox, now: datetime) -> None:
         event.secret_ciphertext = None
         return
 
-    event.provider_message_id = send_email(recipient, subject, plain_text, html_body, event.id)
+    event.provider_message_id = send_email(recipient, subject, plain_text, html_body, delivery_id)
     event.attempts += 1
     event.delivery_status = 'accepted'
     event.status = 'processed'
@@ -236,12 +241,42 @@ def _process_event(db: Session, event: Outbox, now: datetime) -> None:
             event.status = 'retry'
             event.next_attempt_at = now + timedelta(seconds=15)
     elif event.event == 'rfq.published':
-        rfq = db.scalar(select(RFQ).where(RFQ.id==event.payload.get('rfq_id')).with_for_update())
-        if not rfq or rfq.status not in {'published', 'collecting_quotes'}:
-            raise PermanentOutboxError('RFQ is not dispatchable')
-        match_and_invite(db, rfq)
+        from app.modules.matching.service import match_and_invite
+        # The queue lease is committed before this point. Matching uses its own
+        # transaction; the outbox row never holds the RFQ lock while it runs.
+        matching_session = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
+        payload = dict(event.payload)
+        db.commit()  # Release any ORM refresh transaction before independent work.
+        with matching_session() as matching_db:
+            try:
+                rfq = matching_db.get(RFQ, payload.get('rfq_id'))
+                if not rfq or rfq.status not in {'published', 'collecting_quotes'}:
+                    raise PermanentOutboxError('RFQ is not dispatchable')
+                result = match_and_invite(
+                    matching_db, rfq, bounded=True, single_batch=True,
+                    limit=get_settings().matching_batch_size,
+                    after_supplier_id=payload.get('cursor', payload.get('after_supplier_id')),
+                )
+                matching_db.commit()
+            except Exception:
+                matching_db.rollback()
+                raise
+        cursor = result.get('next_cursor')
+        if cursor:
+            event.payload = {**event.payload, 'cursor': cursor}
+            event.status = 'pending'
+            event.next_attempt_at = now
+        else:
+            event.payload = {key: value for key, value in event.payload.items() if key != 'cursor'}
     elif event.event in {'rfq.invitation', 'quotation.submitted', 'rfq.deadline.reminder'}:
-        _prepare_notification(db, event)
+        from app.modules.notifications.procurement import prepare, quotation_notice
+        if event.event == 'quotation.submitted':
+            quotation_notice(db, event)
+        else:
+            if event.event == 'rfq.invitation':
+                from app.modules.quotations.automation import prepare_invitation_quote
+                prepare_invitation_quote(db, event.payload['invitation_id'])
+            prepare(db, event)
     elif event.event == 'company.verification_updated':
         _queue_organization_update(db, event)
     elif event.event == 'notification.delivery':
@@ -272,7 +307,9 @@ def _deliver_contact_inquiry(db: Session, event: Outbox) -> None:
                  f"{inquiry.ticket_reference}.\n\nYou can contact support at support@procumaterial.com or 0501496516.\n\n"
                  "Procumaterial Support")
     html = '<html><body><p>' + escape(plain).replace('\n', '<br>') + '</p></body></html>'
-    event.provider_message_id = send_email(recipient, subject, plain, html, event.id)
+    delivery_id=event.id
+    db.commit()
+    event.provider_message_id = send_email(recipient, subject, plain, html, delivery_id)
     event.attempts += 1
     event.delivery_status = 'accepted'
     event.status = 'processed'
