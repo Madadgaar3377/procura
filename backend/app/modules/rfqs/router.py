@@ -117,7 +117,7 @@ def create(payload:RFQIn,user:User=Depends(current_user),db:Session=Depends(get_
         if existing:return contents(db,existing)
     if payload.response_deadline.astimezone(UTC)<datetime.now(UTC):raise HTTPException(422,'Deadline must be in the future')
     lines=prepare_lines(db,payload.items)
-    rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,client_request_id=payload.client_request_id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions)
+    rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,client_request_id=payload.client_request_id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions,delivery_address=payload.delivery_address)
     try:
         db.add(rfq);db.flush()
         for entry in lines:db.add(RFQItem(rfq_id=rfq.id,**entry))
@@ -183,41 +183,27 @@ def publish(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db
     audit(db,user,'rfq.published',rfq.buyer_org_id,rfq.id)
     db.commit()
 
-    # One small first page gives the buyer immediate feedback. The publication
-    # transaction has ended; continuation remains in the durable outbox.
+    # Matching runs immediately after publication commits, page by page, until the
+    # configured time budget is spent. Any remainder continues in the durable outbox.
+    # Notifications and quotation drafts are queued jobs and never block this step.
     initial_matching=None
+    from app.config import get_settings
+    from app.modules.matching.service import run_matching_job
+    job_id=db.scalar(select(Outbox.id).where(Outbox.dedupe_key==f'rfq-published:{rfq_id}'))
     for attempt in range(3):
-        independent=sessionmaker(bind=db.get_bind(),autoflush=False,expire_on_commit=False)
-        with independent() as matching_db:
-            try:
-                # A leased job belongs to the worker. Lock the queue row first
-                # so the initial page cannot overwrite a worker's cursor.
-                job=matching_db.scalar(select(Outbox).where(
-                    Outbox.dedupe_key==f'rfq-published:{rfq_id}',
-                    Outbox.status=='pending',
-                ).with_for_update(skip_locked=True))
-                if job is None:
-                    matching_db.rollback()
-                    break
-                from app.modules.matching.service import match_and_invite
-                published=matching_db.get(RFQ,rfq_id)
-                batch_result=match_and_invite(matching_db,published,bounded=True,limit=5,single_batch=True)
-                cursor=batch_result.get('next_cursor')
-                if job:
-                    job.status='pending' if cursor else 'processed'
-                    job.payload={**job.payload,'cursor':cursor} if cursor else job.payload
-                matching_db.commit()
-                initial_matching=batch_result
-                break
-            except OperationalError as exc:
-                matching_db.rollback()
-                if getattr(getattr(exc,'orig',None),'sqlstate',None) not in {'55P03','40P01','40001'} or attempt==2:
-                    log.exception('Initial RFQ matching failed rfq_id=%s',rfq_id)
-                    break
-            except Exception:
-                matching_db.rollback()
+        try:
+            # A leased job belongs to the worker; the helper skips it instead of
+            # overwriting the worker's cursor.
+            initial_matching=run_matching_job(db.get_bind(),job_id,
+                time_budget=get_settings().matching_publish_time_budget_seconds) if job_id else None
+            break
+        except OperationalError as exc:
+            if getattr(getattr(exc,'orig',None),'sqlstate',None) not in {'55P03','40P01','40001'} or attempt==2:
                 log.exception('Initial RFQ matching failed rfq_id=%s',rfq_id)
                 break
+        except Exception:
+            log.exception('Initial RFQ matching failed rfq_id=%s',rfq_id)
+            break
         time.sleep(0.05*(attempt+1))
 
     return {'rfq_id':rfq_id,'status':'published','next':'Supplier matching queued',
@@ -250,6 +236,7 @@ def update_draft(rfq_id:str,payload:RFQIn,user:User=Depends(current_user),db:Ses
     rfq.required_qualifications=payload.required_qualifications
     rfq.project_name=payload.project_name;rfq.required_delivery_date=payload.required_delivery_date
     rfq.additional_instructions=payload.additional_instructions
+    rfq.delivery_address=payload.delivery_address
     audit(db,user,'rfq.draft_updated',rfq.buyer_org_id,rfq.id);db.commit()
     return contents(db,rfq)
 

@@ -795,5 +795,147 @@
   ],
   "materials/match/bulk": [
     "POST"
+  ],
+  "procurement/rfqs/classify-list": [
+    "POST"
+  ],
+  "procurement/rfqs/{rfq_id}/tracking": [
+    "GET"
+  ],
+  "procurement/rfqs/{rfq_id}/comparison": [
+    "GET"
+  ],
+  "procurement/rfqs/{rfq_id}/scoring-weights": [
+    "PUT"
+  ],
+  "procurement/rfqs/{rfq_id}/document.pdf": [
+    "GET"
+  ],
+  "procurement/quotations/{quotation_id}/document.pdf": [
+    "GET"
+  ],
+  "procurement/supplier/inbox": [
+    "GET"
+  ],
+  "procurement/invitations/{invitation_id}/magic-links": [
+    "GET"
+  ],
+  "procurement/invitations/{invitation_id}/magic-links/revoke": [
+    "POST"
+  ],
+  "procurement/invitations/{invitation_id}/resend": [
+    "POST"
+  ],
+  "procurement/purchase-orders": [
+    "GET"
+  ],
+  "procurement/purchase-orders/{po_id}": [
+    "GET",
+    "PUT"
+  ],
+  "procurement/purchase-orders/{po_id}/issue": [
+    "POST"
+  ],
+  "procurement/purchase-orders/{po_id}/acknowledge": [
+    "POST"
+  ],
+  "procurement/purchase-orders/{po_id}/cancel": [
+    "POST"
+  ],
+  "procurement/purchase-orders/{po_id}/document.pdf": [
+    "GET"
+  ],
+  "procurement/purchase-orders/{po_id}/delivery-notes": [
+    "POST"
+  ],
+  "procurement/delivery-notes/{note_id}/dispatch": [
+    "POST"
+  ],
+  "procurement/delivery-notes/{note_id}/receive": [
+    "POST"
+  ],
+  "procurement/delivery-notes": [
+    "GET"
+  ],
+  "procurement/delivery-notes/{note_id}": [
+    "GET"
+  ],
+  "procurement/delivery-notes/{note_id}/document.pdf": [
+    "GET"
+  ],
+  "procurement/purchase-orders/{po_id}/invoices": [
+    "POST"
+  ],
+  "procurement/invoices/{invoice_id}/submit": [
+    "POST"
+  ],
+  "procurement/invoices/{invoice_id}/review": [
+    "POST"
+  ],
+  "procurement/invoices/{invoice_id}/rematch": [
+    "POST"
+  ],
+  "procurement/invoices": [
+    "GET"
+  ],
+  "procurement/invoices/{invoice_id}": [
+    "GET"
+  ],
+  "procurement/invoices/{invoice_id}/document.pdf": [
+    "GET"
+  ],
+  "procurement/three-way-matching": [
+    "GET"
+  ],
+  "procurement/documents/share": [
+    "POST"
+  ],
+  "procurement/scorecards": [
+    "GET"
+  ],
+  "procurement/document-ai/extractions": [
+    "POST",
+    "GET"
+  ],
+  "procurement/document-ai/extractions/{extraction_id}": [
+    "GET"
+  ],
+  "procurement/document-ai/extractions/{extraction_id}/confirm": [
+    "POST"
+  ],
+  "procurement/admin/workflow": [
+    "GET"
+  ],
+  "procurement/admin/outbox/{event_id}/retry": [
+    "POST"
+  ],
+  "procurement/admin/rfqs/{rfq_id}/recover": [
+    "POST"
+  ],
+  "procurement/admin/sla": [
+    "GET",
+    "PUT"
+  ],
+  "supplier-portal/open": [
+    "POST"
+  ],
+  "supplier-portal/save": [
+    "POST"
+  ],
+  "supplier-portal/approve": [
+    "POST"
+  ],
+  "supplier-portal/decline": [
+    "POST"
+  ],
+  "public/document-builder/{kind}/totals": [
+    "POST"
+  ],
+  "public/document-builder/{kind}": [
+    "POST"
+  ],
+  "webhooks/whatsapp": [
+    "GET",
+    "POST"
   ]
 }

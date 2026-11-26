@@ -492,6 +492,9 @@ class PriceBookItem(TimeID, Base):
     remarks: Mapped[str] = mapped_column(Text, default='', server_default='')
     technical_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
     material_version: Mapped[int] = mapped_column(Integer, default=1, server_default='1')
+    warranty_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    payment_terms: Mapped[str] = mapped_column(String(300), default='', server_default='')
+    stock_quantity: Mapped[Decimal | None] = mapped_column(Numeric(14,3), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
 
 class RFQ(TimeID, Base):
@@ -512,6 +515,9 @@ class RFQ(TimeID, Base):
     required_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     additional_instructions: Mapped[str] = mapped_column(Text, default='', server_default='')
     attachment_records: Mapped[list[dict]] = mapped_column(JSON, default=list, server_default=text("'[]'"))
+    # Buyer-configurable quotation ranking weights; NULL means the client defaults 50/30/20.
+    scoring_weights: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    delivery_address: Mapped[str] = mapped_column(String(300), default='', server_default='')
 
 class RFQItem(TimeID, Base):
     __tablename__='rfq_items'
@@ -540,6 +546,8 @@ class Invitation(TimeID, Base):
     supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
     status: Mapped[str] = mapped_column(String(30), default='invited')
     invited_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # RFQ item ids this supplier matched; the portal's default "Matched Items" view.
+    matched_item_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 class Quotation(TimeID, Base):
     __tablename__='quotations'
@@ -579,6 +587,9 @@ class QuoteLine(TimeID, Base):
     source_rate_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source_rate_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     vat_rate: Mapped[Decimal | None] = mapped_column(Numeric(5,4), nullable=True)
+    discount_percent: Mapped[Decimal] = mapped_column(Numeric(5,2), default=Decimal('0'), server_default='0')
+    warranty_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    availability: Mapped[str] = mapped_column(String(20), default='unknown', server_default='unknown')
 
 class Notification(TimeID, Base):
     __tablename__='notifications'
@@ -675,6 +686,8 @@ class PlatformSettings(Base):
     id: Mapped[str] = mapped_column(String(20), primary_key=True, default='default')
     auto_approval_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
     auto_approval_hours: Mapped[int] = mapped_column(Integer, default=24, server_default='24')
+    # Reminder/escalation intervals in hours; see app.modules.procurement.sla.DEFAULT_SLA.
+    sla_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
 
 class Promotion(TimeID, Base):
@@ -688,6 +701,185 @@ class Promotion(TimeID, Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     note: Mapped[str] = mapped_column(Text, default='')
+
+class SupplierAccessToken(TimeID, Base):
+    """Passwordless magic link scoped to one supplier organization and one RFQ invitation.
+
+    Only a SHA-256 hash of the random token is stored. Tokens expire, can be
+    revoked, and are re-authorized against the invitation on every use.
+    """
+    __tablename__ = 'supplier_access_tokens'
+    __table_args__ = (
+        Index('ix_supplier_access_tokens_invitation', 'invitation_id', 'revoked_at'),
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    invitation_id: Mapped[str] = mapped_column(ForeignKey('rfq_invitations.id', ondelete='CASCADE'))
+    rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id', ondelete='CASCADE'), index=True)
+    supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'), index=True)
+    channel: Mapped[str] = mapped_column(String(12))
+    destination_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    use_count: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+
+
+class PurchaseOrder(TimeID, Base):
+    __tablename__ = 'purchase_orders'
+    __table_args__ = (
+        UniqueConstraint('quotation_id', name='uq_purchase_order_quotation'),
+        Index('ix_purchase_orders_buyer_status', 'buyer_org_id', 'status', 'created_at'),
+        Index('ix_purchase_orders_supplier_status', 'supplier_org_id', 'status', 'created_at'),
+    )
+    reference: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id'), index=True)
+    quotation_id: Mapped[str] = mapped_column(ForeignKey('quotations.id'))
+    buyer_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
+    supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
+    # draft, issued, acknowledged, partially_delivered, delivered, cancelled
+    status: Mapped[str] = mapped_column(String(30), default='draft')
+    currency: Mapped[str] = mapped_column(String(5), default='SAR')
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    discount_total: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    vat_total: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    total: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    delivery_address: Mapped[str] = mapped_column(String(300), default='')
+    site_contact: Mapped[str] = mapped_column(String(200), default='')
+    payment_terms: Mapped[str] = mapped_column(Text, default='')
+    delivery_terms: Mapped[str] = mapped_column(Text, default='')
+    special_instructions: Mapped[str] = mapped_column(Text, default='')
+    notes: Mapped[str] = mapped_column(Text, default='')
+    quotation_reference: Mapped[str] = mapped_column(String(100), default='')
+    required_delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    prepared_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    issued_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class PurchaseOrderLine(TimeID, Base):
+    __tablename__ = 'purchase_order_lines'
+    __table_args__ = (UniqueConstraint('purchase_order_id', 'line_number', name='uq_po_line_number'),)
+    purchase_order_id: Mapped[str] = mapped_column(ForeignKey('purchase_orders.id', ondelete='CASCADE'), index=True)
+    line_number: Mapped[int] = mapped_column(Integer)
+    rfq_item_id: Mapped[str | None] = mapped_column(ForeignKey('rfq_items.id'), nullable=True)
+    quote_line_id: Mapped[str | None] = mapped_column(ForeignKey('quotation_lines.id'), nullable=True)
+    material_id: Mapped[str | None] = mapped_column(ForeignKey('materials.id'), nullable=True)
+    description: Mapped[str] = mapped_column(Text)
+    brand: Mapped[str] = mapped_column(String(150), default='')
+    unit: Mapped[str] = mapped_column(String(30), default='')
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14,3))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14,2))
+    discount_percent: Mapped[Decimal] = mapped_column(Numeric(5,2), default=Decimal('0'))
+    vat_rate: Mapped[Decimal] = mapped_column(Numeric(5,4), default=Decimal('0.15'))
+    line_total: Mapped[Decimal] = mapped_column(Numeric(16,2))
+
+
+class DeliveryNote(TimeID, Base):
+    """Supplier dispatch document; buyer confirmation of the same record is the goods receipt."""
+    __tablename__ = 'delivery_notes'
+    __table_args__ = (Index('ix_delivery_notes_po_status', 'purchase_order_id', 'status'),)
+    reference: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    purchase_order_id: Mapped[str] = mapped_column(ForeignKey('purchase_orders.id'))
+    supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
+    buyer_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
+    # draft, dispatched, received, received_with_issues
+    status: Mapped[str] = mapped_column(String(30), default='draft')
+    delivery_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    vehicle_no: Mapped[str] = mapped_column(String(60), default='')
+    driver_name: Mapped[str] = mapped_column(String(150), default='')
+    carrier: Mapped[str] = mapped_column(String(150), default='')
+    delivery_address: Mapped[str] = mapped_column(String(300), default='')
+    supplier_remarks: Mapped[str] = mapped_column(Text, default='')
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    received_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    received_by_name: Mapped[str] = mapped_column(String(150), default='')
+    receipt_notes: Mapped[str] = mapped_column(Text, default='')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class DeliveryNoteLine(TimeID, Base):
+    __tablename__ = 'delivery_note_lines'
+    __table_args__ = (UniqueConstraint('delivery_note_id', 'po_line_id', name='uq_delivery_note_po_line'),)
+    delivery_note_id: Mapped[str] = mapped_column(ForeignKey('delivery_notes.id', ondelete='CASCADE'), index=True)
+    po_line_id: Mapped[str] = mapped_column(ForeignKey('purchase_order_lines.id'), index=True)
+    delivered_quantity: Mapped[Decimal] = mapped_column(Numeric(14,3))
+    remarks: Mapped[str] = mapped_column(String(500), default='')
+    received_quantity: Mapped[Decimal | None] = mapped_column(Numeric(14,3), nullable=True)
+    damaged_quantity: Mapped[Decimal] = mapped_column(Numeric(14,3), default=Decimal('0'))
+    receipt_remarks: Mapped[str] = mapped_column(String(500), default='')
+
+
+class TaxInvoice(TimeID, Base):
+    __tablename__ = 'tax_invoices'
+    __table_args__ = (
+        UniqueConstraint('supplier_org_id', 'invoice_number', name='uq_tax_invoice_supplier_number'),
+        Index('ix_tax_invoices_po_status', 'purchase_order_id', 'status'),
+        Index('ix_tax_invoices_buyer_status', 'buyer_org_id', 'status'),
+    )
+    reference: Mapped[str] = mapped_column(String(40), unique=True, index=True)
+    invoice_number: Mapped[str] = mapped_column(String(60))
+    purchase_order_id: Mapped[str] = mapped_column(ForeignKey('purchase_orders.id'))
+    delivery_note_id: Mapped[str | None] = mapped_column(ForeignKey('delivery_notes.id'), nullable=True)
+    supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
+    buyer_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
+    status: Mapped[str] = mapped_column(String(30), default='draft')  # draft, submitted, accepted, disputed
+    invoice_date: Mapped[date] = mapped_column(Date)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    currency: Mapped[str] = mapped_column(String(5), default='SAR')
+    subtotal: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    discount_total: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    vat_total: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    total: Mapped[Decimal] = mapped_column(Numeric(16,2), default=Decimal('0'))
+    bank_name: Mapped[str] = mapped_column(String(150), default='')
+    account_name: Mapped[str] = mapped_column(String(150), default='')
+    iban: Mapped[str] = mapped_column(String(40), default='')
+    swift: Mapped[str] = mapped_column(String(20), default='')
+    payment_terms: Mapped[str] = mapped_column(Text, default='')
+    # pending_verification, matched, quantity_mismatch, price_mismatch, requires_review
+    match_status: Mapped[str] = mapped_column(String(30), default='pending_verification', index=True)
+    match_details: Mapped[dict] = mapped_column(JSON, default=dict)
+    matched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    review_notes: Mapped[str] = mapped_column(Text, default='')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class TaxInvoiceLine(TimeID, Base):
+    __tablename__ = 'tax_invoice_lines'
+    __table_args__ = (UniqueConstraint('invoice_id', 'po_line_id', name='uq_invoice_po_line'),)
+    invoice_id: Mapped[str] = mapped_column(ForeignKey('tax_invoices.id', ondelete='CASCADE'), index=True)
+    po_line_id: Mapped[str] = mapped_column(ForeignKey('purchase_order_lines.id'), index=True)
+    description: Mapped[str] = mapped_column(Text)
+    unit: Mapped[str] = mapped_column(String(30), default='')
+    quantity: Mapped[Decimal] = mapped_column(Numeric(14,3))
+    unit_price: Mapped[Decimal] = mapped_column(Numeric(14,2))
+    discount_percent: Mapped[Decimal] = mapped_column(Numeric(5,2), default=Decimal('0'))
+    vat_rate: Mapped[Decimal] = mapped_column(Numeric(5,4), default=Decimal('0.15'))
+    line_total: Mapped[Decimal] = mapped_column(Numeric(16,2))
+
+
+class DocumentExtraction(TimeID, Base):
+    """Document AI job: an uploaded supplier quotation PDF and its reviewable extraction."""
+    __tablename__ = 'document_extractions'
+    __table_args__ = (Index('ix_document_extractions_org_status', 'org_id', 'status', 'created_at'),)
+    org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
+    rfq_id: Mapped[str | None] = mapped_column(ForeignKey('rfqs.id'), nullable=True, index=True)
+    uploaded_by_user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    file_id: Mapped[str] = mapped_column(ForeignKey('stored_files.id'))
+    status: Mapped[str] = mapped_column(String(30), default='queued')  # queued, processing, review, confirmed, failed
+    method: Mapped[str | None] = mapped_column(String(30), nullable=True)  # text_layer, gemini_ocr
+    extracted: Mapped[dict] = mapped_column(JSON, default=dict)
+    confirmed_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    confirmed_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
+
 
 class AuditEvent(TimeID, Base):
     __tablename__='audit_events'
@@ -747,3 +939,4 @@ Index('ix_dashboard_verification_reviewed', Verification.reviewed_at)
 Index('ix_dashboard_verification_org_status', Verification.org_id, Verification.status, Verification.reviewed_at)
 Index('ix_dashboard_import_created', ImportBatch.created_at)
 Index('ix_dashboard_outbox_event_status', Outbox.event, Outbox.status)
+Index('ix_outbox_provider_message_id', Outbox.provider_message_id, postgresql_where=text('provider_message_id IS NOT NULL'), sqlite_where=text('provider_message_id IS NOT NULL'))

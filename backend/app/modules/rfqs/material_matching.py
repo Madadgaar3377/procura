@@ -68,9 +68,26 @@ MATERIAL_TYPES = [
     ('rebar', ('rebar', 'reinforcement', 'deformed bar', 'حديد تسليح')),
     ('insulation', ('insulation', 'rockwool', 'glasswool', 'عزل', 'عازل')),
     ('paint', ('paint', 'coating', 'primer', 'دهان', 'طلاء')),
+    ('floodlight', ('floodlight', 'floodlights', 'flood light', 'flood lights', 'flood lamp', 'flood lamps', 'كشاف', 'كشافات')),
+    ('downlight', ('downlight', 'downlights', 'down light', 'down lights')),
+    ('spotlight', ('spotlight', 'spotlights', 'spot light', 'spot lights')),
 ]
 
 MATERIAL_TYPE_SYNONYMS: dict[str, tuple[str, ...]] = dict(MATERIAL_TYPES)
+
+# Approved spelling/compound aliases. Each variant is rewritten to its canonical
+# product noun before comparison; the stored buyer and supplier wording is never
+# changed. Only true synonyms belong here, never broader product groupings.
+PRODUCT_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ('floodlight', ('flood lights', 'flood light', 'floodlights', 'flood lamps', 'flood lamp', 'كشافات', 'كشاف')),
+    ('downlight', ('down lights', 'down light', 'downlights')),
+    ('spotlight', ('spot lights', 'spot light', 'spotlights')),
+)
+PRODUCT_HEADS = frozenset(canonical for canonical, _ in PRODUCT_ALIASES)
+
+# Line references such as "T-68 - ", "Item 4: " or "12) " that precede a description.
+ITEM_REFERENCE_RE = re.compile(
+    r'^\s*(?:(?:item|ref|line|sn|s/n|no)\.?\s*[:#]?\s*)?[a-z]{0,4}[-/]?\d+[a-z]?\s*[-:–—.)]\s+', re.I)
 
 STOPWORDS = {
     'and', 'for', 'the', 'with', 'type', 'size', 'unit', 'units', 'pcs', 'nos', 'set',
@@ -142,6 +159,71 @@ def extract_keywords(text: str) -> set[str]:
             expanded.add(kind)
             expanded.update(t for t in terms if ' ' not in t and len(t) >= 3)
     return expanded
+
+
+def strip_item_reference(text: str | None) -> str:
+    """Drop a leading line reference ("T-68 - RGB Flood Light") for comparison only."""
+    return ITEM_REFERENCE_RE.sub('', text or '', count=1)
+
+
+_NON_WORD_RE = re.compile(r'[^\w]+')
+_ALIAS_PATTERNS = tuple(
+    (canonical, re.compile(r'(?<!\w)(?:' + '|'.join(re.escape(v) for v in sorted(variants, key=len, reverse=True)) + r')(?!\w)'))
+    for canonical, variants in PRODUCT_ALIASES
+)
+
+
+def canonical_product_text(text: str | None) -> str:
+    """Normalize case, punctuation, whitespace, references and approved aliases."""
+    norm = ' '.join(_NON_WORD_RE.sub(' ', normalize_text(strip_item_reference(text))).split())
+    for canonical, pattern in _ALIAS_PATTERNS:
+        norm = pattern.sub(canonical, norm)
+    return norm
+
+
+def product_tokens(text: str | None) -> set[str]:
+    """Distinctive product words of a description (description only, never specifications)."""
+    return canonical_tokens(canonical_product_text(text))
+
+
+def canonical_tokens(canonical: str) -> set[str]:
+    """Product words of text already passed through canonical_product_text."""
+    tokens = set()
+    for token in canonical.split():
+        if len(token) < 3 or token.isdigit() or token in STOPWORDS:
+            continue
+        if token.endswith('ies') and len(token) > 4:
+            token = token[:-3] + 'y'
+        elif token.endswith('s') and not token.endswith('ss') and len(token) > 3:
+            token = token[:-1]
+        tokens.add(token)
+    return tokens
+
+
+def product_search_terms(tokens: set[str]) -> list[str]:
+    """Indexed ILIKE/trigram terms: alias variants of product heads, then the longest words."""
+    terms: list[str] = []
+    for canonical, variants in PRODUCT_ALIASES:
+        if canonical in tokens:
+            terms.extend([canonical, *variants])
+    terms.extend(sorted((t for t in tokens if t not in PRODUCT_HEADS and len(t) >= 4), key=len, reverse=True)[:4])
+    return list(dict.fromkeys(terms))[:12]
+
+
+def family_similarity(item_tokens: set[str], candidate_tokens: set[str]) -> float:
+    """Return 0 when the candidate is not the same product family, else coverage of the item words.
+
+    Same family requires the same approved product head (e.g. floodlight), or at least
+    two shared product words covering half of the requested words. A single generic
+    word such as "light" or "cable" is never enough.
+    """
+    if not item_tokens or not candidate_tokens:
+        return 0.0
+    overlap = item_tokens & candidate_tokens
+    coverage = len(overlap) / len(item_tokens)
+    if overlap & PRODUCT_HEADS or (len(overlap) >= 2 and coverage >= 0.5):
+        return round(coverage, 3)
+    return 0.0
 
 
 def attributes(description):
@@ -543,7 +625,7 @@ def classify_material_description(
 
     epoch = catalog_cache._epoch()
     cache_key = (
-        'rfq:classify:v1:'
+        'rfq:classify:v2:'
         + sha256(
             f'{norm}|{normalize_text(clean_specs)}|{canonical_unit(unit) if unit else ""}|{int(ai_enabled)}|{_taxonomy_fingerprint(categories)}|{epoch}'.encode()
         ).hexdigest()
@@ -634,15 +716,17 @@ def classify_material_description(
                     category_candidates=[],
                 )
 
-    # Step 2: Exact Material Master match (English or Arabic)
+    # Step 2: Exact Material Master match (English or Arabic), ignoring a line reference prefix
+    core_desc = strip_item_reference(clean_desc).strip() or clean_desc
+    core_norm = normalize_text(core_desc)
     exact_hits = list(db.scalars(
         select(Material)
         .where(
             Material.active.is_(True),
             or_(
-                Material.normalized_description == norm,
-                func.lower(Material.name_en) == norm,
-                Material.name_ar == clean_desc,
+                Material.normalized_description.in_({norm, core_norm}),
+                func.lower(Material.name_en).in_({norm, core_norm}),
+                Material.name_ar.in_({clean_desc, core_desc}),
             ),
         )
         .limit(5)
@@ -676,9 +760,16 @@ def classify_material_description(
             category_candidates=[],
         )
 
-    # Step 3: Aliases, keywords, and PostgreSQL trigram Material Master search
+    # Step 3: Aliases, keywords, and PostgreSQL trigram Material Master search.
+    # The description identifies the product; long specifications ("control",
+    # "manual", "power") must not out-vote it, so they are only a fallback.
     combined_text = f'{clean_desc} {clean_specs}'.strip()
-    keywords = sorted(extract_keywords(combined_text), key=len, reverse=True)[:5]
+    desc_tokens = product_tokens(core_desc)
+    desc_keywords = extract_keywords(core_desc)
+    keywords = list(dict.fromkeys([
+        *product_search_terms(desc_tokens),
+        *sorted(desc_keywords, key=len, reverse=True)[:5],
+    ]))[:12]
     search_clauses = []
     for kw in keywords:
         escaped = kw.replace('_', '\\_').replace('%', '\\%')
@@ -688,11 +779,11 @@ def classify_material_description(
             Material.description.ilike('%' + escaped + '%', escape='\\'),
         ])
     if db.get_bind().dialect.name == 'postgresql':
-        search_clauses.append(Material.normalized_description.op('%')(norm))
+        search_clauses.append(Material.normalized_description.op('%')(core_norm))
 
     material_candidates: list[dict] = []
     if search_clauses:
-        mat_query = select(Material).where(Material.active.is_(True), or_(*search_clauses)).limit(20)
+        mat_query = select(Material).where(Material.active.is_(True), or_(*search_clauses)).limit(60)
         hits = list(db.scalars(mat_query).all())
         for m in hits:
             main_id, sub_id = category_pair(m, categories)
@@ -700,13 +791,18 @@ def classify_material_description(
                 continue
             cand_text = f'{m.name_en} {m.name_ar or ""} {m.description or ""}'
             cand_kw = extract_keywords(cand_text)
-            overlap = len(extract_keywords(combined_text) & cand_kw)
+            overlap = len(desc_keywords & cand_kw)
             ratio = max(
-                SequenceMatcher(None, norm, normalize_text(m.name_en)).ratio(),
-                SequenceMatcher(None, norm, normalize_text(m.name_ar or '')).ratio() if m.name_ar else 0.0,
+                SequenceMatcher(None, core_norm, normalize_text(m.name_en)).ratio(),
+                SequenceMatcher(None, core_norm, normalize_text(m.name_ar or '')).ratio() if m.name_ar else 0.0,
             )
+            cand_tokens = product_tokens(m.name_en) | product_tokens(m.name_ar)
+            family = family_similarity(desc_tokens, cand_tokens)
             tech_ok = compatible(combined_text, cand_text)
-            score = min(0.95, max(ratio, 0.35 + 0.15 * overlap))
+            score = min(0.95, max(ratio, 0.35 + 0.15 * overlap, 0.6 + 0.3 * family if family else 0.0))
+            # Specification attributes absent from a catalog name are not evidence of a
+            # different category; they only block assigning that specific material.
+            category_score = score
             if not tech_ok:
                 score = round(score * 0.72, 3)
             material_candidates.append({
@@ -719,16 +815,23 @@ def classify_material_description(
                 'unit': canonical_unit(m.unit),
                 'score': round(score, 3),
                 'compatible': tech_ok,
+                # A specific material may be assigned only when it names every requested
+                # product word (an RGB request is not a day-light flood light).
+                'covers_request': bool(desc_tokens) and desc_tokens <= cand_tokens,
+                'family': family,
+                'category_score': round(category_score, 3),
                 '_material': m,
             })
-        material_candidates.sort(key=lambda c: (-c['score'], c['id']))
+        material_candidates.sort(key=lambda c: (-c['score'], -c['family'], c['id']))
 
     # Step 4: Category relationship scoring (combine direct category scoring + top material categories)
-    category_candidates = score_categories_for_text(combined_text, categories)
+    category_candidates = score_categories_for_text(core_desc, categories)
+    if not category_candidates and not material_candidates and clean_specs:
+        category_candidates = score_categories_for_text(combined_text, categories)
     by_pair = {(c['main_category_id'], c['subcategory_id']): c for c in category_candidates}
     for mc in material_candidates[:5]:
         pair = (mc['main_category_id'], mc['subcategory_id'])
-        boost = round(min(0.88, mc['score'] * 0.9), 3)
+        boost = round(min(0.88, mc.get('category_score', mc['score']) * 0.9), 3)
         if pair in by_pair:
             if boost > by_pair[pair]['confidence']:
                 by_pair[pair]['confidence'] = boost
@@ -756,7 +859,7 @@ def classify_material_description(
     cat_gap = (top_cat['confidence'] - second_cat['confidence']) if (top_cat and second_cat) else 1.0
 
     # High-confidence deterministic material match -> no Gemini needed
-    if top_mat and top_mat['compatible'] and top_mat['score'] >= 0.85:
+    if top_mat and top_mat['compatible'] and top_mat['covers_request'] and top_mat['score'] >= 0.85:
         clean_cands = [{k: v for k, v in c.items() if k != '_material'} for c in material_candidates[:5]]
         return _build_result(
             material=top_mat['_material'],
@@ -776,7 +879,7 @@ def classify_material_description(
     if top_cat and top_cat['confidence'] >= 0.72 and cat_gap >= 0.12:
         clean_cands = [{k: v for k, v in c.items() if k != '_material'} for c in material_candidates[:5]]
         return _build_result(
-            material=top_mat['_material'] if (top_mat and top_mat['compatible'] and top_mat['score'] >= 0.78) else None,
+            material=top_mat['_material'] if (top_mat and top_mat['compatible'] and top_mat['covers_request'] and top_mat['score'] >= 0.78) else None,
             main_id=top_cat['main_category_id'],
             sub_id=top_cat['subcategory_id'],
             confidence=top_cat['confidence'],

@@ -467,6 +467,9 @@ class PriceIn(Model):
     lead_days:int=Field(default=7,ge=0,le=3650)
     valid_until:datetime|None=None
     technical_confirmed:bool=False
+    warranty_months:int|None=Field(default=None,ge=0,le=600)
+    payment_terms:str=Field(default='',max_length=300)
+    stock_quantity:Decimal|None=Field(default=None,ge=0,max_digits=14,decimal_places=3)
     active:bool=Field(default=True,description='Private rates can use saved self-declared categories. Capability confirmation is independent from rate activation.')
     expected_version:int|None=Field(default=None,ge=1)
 
@@ -536,6 +539,7 @@ class RFQIn(Model):
     project_name:str=Field(default='',max_length=250)
     required_delivery_date:date|None=None
     additional_instructions:str=Field(default='',max_length=10000)
+    delivery_address:str=Field(default='',max_length=300)
 
     @field_validator('city',mode='wrap')
     @classmethod
@@ -569,6 +573,9 @@ class QuoteLineIn(Model):
     unit_price:Decimal=Field(ge=0,max_digits=14,decimal_places=2)
     lead_days:int=Field(ge=0,le=3650)
     note:str=Field(default='',max_length=4000)
+    discount_percent:Decimal=Field(default=Decimal('0'),ge=0,le=100,max_digits=5,decimal_places=2)
+    warranty_months:int|None=Field(default=None,ge=0,le=600)
+    availability:Literal['available','limited','unavailable','unknown']='unknown'
 
 class CommercialTerms(Model):
     quotation_reference:str=Field(default='',max_length=100)
@@ -580,6 +587,9 @@ class CommercialTerms(Model):
     discount_amount:Decimal=Field(default=Decimal('0'),ge=0,max_digits=14,decimal_places=2)
     delivery_charge:Decimal=Field(default=Decimal('0'),ge=0,max_digits=14,decimal_places=2)
     delivery_vat_rate:Decimal=Field(default=Decimal('0'),ge=0,le=1)
+    warranty_months:int|None=Field(default=None,ge=0,le=600)
+    warranty_terms:str=Field(default='',max_length=2000)
+    stock_availability:str=Field(default='',max_length=500)
 
 
 class QuoteIn(Model):

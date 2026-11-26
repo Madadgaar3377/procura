@@ -119,6 +119,18 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
                 f"تم تحديث حالة طلب عرض السعر {ref}: {title} إلى {context.get('status', 'محدث')}. افتح لوحة التحكم للتفاصيل.",
             ),
         }
+        lifecycle = {
+            'purchase_order_issued': ('Purchase order issued', 'تم إصدار أمر شراء'),
+            'delivery_dispatched': ('Delivery dispatched', 'تم شحن التسليم'),
+            'goods_receipt_recorded': ('Goods receipt recorded', 'تم تسجيل استلام البضائع'),
+            'invoice_submitted': ('Invoice received', 'تم استلام فاتورة'),
+            'invoice_reviewed': ('Invoice reviewed', 'تمت مراجعة الفاتورة'),
+            'sla_reminder': ('Action reminder', 'تذكير بإجراء مطلوب'),
+        }
+        if template in lifecycle:
+            text = str(context.get('message') or '')
+            messages[template] = (lifecycle[template][0], lifecycle[template][1], text,
+                                  text + '\n\n' + 'افتح لوحة التحكم للتفاصيل.')
         en, ar, english, translated = messages.get(
             template,
             (
@@ -179,6 +191,13 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         plain = 'تم تغيير كلمة مرور حسابك في Procumaterial. إذا لم تقم بذلك، تواصل مع فريق الدعم فوراً.' if arabic else 'Your Procumaterial password was changed. If this was not you, contact support immediately.'
     if template=='rfq_invitation' and context.get('pricing_message'):
         plain+='\n\n'+str(context['pricing_message'])
+    if template=='rfq_invitation' and context.get('matched_count') is not None:
+        count=context['matched_count']
+        if sms:
+            plain=(f"Procumaterial: طلب {ref} من {context.get('buyer','')}، {count} بند مطابق. آخر موعد {context.get('deadline','')}."
+                   if arabic else f"Procumaterial RFQ {ref} from {context.get('buyer','')}: {count} matched item(s), quote by {context.get('deadline','')}.")
+        else:
+            plain+='\n\n'+((f'البنود المطابقة لكم: {count}') if arabic else f'Items matched to your company: {count}')
     if template=='rfq_invitation':
         if context.get('buyer') and not sms:
             plain+='\n\n'+(('المشتري: ' if arabic else 'Buyer: ')+str(context['buyer']))
@@ -187,12 +206,12 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
             plain+='\n\n'+('المواد المطلوبة:' if arabic else 'Relevant materials:')
             for item in materials:
                 plain+=f"\n- {item['description']}: {item['quantity']} {item['unit']}"
-        elif materials:
+        elif materials and context.get('matched_count') is None:
             first=materials[0]
             plain+=f" {str(first['description'])[:40]}: {first['quantity']} {first['unit']}"
             if len(materials)>1:plain+=f" (+{len(materials)-1} items)"
         deadline=context.get('deadline')
-        if deadline:
+        if deadline and not (sms and context.get('matched_count') is not None):
             plain+='\n\n'+(('الموعد النهائي: ' if arabic else 'Response deadline: ')+str(deadline))
     subject = f"Procumaterial | {heading}" + (f" — {ref}" if ref else "")
     url = str(context.get("url", "")) if not security or template=='password_reset' else ""

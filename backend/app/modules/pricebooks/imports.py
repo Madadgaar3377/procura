@@ -67,6 +67,11 @@ TEMPLATE_HEADERS = [
     'Availability / Lead Time (optional)',
     'Status (Active / Inactive)',
     'Supplier Notes (optional)',
+    'Currency (optional)',
+    'Price Valid Until (optional)',
+    'Warranty Months (optional)',
+    'Payment Terms (optional)',
+    'Stock Quantity (optional)',
 ]
 
 REFERENCE_SHEET_RE = re.compile(
@@ -145,6 +150,24 @@ HEADER_ALIASES: dict[str, str] = {
     'price_basis': 'price_basis',
     'offered specifications': 'offered_specs',
     'offered_specs': 'offered_specs',
+    'currency': 'currency',
+    'currency (optional)': 'currency',
+    'العملة': 'currency',
+    'price valid until (optional)': 'valid_until',
+    'price validity': 'valid_until',
+    'صلاحية السعر': 'valid_until',
+    'warranty': 'warranty_months',
+    'warranty months': 'warranty_months',
+    'warranty months (optional)': 'warranty_months',
+    'warranty (months)': 'warranty_months',
+    'الضمان (أشهر)': 'warranty_months',
+    'payment terms': 'payment_terms',
+    'payment terms (optional)': 'payment_terms',
+    'شروط الدفع': 'payment_terms',
+    'stock': 'stock_quantity',
+    'stock quantity': 'stock_quantity',
+    'stock quantity (optional)': 'stock_quantity',
+    'الكمية المتوفرة': 'stock_quantity',
 }
 
 ISSUE_STATUSES = {'unmatched', 'invalid', 'duplicate', 'conflict', 'failed'}
@@ -561,6 +584,11 @@ def build_template_workbook(db: Session) -> BytesIO:
         ('Availability / Lead Time (optional)', 'Delivery lead time in days (e.g. 3, 7, 14) or availability note.', 'مدة التوريد بالأيام (مثلاً 3 أو 7 أو 14) أو حالة التوفر.'),
         ('Status (Active / Inactive)', 'Active or Inactive. Defaults to Active when blank.', 'نشط (Active) أو غير نشط (Inactive). الافتراضي نشط.'),
         ('Supplier Notes (optional)', 'Internal notes or commercial remarks for your team.', 'ملاحظات داخلية أو تجارية لفريقك (اختياري).'),
+        ('Currency (optional)', 'SAR (default), USD, EUR, AED or GBP.', 'العملة: ريال سعودي افتراضياً.'),
+        ('Price Valid Until (optional)', 'Date after which this price must not be used (YYYY-MM-DD).', 'تاريخ انتهاء صلاحية السعر.'),
+        ('Warranty Months (optional)', 'Warranty period in whole months, e.g. 12.', 'مدة الضمان بالأشهر.'),
+        ('Payment Terms (optional)', 'e.g. 30 days from invoice.', 'شروط الدفع، مثل 30 يوماً من الفاتورة.'),
+        ('Stock Quantity (optional)', 'Quantity currently in stock. 0 marks the item unavailable.', 'الكمية المتوفرة حالياً.'),
     ]
     for row in guide_rows:
         inst.append(list(row))
@@ -691,6 +719,11 @@ def export_existing_price_book(
             int(item.lead_days),
             'Active' if item.active else 'Inactive',
             _safe_excel_text(item.remarks or ''),
+            item.currency or 'SAR',
+            item.valid_until.date().isoformat() if item.valid_until else '',
+            item.warranty_months if item.warranty_months is not None else '',
+            _safe_excel_text(item.payment_terms or ''),
+            float(item.stock_quantity) if item.stock_quantity is not None else '',
         ])
 
     output = BytesIO()
@@ -853,6 +886,18 @@ def _validate_and_build_payload(
     price_basis = _parse_price_basis(raw.get('price_basis'))
 
     notes = _clean_cell(raw.get('notes'))
+    currency = (_clean_cell(raw.get('currency')) or 'SAR').upper()
+    if currency not in {'SAR', 'USD', 'EUR', 'AED', 'GBP'}:
+        raise ValueError(f'Unsupported currency "{currency}" (use SAR, USD, EUR, AED or GBP)')
+    warranty_raw = _clean_cell(raw.get('warranty_months'))
+    warranty_months = None
+    if warranty_raw:
+        digits = ''.join(ch for ch in warranty_raw if ch.isdigit())
+        if not digits or int(digits) > 600:
+            raise ValueError('Warranty Months must be a whole number of months')
+        warranty_months = int(digits)
+    stock_raw = _clean_cell(raw.get('stock_quantity'))
+    stock_quantity = _parse_decimal(stock_raw, field='Stock Quantity', max_decimals=3) if stock_raw else None
     if extra_avail:
         notes = f'{extra_avail}; {notes}' if notes else extra_avail
 
@@ -873,6 +918,11 @@ def _validate_and_build_payload(
         valid_until=valid_until,
         price_basis=price_basis,
         active=active,
+        currency=currency,
+        warranty_months=warranty_months,
+        payment_terms=_clean_cell(raw.get('payment_terms'))[:300],
+        stock_quantity=stock_quantity,
+        availability=('available' if stock_quantity and stock_quantity > 0 else 'unavailable' if stock_quantity == 0 else 'unknown'),
     )
     return payload, canonical, unit_price, lead_days, ('Active' if active else 'Inactive')
 

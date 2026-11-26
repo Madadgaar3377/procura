@@ -11,6 +11,7 @@
 *.pfx
 
 backend/.test-pg-*/
+backend/tests/*
 
 # Python environments, bytecode, packaging, and tool caches
 .venv/

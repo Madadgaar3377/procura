@@ -10,23 +10,39 @@ from app.security import audit
 from app.modules.capabilities.policy import eligibility_predicates
 
 def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True):
+    """One draft per supplier per RFQ, pre-filled only from valid saved private prices.
+
+    Only the supplier's matched lines are drafted (the portal still lets the
+    supplier quote any other RFQ line). A line without a valid saved price is left
+    pending supplier input; prices are never estimated or invented.
+    """
     old=db.scalar(select(Quotation).where(Quotation.invitation_id==invitation.id))
     if old:return old
     items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==invitation.rfq_id).order_by(RFQItem.created_at,RFQItem.id)).all()
+    from app.modules.procurement.portal import matched_item_ids
+    matched=set(matched_item_ids(db,invitation))
+    if matched:items=[item for item in items if item.id in matched]
     materials={m.id:m for m in db.scalars(select(Material).where(Material.id.in_([i.material_id for i in items if i.material_id]))).all()}
     now=datetime.now(timezone.utc)
-    rates=db.scalars(select(PriceBookItem).where(PriceBookItem.org_id==invitation.supplier_org_id,PriceBookItem.material_id.in_(materials),PriceBookItem.active.is_(True),PriceBookItem.price_basis==basis,or_(PriceBookItem.valid_until.is_(None),PriceBookItem.valid_until>now))).all()
+    valid_rate=(PriceBookItem.org_id==invitation.supplier_org_id,PriceBookItem.active.is_(True),PriceBookItem.price_basis==basis,or_(PriceBookItem.valid_until.is_(None),PriceBookItem.valid_until>now))
+    rates=db.scalars(select(PriceBookItem).where(*valid_rate,PriceBookItem.material_id.in_(materials))).all() if materials else []
     by_material={r.material_id:r for r in rates}
+    # Supplier-defined catalog products (no Material Master link) match on subcategory + description.
+    custom_subs={i.subcategory_id for i in items if not i.material_id and i.subcategory_id}
+    custom={}
+    if custom_subs:
+        for r in db.scalars(select(PriceBookItem).where(*valid_rate,PriceBookItem.material_id.is_(None),PriceBookItem.subcategory_id.in_(custom_subs))).all():
+            custom[(r.subcategory_id,normalize_text(r.supplier_description))]=r
     reasons=[];eligible=[];currency=None
     for item in items:
-        material=materials.get(item.material_id);rate=by_material.get(item.material_id)
-        if not material or not material.active or not rate:reasons.append(f'Missing active price for item {item.id}');continue
+        material=materials.get(item.material_id)
+        rate=by_material.get(item.material_id) if material else custom.get((item.subcategory_id,normalize_text(item.description)))
+        if material and not material.active:rate=None
+        if not rate:reasons.append(f'Missing active price for item {item.id}: {item.description} (pending supplier input)');continue
         if rate.availability=='unavailable':reasons.append(f'Saved price is unavailable for item {item.id}');continue
-        if normalize_unit(item.unit)!=rate.unit or normalize_unit(material.unit)!=rate.unit:reasons.append(f'Unit mismatch for item {item.id}');continue
-        if material.version!=rate.material_version:reasons.append(f'Saved price needs review for changed Material Master item {item.id}');continue
+        if normalize_unit(item.unit)!=rate.unit or (material and normalize_unit(material.unit)!=rate.unit):reasons.append(f'Unit mismatch for item {item.id}');continue
+        if material and material.version!=rate.material_version:reasons.append(f'Saved price needs review for changed Material Master item {item.id}');continue
         if rate.min_order_quantity and Decimal(item.quantity)<rate.min_order_quantity:reasons.append(f'Quantity below saved minimum for item {item.id}');continue
-        descriptions={normalize_text(v) for v in (material.name_en,material.name_ar,rate.offered_description,rate.supplier_description) if v}
-        if normalize_text(item.description) not in descriptions:reasons.append(f'Description requires technical review for item {item.id}');continue
         if item.specifications.strip() and normalize_text(item.specifications)!=normalize_text(rate.offered_specs):reasons.append(f'Specification mismatch for item {item.id}');continue
         brand_requirement=re.search(r'\bbrands?\s*:\s*([^;\n]+)',f'{item.description}\n{item.specifications}',re.I)
         if brand_requirement:
@@ -35,15 +51,22 @@ def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True)
                 reasons.append(f'Brand requirement mismatch for item {item.id}');continue
         if rate.unit_price<=0:reasons.append(f'Invalid saved price for item {item.id}');continue
         if currency and rate.currency!=currency:reasons.append(f'Currency mismatch for item {item.id}; no currency conversion authorized');continue
+        names={normalize_text(v) for v in ((material.name_en,material.name_ar) if material else ())+(rate.offered_description,rate.supplier_description) if v}
+        note='' if normalize_text(item.description) in names else 'Buyer wording differs from your saved product description; confirm the offered product.'
+        if note:reasons.append(f'Confirm offered product for item {item.id}: {item.description}')
         currency=rate.currency
-        eligible.append((item,material,rate))
+        eligible.append((item,material,rate,note))
     if not eligible and not allow_empty:return None
     quote=Quotation(invitation_id=invitation.id,rfq_id=invitation.rfq_id,supplier_org_id=invitation.supplier_org_id,price_basis=basis,submission_source='automatic_draft' if automatic else 'manual',review_required=True,review_reasons=[])
     db.add(quote);db.flush()
     quote.currency=currency or 'SAR'
+    terms={}
     from app.serializers import record
-    for item,material,rate in eligible:
-        db.add(QuoteLine(quotation_id=quote.id,rfq_item_id=item.id,offered_description=rate.offered_description or rate.supplier_description or material.name_en,brand=rate.brand,model=rate.model,offered_specs=rate.offered_specs,compliance='unconfirmed',quantity=item.quantity,unit_price=rate.unit_price,lead_days=rate.lead_days,source_rate_id=rate.id,source_rate_version=rate.version,source_rate_snapshot=record(rate),vat_rate=rate.vat_rate))
+    for item,material,rate,note in eligible:
+        db.add(QuoteLine(quotation_id=quote.id,rfq_item_id=item.id,offered_description=rate.offered_description or rate.supplier_description or (material.name_en if material else item.description),brand=rate.brand,model=rate.model,offered_specs=rate.offered_specs,compliance='unconfirmed',quantity=item.quantity,unit_price=rate.unit_price,lead_days=rate.lead_days,note=note,source_rate_id=rate.id,source_rate_version=rate.version,source_rate_snapshot=record(rate),vat_rate=rate.vat_rate,warranty_months=rate.warranty_months,availability=rate.availability or 'unknown'))
+        if rate.payment_terms and not terms.get('payment_terms'):terms['payment_terms']=rate.payment_terms
+        if rate.valid_until and (not terms.get('validity_until') or rate.valid_until.isoformat()<terms['validity_until']):terms['validity_until']=rate.valid_until.isoformat()
+    quote.commercial_terms=terms
     quote.review_reasons=reasons or ['Review offered specifications and confirm technical compliance before submitting']
     db.flush();return quote
 
@@ -119,13 +142,16 @@ def prepare_authorized_quote(db,invitation_id):
     quote.vat_rate=Decimal(str(policy.get('vat_rate','0.15')))
     if Decimal(invoice(db,quote)['total'])>Decimal(str(policy.get('max_total') or 0)):reasons.append('Quotation total exceeds the authorized limit')
     if len(lines)!=len(items):reasons.append('Quotation coverage is incomplete')
-    # The supplier authorized participation explicitly; submission still fails closed.
+    # A saved automation policy may prepare an offer, but the supplier must approve
+    # this particular RFQ and its commercial terms before it is submitted.
     inv.status='accepted'
     if reasons:
         quote.review_reasons=list(dict.fromkeys(reasons));quote.review_required=True
         for member in db.scalars(select(Member).where(Member.organization_id==org.id)).all():db.add(Notification(recipient_user_id=member.user_id,event='quotation.review_required',message=f'Manual quotation review required for {rfq.reference}',status='delivered'))
         audit(db,actor,'quotation.automatic_review_required',org.id,quote.id,reasons=quote.review_reasons,policy_revision=quote.policy_revision)
     else:
-        for line in lines.values():line.compliance='compliant'
-        submit_record(db,quote,actor,automatic=True)
+        quote.review_required=True
+        quote.review_reasons=['Supplier approval required before quotation submission']
+        for member in db.scalars(select(Member).where(Member.organization_id==org.id)).all():
+            db.add(Notification(recipient_user_id=member.user_id,event='quotation.review_required',message=f'Quotation draft ready for approval on {rfq.reference}',status='delivered'))
     db.flush();return quote

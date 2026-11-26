@@ -65,9 +65,15 @@ function SupplierRow({ match, city, favorite, toggle, tr }: {
     rejected: tr('Capability was not approved'),
     requirements: tr('Does not meet all RFQ requirements'),
   };
-  const level = evidence === 'material' ? tr('Exact material capability')
+  const level = evidence === 'material' ? tr('Exact material match')
+    : evidence === 'description' ? tr('Product match')
     : evidence === 'subcategory' ? tr('Subcategory capability')
-    : evidence === 'category' ? tr('Main category capability') : null;
+    : evidence === 'category' ? tr('Broad category capability') : null;
+  const itemLevel: Record<string, string> = {
+    'exact material': tr('Exact material'), 'product alias': tr('Same product'), 'product family': tr('Same product family'),
+    subcategory: tr('Subcategory capability'), 'main category': tr('Broad category'), 'AI-assisted semantic match': tr('AI-assisted'),
+  };
+  const items = match.matched_items || [];
   const relevant = (match.matched_categories || []).filter(Boolean).join(' \u00b7 ');
   const coverage = !city ? tr('Delivery location not specified')
     : match.service_coverage_status === 'covered' ? `${tr('Delivery covered')} \u00b7 ${city}`
@@ -83,10 +89,14 @@ function SupplierRow({ match, city, favorite, toggle, tr }: {
       </div>
     </div>
     <div className={styles.evidence}>
-      {recommended ? <><strong>{level || tr('Approved capability match')}</strong>
-        <span>{relevant || tr('Review capabilities in the supplier profile')}</span>
-        {evidence === 'material' && !!match.covered_items?.length && <span>{match.covered_items.slice(0, 2).join(' \u00b7 ')}</span>}
-        {evidence === 'category' && <small>{tr('Confirm the specific product in the quotation.')}</small>}
+      {recommended ? <><span className={styles.matchBadge} data-strength={match.match_strength || 'capability'}>{level || tr('Approved capability match')}</span>
+        {items.length ? <ul className={styles.matchedItems} aria-label={tr('Matched materials')}>
+          {items.map(item => <li key={item.item_id}>{item.description}
+            <small>{' \u00b7 '}{[item.match_level && itemLevel[item.match_level], item.discipline, item.main_category !== item.discipline ? item.main_category : null, item.subcategory].filter(Boolean).join(' \u203a ')}</small></li>)}
+        </ul> : <span>{relevant || tr('Review capabilities in the supplier profile')}</span>}
+        <span>{`${match.matched_item_count || items.length || match.covered_items?.length || 0} ${tr('matched RFQ items')} \u00b7 ${match.saved_price_available ? tr('Saved price available') : tr('Manual pricing required')}`}</span>
+        {evidence === 'category' && <small>{tr('Broad category match: not invited automatically. Confirm the specific product before inviting.')}</small>}
+        {evidence !== 'material' && <small>{tr('Technical compliance is not confirmed by this match; review specifications in the quotation.')}</small>}
       </> : <><strong className={styles.reason}>{reasons[eligibilityReason(match)]}</strong>
         {match.invitation_review_required && <small>{tr('Earlier invitation retained; current eligibility needs review.')}</small>}</>}
       <span className={styles.coverage}><IconMapPin size={13}/>{coverage}</span>
@@ -95,6 +105,7 @@ function SupplierRow({ match, city, favorite, toggle, tr }: {
       <span className={styles.invitationStatus}>{match.invitation_status === 'accepted' ? tr('Invitation accepted')
         : match.invitation_status === 'declined' ? tr('Invitation declined')
         : match.invitation_status ? tr('Invitation recorded') : tr('No invitation recorded')}</span>
+      <span className={styles.invitationStatus}>{match.quotation_status ? `${tr('Quotation')}: ${tr(match.quotation_status)}` : tr('No quotation submitted')}</span>
       <div>{match.profile_url&&<Link className={styles.profileLink} href={match.profile_url}>{tr('View profile')}<IconArrowUpRight size={15}/></Link>}
         <button type="button" className={styles.favorite} disabled={busy}
           aria-label={`${favorite ? tr('Remove from favorites') : tr('Save as favorite')}: ${match.supplier_name}`}
@@ -280,7 +291,7 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
             {!recommended.length && <p className={styles.empty}>{state.busy ? tr('Matching is underway. Recommendations will appear here.')
               : state.label === 'draft' ? tr('Publish this RFQ to start supplier matching.')
               : totalEvaluated && totalEvaluated > PAGE_SIZE ? tr('No recommendations on this evaluated page. Review the other pages.')
-              : tr('No eligible suppliers currently match this RFQ.')}</p>}
+              : data.explanation || tr('No eligible suppliers currently match this RFQ.')}</p>}
             {!!other.length && <details className={styles.other}><summary>{tr('Other evaluated suppliers')} <span>{other.length} · {tr('on this page')}</span></summary><div className={styles.supplierList}>{other.map(row)}</div></details>}
             <nav className={styles.pagination} aria-label={tr('Evaluated supplier pages')}>
               <span>{tr('Evaluated page')} {Math.floor(offset / PAGE_SIZE) + 1}{totalEvaluated != null ? ` · ${totalEvaluated} ${tr('evaluated in total')}` : ''}</span>

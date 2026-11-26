@@ -252,6 +252,7 @@ def _process_event(db: Session, event: Outbox, now: datetime) -> None:
                 rfq = matching_db.get(RFQ, payload.get('rfq_id'))
                 if not rfq or rfq.status not in {'published', 'collecting_quotes'}:
                     raise PermanentOutboxError('RFQ is not dispatchable')
+                started = time.monotonic()
                 result = match_and_invite(
                     matching_db, rfq, bounded=True, single_batch=True,
                     limit=get_settings().matching_batch_size,
@@ -262,6 +263,9 @@ def _process_event(db: Session, event: Outbox, now: datetime) -> None:
                 matching_db.rollback()
                 raise
         cursor = result.get('next_cursor')
+        # Durations accumulate across continuation pages for admin diagnostics.
+        event.payload = {**event.payload, 'matching_duration_ms': round(
+            float(event.payload.get('matching_duration_ms') or 0) + (time.monotonic() - started) * 1000, 1)}
         if cursor:
             event.payload = {**event.payload, 'cursor': cursor}
             event.status = 'pending'

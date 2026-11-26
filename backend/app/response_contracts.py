@@ -148,6 +148,14 @@ RFQOut = contract('RFQOut', models.RFQ, ('attachment_records','client_request_id
 RFQItemOut = contract('RFQItemOut', models.RFQItem)
 InvitationOut = contract('InvitationOut', models.Invitation)
 MatchOut = contract('MatchOut', models.RFQMatch)
+class MatchedItemDetail(ResponseModel):
+    item_id: str
+    description: str
+    match_level: str | None = None
+    discipline: str | None = None
+    main_category: str | None = None
+    subcategory: str | None = None
+
 class MatchSummary(MatchOut):
     supplier_name: str
     covered_items: list[str]
@@ -166,6 +174,12 @@ class MatchSummary(MatchOut):
     brand_requirement_status: str = 'unverified'
     service_coverage_status: str = 'unknown'
     invitation_review_required: bool = False
+    # exact | product | capability | broad (broad matches are never auto-invited)
+    match_strength: str | None = None
+    matched_item_count: int = 0
+    matched_items: list[MatchedItemDetail] = Field(default_factory=list)
+    saved_price_available: bool = False
+
 
 class InvitationSummary(InvitationOut):
     rfq_reference: str
@@ -264,11 +278,15 @@ class BuyerInvitation(InvitationOut):
 class Comparison(ResponseModel):
     rfq_id: str
     quotations: list[QuoteDetail]
+    weights: dict[str, int] = Field(default_factory=dict)
+    ranking: list[dict[str, Any]] = Field(default_factory=list)
+    method: str = ''
+    currency: str = 'SAR'
 
 class MatchResults(ResponseModel):
     matches: list[MatchSummary]
     invitations: list[BuyerInvitation]
-    progress: Literal['draft', 'published', 'matching_queued', 'matching_in_progress', 'matching_completed', 'matching_failed', 'invitations_available', 'no_eligible_suppliers', 'closed']
+    progress: Literal['draft', 'published', 'matching_queued', 'matching_in_progress', 'matching_completed', 'matching_failed', 'invitations_available', 'matches_available', 'no_eligible_suppliers', 'closed']
     matching_status: Literal['queued', 'processing', 'completed', 'failed']
     pending_invitation_ids: list[str]
     matched_suppliers: int = 0
@@ -298,6 +316,18 @@ class MatchingItemDiagnostic(ResponseModel):
     subcategory_name: str | None = None
     classified: bool
     matched_supplier_count: int = 0
+    specifications_excerpt: str = ''
+    material_master_main_category_id: str | None = None
+    material_master_main_category_name: str | None = None
+    material_master_subcategory_id: str | None = None
+    material_master_subcategory_name: str | None = None
+    classification_confidence: float | None = None
+    classification_source: str | None = None
+    classification_needs_confirmation: bool = False
+    classification_conflict: bool = False
+    classification_note: str | None = None
+    product_candidates: list[str] = Field(default_factory=list)
+    level_counts: dict[str, int] = Field(default_factory=dict)
 
 
 class MatchingEligibleSupplierDiagnostic(ResponseModel):
@@ -328,8 +358,13 @@ class MatchingDiagnosticOut(ResponseModel):
     rejected_by_verification_or_eligibility: int
     matches_created: int
     invitations_created: int
+    product_matches: int = 0
+    subcategory_matches: int = 0
+    main_category_matches: int = 0
+    matching_duration_ms: float | None = None
     delivery_summary: dict[str, int] = Field(default_factory=dict)
     invitation_statuses: dict[str, int] = Field(default_factory=dict)
+    quotation_statuses: dict[str, int] = Field(default_factory=dict)
     item_diagnostics: list[MatchingItemDiagnostic] = Field(default_factory=list)
     eligible_suppliers: list[MatchingEligibleSupplierDiagnostic] = Field(default_factory=list)
     excluded_suppliers: list[MatchingSupplierDiagnostic] = Field(default_factory=list)
@@ -339,7 +374,7 @@ class MatchingDiagnosticOut(ResponseModel):
 class MatchingRerunOut(ResponseModel):
     rfq_id: str
     job_id: str
-    job_status: Literal['pending','retry','processing']
+    job_status: Literal['pending','retry','processing','processed','failed']
     deduplicated: bool
 
 class ReviewQueue(ResponseModel):

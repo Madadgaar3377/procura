@@ -194,7 +194,7 @@ def test_download_template_structure_dropdowns_and_no_fake_ids(env):
     assert 'Price Book Import' in wb.sheetnames
     assert 'Instructions & Examples' in wb.sheetnames
     ws = wb['Price Book Import']
-    headers = [ws.cell(row=1, column=i).value for i in range(1, 13)]
+    headers = [ws.cell(row=1, column=i).value for i in range(1, len(TEMPLATE_HEADERS) + 1)]
     assert headers == TEMPLATE_HEADERS
     # Sheet 1 should be clean for supplier entry (no prefilled fake rows)
     assert ws.cell(row=2, column=3).value is None

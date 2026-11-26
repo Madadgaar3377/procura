@@ -89,19 +89,23 @@ def prepare(db, event):
             event.status = "skipped"
             event.delivery_status = "eligibility_review_required"
             return
+        from app.modules.procurement.portal import matched_item_ids
         quote=db.scalar(select(Quotation).where(Quotation.invitation_id==invitation.id))
         from app.models import QuoteLine
         quoted=set(db.scalars(select(QuoteLine.rfq_item_id).where(QuoteLine.quotation_id==quote.id))) if quote else set()
-        missing=db.scalars(select(RFQItem.description).where(RFQItem.rfq_id==rfq.id,RFQItem.id.not_in(quoted))).all()
-        pricing_message=('A private quotation draft is prepared. Review and confirm before submitting.' if quote and quote.status=='draft' else
-            'Your authorized automatic quotation has been submitted.' if quote else 'Please prepare a manual quotation.')
-        if missing:pricing_message+=' Please provide prices for: '+', '.join(missing)
+        scope=matched_item_ids(db,invitation)
+        missing_query=select(RFQItem.description).where(RFQItem.rfq_id==rfq.id,RFQItem.id.not_in(quoted))
+        missing=db.scalars(missing_query.where(RFQItem.id.in_(scope)) if scope else missing_query).all()
+        pricing_message=('Your quotation is prepared from your saved prices. Open the secure link, review and approve it.' if quote and quote.status=='draft' else
+            'Your quotation has been submitted.' if quote else 'Open the secure link to enter your prices.')
+        if missing:pricing_message+=' Prices needed for: '+', '.join(missing[:10])+(f' (+{len(missing)-10} more)' if len(missing)>10 else '')
         enqueue_rfq_notice(
             db,
             org_id=org.id,
             template="rfq_invitation",
             context={**context, "supplier_name": org.name, "org_id": org.id,
-                     "invitation_id": invitation.id,"pricing_message":pricing_message},
+                     "invitation_id": invitation.id,"pricing_message":pricing_message,
+                     "matched_count": len(matched_item_ids(db, invitation)) or len(missing)},
             source_key=f"rfq-invitation:{invitation.id}",
         )
     else:

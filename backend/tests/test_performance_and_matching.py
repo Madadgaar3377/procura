@@ -132,7 +132,7 @@ class PerformanceAndMatchingTestCase(unittest.TestCase):
             self.assertTrue(any(m.supplier_org_id=='sup-city' and m.status=='location_mismatch' for m in matches))
 
     def test_automatic_quotation_workflow_idempotency(self):
-        """Verify automatic quotations are submitted only when compliant and never duplicated."""
+        """Verify automatic preparation requires supplier approval and never duplicates."""
         with self.Session() as db:
             buyer = Organization(id='b-org', name='Buyer', name_normalized='buyer', is_buyer=True, is_supplier=False, verified_status='verified')
             supplier = Organization(
@@ -206,9 +206,10 @@ class PerformanceAndMatchingTestCase(unittest.TestCase):
             db.commit()
 
             self.assertIsNotNone(quote)
-            self.assertEqual(quote.status, 'submitted')
-            self.assertEqual(quote.submission_source, 'automatic')
-            self.assertFalse(quote.review_required)
+            self.assertEqual(quote.status, 'draft')
+            self.assertEqual(quote.submission_source, 'automatic_draft')
+            self.assertTrue(quote.review_required)
+            self.assertTrue(quote.review_reasons)
 
             # Idempotency check: repeat execution must return existing quote without duplicate
             quote_repeat = prepare_authorized_quote(db, 'inv-1')

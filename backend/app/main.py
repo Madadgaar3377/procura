@@ -32,6 +32,9 @@ from app.modules.reports.router import router as reports
 from app.modules.contact.router import router as contact
 from app.modules.files.router import router as files
 from app.modules.materials.router import router as materials_match
+from app.modules.procurement.router import router as procurement
+from app.modules.procurement.portal import router as supplier_portal
+from app.modules.procurement.public import router as procurement_public
 
 settings=get_settings()
 settings.validate_r2()
@@ -175,7 +178,7 @@ async def headers(request:Request,call_next):
     response.headers['Cache-Control']='no-store'
     return response
 
-for r in (auth,phone_change,organizations,taxonomy,imports,capabilities,directory,rfqs,matching,pricebooks,quotations,notifications,memberships,admin,database_status,reports,contact,files,materials_match):
+for r in (auth,phone_change,organizations,taxonomy,imports,capabilities,directory,rfqs,matching,pricebooks,quotations,notifications,memberships,admin,database_status,reports,contact,files,materials_match,procurement,supplier_portal,procurement_public):
     app.include_router(r,prefix='/api/v1')
 
 @app.get('/health/live',tags=['Health'])

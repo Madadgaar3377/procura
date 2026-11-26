@@ -2,7 +2,7 @@ from app.search import ListSearch
 from app.response_contracts import QuotationSummary, Comparison, QuoteDetail
 from datetime import datetime,timezone
 from decimal import Decimal,ROUND_HALF_UP
-from fastapi import APIRouter,Depends,File,HTTPException,Request,UploadFile
+from fastapi import APIRouter,Depends,File,HTTPException,Query,Request,UploadFile
 from sqlalchemy.orm import Session
 from sqlalchemy import func,select
 from app.database import get_db
@@ -26,21 +26,20 @@ def snapshot(db,quote,lines=None):
         'document':quotation_document(db,quote,lines)}
 
 def invoice(db,quote,lines=None):
+    """Backend-calculated Decimal totals, including line discounts (see procurement.money)."""
+    from app.modules.procurement.money import Line,totals,d
     if lines is None:
         lines=db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()
-    subtotal=sum((Decimal(l.quantity)*Decimal(l.unit_price) for l in lines),Decimal('0')).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
     terms=quote.commercial_terms or {}
-    discount=Decimal(str(terms.get('discount_amount') or '0'))
-    delivery=Decimal(str(terms.get('delivery_charge') or '0'))
-    delivery_vat_rate=Decimal(str(terms.get('delivery_vat_rate') or '0'))
-    if discount<0 or discount>subtotal or delivery<0 or not 0<=delivery_vat_rate<=1:
-        raise HTTPException(422,'Invalid quotation discount or delivery charge')
-    taxable=sum((Decimal(l.quantity)*Decimal(l.unit_price)*Decimal(l.vat_rate if l.vat_rate is not None else quote.vat_rate) for l in lines),Decimal('0'))
-    taxable=(taxable*(subtotal-discount)/subtotal if subtotal else Decimal('0'))+delivery*delivery_vat_rate
-    vat=taxable.quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
-    result={'subtotal':str(subtotal),'vat':str(vat),'total':str(subtotal-discount+delivery+vat),'currency':quote.currency}
-    if discount or delivery:result.update(discount=str(discount),delivery_charge=str(delivery))
-    return result
+    try:
+        result=totals([Line(d(l.quantity),d(l.unit_price),d(getattr(l,'discount_percent',None)),d(l.vat_rate if l.vat_rate is not None else quote.vat_rate)) for l in lines],
+            header_discount=terms.get('discount_amount') or '0',delivery_charge=terms.get('delivery_charge') or '0',delivery_vat_rate=terms.get('delivery_vat_rate') or '0')
+    except ValueError as exc:
+        raise HTTPException(422,'Invalid quotation discount or delivery charge') from exc
+    output={'subtotal':str(result['subtotal']),'vat':str(result['vat']),'total':str(result['total']),'currency':quote.currency}
+    if result['discount'] or result['delivery_charge']:
+        output.update(discount=str(result['discount']),delivery_charge=str(result['delivery_charge']))
+    return output
 
 @router.get('',response_model=list[QuotationSummary])
 def list_quotes(search:ListSearch=Depends(),org_id:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -181,7 +180,9 @@ def submit(quotation_id:str,user:User=Depends(current_user),db:Session=Depends(g
     return {'quotation':record(quote),'totals':invoice(db,quote)}
 
 @router.get('/rfqs/{rfq_id}/comparison',response_model=Comparison)
-def comparison(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+def comparison(rfq_id:str,price_weight:int|None=Query(None,ge=0,le=100),delivery_weight:int|None=Query(None,ge=0,le=100),terms_weight:int|None=Query(None,ge=0,le=100),user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Side-by-side quotations plus the client's weighted ranking (see procurement.scoring)."""
+    from app.modules.procurement.scoring import compare,normalize_weights
     rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
@@ -199,7 +200,9 @@ def comparison(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get
         result=snapshot(db,quote,quote_lines);result['totals']=invoice(db,quote,quote_lines)
         result.update(supplier_name=suppliers[quote.supplier_org_id],rfq_reference=rfq.reference,favorite=quote.supplier_org_id in favorites)
         output.append(result)
-    return {'rfq_id':rfq_id,'quotations':output}
+    requested=None if price_weight is None and delivery_weight is None and terms_weight is None else {'price':price_weight or 0,'delivery':delivery_weight or 0,'warranty':terms_weight or 0}
+    ranked=compare(db,rfq,normalize_weights(requested) if requested else None)
+    return {'rfq_id':rfq_id,'quotations':output,'weights':ranked['weights'],'ranking':ranked['ranking'],'method':ranked['method'],'currency':ranked['currency']}
 
 
 @router.post('/{quotation_id}/decision/{decision}',response_model=QuoteDetail)
@@ -216,8 +219,12 @@ def decide(quotation_id:str,decision:str,user:User=Depends(current_user),db:Sess
     if quote.status==decision:return snapshot(db,quote)
     if quote.status not in {'submitted','shortlisted'} or (quote.status=='shortlisted' and decision=='shortlisted'):
         raise HTTPException(409,'Quotation cannot receive this decision')
-    if decision=='awarded' and db.scalar(select(Quotation.id).where(Quotation.rfq_id==rfq.id,Quotation.status=='awarded',Quotation.id!=quote.id)):
-        raise HTTPException(409,'An award already exists for this RFQ')
+    if decision=='awarded':
+        # Split awards are allowed for partial quotations, but never for the same RFQ line twice.
+        mine=set(db.scalars(select(QuoteLine.rfq_item_id).where(QuoteLine.quotation_id==quote.id)))
+        taken=set(db.scalars(select(QuoteLine.rfq_item_id).join(Quotation,Quotation.id==QuoteLine.quotation_id).where(
+            Quotation.rfq_id==rfq.id,Quotation.status=='awarded',Quotation.id!=quote.id)))
+        if mine & taken:raise HTTPException(409,'An award already exists for this RFQ')
     before=quote.status;quote.status=decision
     audit(db,user,'quotation.'+decision,rfq.buyer_org_id,quote.id,before=before,after=decision)
     template='quotation_'+decision
@@ -227,6 +234,10 @@ def decide(quotation_id:str,decision:str,user:User=Depends(current_user),db:Sess
         source_key=f'quotation-decision:{quote.id}:{decision}')
     recipients=db.scalars(select(Member.user_id).join(User,User.id==Member.user_id).where(Member.organization_id==quote.supplier_org_id,User.is_active.is_(True))).all()
     db.add_all(Notification(recipient_user_id=recipient,event=template,message=f'Procumaterial: {rfq.reference} quotation {decision}',status='delivered') for recipient in recipients)
+    if decision=='awarded':
+        # Client guide: an approved quotation automatically becomes a draft purchase order.
+        from app.modules.procurement.orders import prepare_purchase_order
+        prepare_purchase_order(db,quote,user)
     db.commit()
     return snapshot(db,quote)
 

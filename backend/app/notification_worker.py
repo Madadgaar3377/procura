@@ -23,6 +23,8 @@ from app.modules.notifications.providers import _mock_idempotency_id
 from app.modules.notifications.service import update_delivery_notification
 
 log=logging.getLogger("uvicorn.error")
+PROCUREMENT_EVENTS={'purchase_order.issued','delivery_note.dispatched','goods_receipt.recorded','tax_invoice.submitted',
+                    'tax_invoice.reviewed','sla.reminder','document.share'}
 
 
 def apply_sms(db,event,result,now):
@@ -43,9 +45,9 @@ def apply_sms(db,event,result,now):
 
 def deliver(db,event,now):
     payload=event.payload;channel=payload.get('channel');user=db.get(User,payload['user_id']) if payload.get('user_id') else None
-    if channel not in {'sms','email'}:raise core.PermanentOutboxError('Unsupported notification channel')
-    if payload.get('procurement_recipient'):
+    if payload.get('procurement_recipient') and channel in {'sms','email','whatsapp'}:
         return deliver_procurement(db,event,now)
+    if channel not in {'sms','email'}:raise core.PermanentOutboxError('Unsupported notification channel')
     # Reconcile accepted SMS even after a code expires or its destination changes.
     # Polling never submits another message and must not be gated by OTP validity.
     if channel=='sms' and event.provider_message_id and event.delivery_status not in {'submitting','unknown',None}:
@@ -205,15 +207,36 @@ def deliver_procurement(db, event, now):
         event.status='skipped';event.delivery_status=reason;return
     if channel=='email' and get_settings().is_production and not get_settings().smtp_reply_to:
         raise core.PermanentOutboxError('Configure a monitored SMTP_REPLY_TO before sending RFQ email')
-    from app.modules.matching.guest import invitation_token
-    guest_token=invitation_token(invitation,rfq,payload)
-    guest_url=get_settings().frontend_url.rstrip('/')+'/rfq-invitation#token='+guest_token
-    subject,plain,html=render_message(payload['template'],{**context,'channel':channel,'url':guest_url})
-    event.payload={**payload,'last_attempt_at':now.isoformat()}
+    settings=get_settings()
+    if channel=='whatsapp':
+        from app.modules.procurement.whatsapp import configured
+        if not configured():
+            event.status='skipped';event.delivery_status='whatsapp_not_configured'
+            event.last_error='WhatsApp credentials are not configured (WHATSAPP_ENABLED, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID)'
+            return
+    # Controlled test recipients: redirect every external RFQ message when configured.
+    destination=payload['destination']
+    redirect=settings.notification_redirect_email if channel=='email' else settings.notification_redirect_phone
+    if redirect:
+        destination=redirect
+        event.payload={**payload,'redirected_to_test_recipient':True}
+    # Passwordless, revocable magic link scoped to this supplier and RFQ invitation.
+    from app.modules.procurement.portal import issue_link, portal_url
+    link=portal_url(issue_link(db,invitation,rfq,channel=channel,destination=payload['destination'],contact_id=payload.get('contact_id'),now=now))
+    subject,plain,html=render_message(payload['template'],{**context,'channel':'sms' if channel=='whatsapp' else channel,'url':link})
+    event.payload={**event.payload,'last_attempt_at':now.isoformat()}
     event.delivery_status='submitting'
-    event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_message_id(event.id)
+    event.provider_message_id=_mock_idempotency_id(event.id) if channel in {'sms','whatsapp'} else email_message_id(event.id)
     delivery_id=event.id
     db.commit()
+    if channel=='whatsapp':
+        from app.modules.procurement.whatsapp import send_template
+        event.provider_message_id=send_template(destination,[rfq.reference,str(context.get('buyer') or 'Procumaterial buyer'),
+            str(context.get('matched_count') or len(context.get('materials') or [])),str(context.get('deadline') or ''),link],delivery_id)
+        event.attempts+=1;event.status='processed';event.delivery_status='accepted';event.next_attempt_at=None
+        update_delivery_notification(db,event.id,'accepted')
+        return
+    payload={**payload,'destination':destination}
     if channel=='sms':
         result=send_sms(payload['destination'],plain,delivery_id)
         event.attempts+=1;apply_sms(db,event,result,now)
@@ -230,7 +253,8 @@ def process_batch(db,limit=25,now=None,event_ids=None):
     if event_ids is None:
         from app.modules.notifications.procurement import schedule_reminders
         from app.modules.organizations.auto_approval import run_auto_approval_sweep
-        for sweep in (schedule_reminders, run_auto_approval_sweep):
+        from app.modules.procurement.sla import sweep as sla_sweep
+        for sweep in (schedule_reminders, run_auto_approval_sweep, sla_sweep):
             try:
                 sweep(db, now)
             except Exception as exc:  # noqa: BLE001 - isolate background sweeps from outbox queue
@@ -270,6 +294,12 @@ def process_batch(db,limit=25,now=None,event_ids=None):
                     from app.modules.quotations.automation import prepare_invitation_quote
                     prepare_invitation_quote(db, event.payload['invitation_id'])
                 prepare(db,event)
+            elif event.event in PROCUREMENT_EVENTS:
+                from app.modules.procurement.notices import handle
+                handle(db,event)
+            elif event.event=='document_ai.extract':
+                from app.modules.procurement.docai import process_extraction
+                process_extraction(db,event)
             else:core._process_event(db,event,now)
             event.lock_until=None
             if event.status=='processing':event.status='processed'

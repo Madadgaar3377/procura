@@ -1,13 +1,14 @@
+from collections import Counter
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import RFQ, Invitation, Member, Organization, Outbox, Quotation, RFQItem, RFQMatch, Capability, Category, Material, User
-from app.modules.matching.service import match_and_invite, capability_scope
+from app.models import RFQ, Invitation, Member, Organization, Outbox, PriceBookItem, Quotation, RFQItem, RFQMatch, Capability, Category, Material, User
+from app.modules.matching.service import INTERNAL_REASON_PREFIXES, match_and_invite, match_level
 from app.response_contracts import InvitationOut, InvitationSummary, MatchResults, MatchingDiagnosticOut, MatchingRerunOut
 from app.search import ListSearch
 from app.security import as_utc, audit, current_user, org_member
@@ -19,144 +20,142 @@ router.include_router(guest_router)
 
 @router.get('/admin/rfqs/{rfq_id}/diagnostics',response_model=MatchingDiagnosticOut)
 def admin_diagnostics(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    """Explain persisted match outcomes, item classification, AI candidates, exclusions, and delivery state to admins."""
+    """Explain classification, Material Master resolution, evidence levels, exclusions, jobs and delivery to admins.
+
+    Read-only: classification is recomputed deterministically (no AI call) and nothing is persisted.
+    """
     if not user.is_admin:raise HTTPException(403,'Admin required')
     rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
+    from app.modules.matching.service import active_categories, resolve_item_scopes, taxonomy_label
+    from app.modules.rfqs.material_matching import classify_material_description
     items=db.execute(select(RFQItem,Material).outerjoin(Material,Material.id==RFQItem.material_id).where(RFQItem.rfq_id==rfq.id).order_by(RFQItem.created_at,RFQItem.id)).all()
-    all_cat_ids={cid for item,mat in items for cid in (item.main_category_id,item.subcategory_id,mat.main_category_id if mat else None,mat.subcategory_id if mat else None,mat.category_id if mat else None) if cid}
-    cats={c.id:c for c in db.scalars(select(Category).where(Category.id.in_(all_cat_ids))).all()} if all_cat_ids else {}
-    scopes=set()
-    main_ids=set()
-    sub_ids=set()
-    classified_count=0
-    unclassified_count=0
-    item_meta=[]
-    for item,material in items:
-        main=item.main_category_id or (material.main_category_id if material else None)
-        sub=item.subcategory_id or (material.subcategory_id if material else None)
-        if not main and material:
-            leaf=cats.get(material.category_id) or db.get(Category,material.category_id)
-            if leaf:
-                main=leaf.parent_id or leaf.id
-                sub=leaf.id if leaf.parent_id else None
-        is_classified=bool(main)
-        if is_classified:
-            classified_count+=1
-            main_ids.add(main)
-            if sub:sub_ids.add(sub)
-            scopes.update(x for x in (main,sub) if x)
-        else:
-            unclassified_count+=1
-        item_meta.append((item,main,sub,is_classified))
+    categories=active_categories(db)
+    scopes,material_info=resolve_item_scopes(db,items,categories)
+    names={cid:c.name_en for cid,c in categories.items()}
 
-    active_checked=int(db.scalar(select(func.count()).select_from(Organization).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id)) or 0)
-    from app.modules.rfqs.material_matching import extract_keywords
-    all_kw={kw for item,_ in items for kw in extract_keywords(f'{item.description} {item.specifications or ""}')}
-    relevant=capability_scope(db,{item.material_id for item,_ in items if item.material_id},sub_ids,main_ids=main_ids,keywords=all_kw)
-    candidate_query=select(Capability.org_id).join(Organization,Organization.id==Capability.org_id).where(
-        relevant,Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id).distinct()
-    candidate_count=int(db.scalar(select(func.count()).select_from(candidate_query.subquery())) or 0)
-    capabilities=int(db.scalar(select(func.count()).select_from(Capability).where(
-        Capability.org_id.in_(candidate_query),relevant,Capability.confirmed.is_(True),
-        Capability.accepts_rfqs.is_(True),Capability.eligibility_status=='enabled')) or 0)
     statuses={status:int(count) for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
-
     inv_map={}
     inv_statuses:dict[str,int]={}
-    for inv,quote_status in db.execute(select(Invitation,Quotation.status).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id)).all():
+    quote_statuses:dict[str,int]={}
+    for inv,quote_status,source in db.execute(select(Invitation,Quotation.status,Quotation.submission_source).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id)).all():
         inv_map[inv.supplier_org_id]=(inv.status,quote_status)
         inv_statuses[inv.status]=inv_statuses.get(inv.status,0)+1
+        if quote_status:
+            key=f'{source or "manual"}:{quote_status}'
+            quote_statuses[key]=quote_statuses.get(key,0)+1
 
-    internal=('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:','keyword_item:','ai_semantic_item:')
-    reasons=[]
-    eligible_suppliers=[]
-    excluded_suppliers=[]
-    recorded=set()
-    exact_matches=0
-    category_matches=0
-    ai_assisted_candidates=0
-    item_match_counts:dict[str,int]={item.id:0 for item,_ in items}
-
-    for match,org in db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id).order_by(RFQMatch.score.desc(),Organization.name).limit(200)).all():
-        raw_reasons=match.reasons or []
-        readable=[reason for reason in raw_reasons if not reason.startswith(internal)]
+    reasons=[];eligible_suppliers=[];excluded_suppliers=[]
+    level_totals={'exact material':0,'product':0,'subcategory':0,'main category':0,'ai':0}
+    item_levels:dict[str,dict[str,int]]={scope['id']:{} for scope in scopes}
+    for match,org in db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id).order_by(RFQMatch.score.desc(),Organization.name).limit(300)).all():
+        raw=match.reasons or []
+        readable=[reason for reason in raw if not reason.startswith(INTERNAL_REASON_PREFIXES)]
         reasons.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'reasons':readable})
-        recorded.add(org.id)
-        if match.status in {'eligible','partial'}:
-            covered_ids=[r[5:] for r in raw_reasons if r.startswith('item:')]
-            for iid in covered_ids:
-                if iid in item_match_counts:item_match_counts[iid]+=1
-            has_exact=any('exact material' in r.lower() for r in readable if r.startswith('Approved '))
-            has_ai=any(r.startswith('ai_semantic_item:') for r in raw_reasons)
-            has_cat=any(r.startswith(('exact_subcategory_item:','main_category_item:','keyword_item:')) for r in raw_reasons) or (not has_exact and not has_ai)
-            if has_exact:exact_matches+=1
-            if has_cat:category_matches+=1
-            if has_ai:ai_assisted_candidates+=1
-            levels=[]
-            if has_exact:levels.append('exact material')
-            if any(r.startswith('exact_subcategory_item:') for r in raw_reasons):levels.append('exact subcategory')
-            if any(r.startswith('keyword_item:') for r in raw_reasons):levels.append('keyword/catalog match')
-            if any(r.startswith('main_category_item:') for r in raw_reasons):levels.append('main category')
-            if has_ai:levels.append('AI-assisted semantic match')
-            inv_status,quote_status=inv_map.get(org.id,(None,None))
-            eligible_suppliers.append({
-                'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'score':match.score,
-                'match_levels':levels,'coverage':next((r[9:] for r in raw_reasons if r.startswith('coverage:')),'Not recorded'),
-                'invitation_status':inv_status,'quotation_status':quote_status,'ai_assisted':has_ai,'reasons':readable,
-            })
-        else:
+        if match.status not in {'eligible','partial'}:
             excluded_suppliers.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'reasons':readable})
+            continue
+        levels=match_level(raw)
+        for scope in scopes:
+            for level in match_level(raw,scope['id']):
+                item_levels[scope['id']][level]=item_levels[scope['id']].get(level,0)+1
+        if 'exact material' in levels:level_totals['exact material']+=1
+        elif {'product alias','product family'}&set(levels):level_totals['product']+=1
+        elif 'subcategory' in levels:level_totals['subcategory']+=1
+        elif 'main category' in levels:level_totals['main category']+=1
+        if 'AI-assisted semantic match' in levels:level_totals['ai']+=1
+        inv_status,quote_status=inv_map.get(org.id,(None,None))
+        eligible_suppliers.append({'supplier_org_id':org.id,'supplier_name':org.name,'status':match.status,'score':match.score,
+            'match_levels':levels,'coverage':next((r[9:] for r in raw if r.startswith('coverage:')),'Not recorded'),
+            'invitation_status':inv_status,'quotation_status':quote_status,'ai_assisted':'AI-assisted semantic match' in levels,'reasons':readable})
 
-    for org in db.scalars(select(Organization).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id,Organization.id.not_in(candidate_query),Organization.id.not_in(recorded)).order_by(Organization.name).limit(100)).all():
-        if org.id not in recorded:
-            entry={'supplier_org_id':org.id,'supplier_name':org.name,'status':'no_capability','reasons':['No supplier capability, keyword, or catalog match found for the RFQ items.']}
-            reasons.append(entry)
-            excluded_suppliers.append(entry)
-
-    item_diagnostics=[{
-        'item_id':item.id,'description':item.description,'material_id':item.material_id,
-        'main_category_id':main,'main_category_name':cats[main].name_en if main in cats else None,
-        'subcategory_id':sub,'subcategory_name':cats[sub].name_en if sub in cats else None,
-        'classified':is_classified,'matched_supplier_count':item_match_counts.get(item.id,0),
-    } for item,main,sub,is_classified in item_meta]
+    item_diagnostics=[]
+    for scope in scopes:
+        item=scope['item']
+        result=classify_material_description(db,item.description,specifications=item.specifications or '',unit=item.unit,ai_enabled=False,categories=categories)
+        note=None
+        if scope['conflict']:
+            note=(f'Material Master places this product family in {scope["family_label"]}; the RFQ line is filed under '
+                  f'{taxonomy_label(categories,scope["main"],scope["sub"]) or "no category"}. Matching uses product evidence; '
+                  'buyer confirmation is required before changing the line.')
+        elif not scope['family'] and not scope['main']:
+            note='No Material Master product family or category was resolved; buyer category confirmation is required.'
+        item_diagnostics.append({
+            'item_id':item.id,'description':item.description,'material_id':item.material_id,
+            'main_category_id':scope['main'],'main_category_name':names.get(scope['main']),
+            'subcategory_id':scope['sub'],'subcategory_name':names.get(scope['sub']),
+            'classified':bool(scope['main']),'matched_supplier_count':sum(item_levels[scope['id']].values()),
+            'specifications_excerpt':(item.specifications or '')[:300],
+            'material_master_main_category_id':scope['family_main'],'material_master_main_category_name':names.get(scope['family_main']),
+            'material_master_subcategory_id':scope['family_sub'],'material_master_subcategory_name':names.get(scope['family_sub']),
+            'classification_confidence':result.get('confidence'),'classification_source':result.get('match_source'),
+            'classification_needs_confirmation':bool(result.get('needs_confirmation')),
+            'classification_conflict':scope['conflict'],'classification_note':note,
+            'product_candidates':[material_info[mid][0] for mid,_ in sorted(scope['family'].items(),key=lambda kv:(-kv[1],material_info[kv[0]][0]))[:10]],
+            'level_counts':item_levels[scope['id']],
+        })
 
     from types import SimpleNamespace
     from app.modules.notifications.router import display_delivery_status
     delivery_summary:dict[str,int]={}
-    for status,provider,count in db.execute(select(Outbox.status,Outbox.delivery_status,func.count()).where(Outbox.event=='notification.delivery',Outbox.payload['context']['rfq_id'].as_string()==rfq.id).group_by(Outbox.status,Outbox.delivery_status)).all():
+    deliveries=select(Outbox.status.label('status'),Outbox.delivery_status.label('provider')).where(
+        Outbox.event=='notification.delivery',Outbox.payload['context']['rfq_id'].as_string()==rfq.id).subquery()
+    for status,provider,count in db.execute(select(deliveries.c.status,deliveries.c.provider,func.count()).group_by(deliveries.c.status,deliveries.c.provider)).all():
         label=display_delivery_status(SimpleNamespace(status=status,delivery_status=provider))
         delivery_summary[label]=delivery_summary.get(label,0)+int(count)
-
-    jobs=[{**record(job)} for job in db.scalars(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc())).all()]
+    job_rows=db.scalars(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc())).all()
+    jobs=[{**record(job)} for job in job_rows]
+    duration=next((job.payload.get('matching_duration_ms') for job in job_rows if job.payload.get('matching_duration_ms') is not None),None)
+    evaluated=sum(statuses.values())
     return {
-        'rfq_id':rfq.id,'rfq_items':len(items),'classified_items':classified_count,'unclassified_items':unclassified_count,
-        'active_suppliers_checked':active_checked,'category_candidate_organizations':candidate_count,
-        'approved_matching_capabilities':capabilities,'exact_matches':exact_matches,'category_matches':category_matches,
-        'ai_assisted_candidates':ai_assisted_candidates,
+        'rfq_id':rfq.id,'rfq_items':len(items),'classified_items':sum(1 for s in scopes if s['main']),'unclassified_items':sum(1 for s in scopes if not s['main']),
+        'active_suppliers_checked':int(db.scalar(select(func.count()).select_from(Organization).where(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.id!=rfq.buyer_org_id)) or 0),
+        'category_candidate_organizations':evaluated,
+        'approved_matching_capabilities':statuses.get('eligible',0)+statuses.get('partial',0),
+        'exact_matches':level_totals['exact material'],
+        'category_matches':level_totals['subcategory']+level_totals['main category'],
+        'ai_assisted_candidates':level_totals['ai'],
+        'product_matches':level_totals['product'],'subcategory_matches':level_totals['subcategory'],'main_category_matches':level_totals['main category'],
+        'matching_duration_ms':duration,
         'rejected_by_location':statuses.get('location_mismatch',0)+statuses.get('coverage_unknown',0),
         'rejected_by_verification_or_eligibility':sum(statuses.get(k,0) for k in ('inactive','unverified','pending_approval','ineligible','rejected','suspended')),
         'matches_created':statuses.get('eligible',0)+statuses.get('partial',0),
         'invitations_created':int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0),
-        'delivery_summary':delivery_summary,'invitation_statuses':inv_statuses,
+        'delivery_summary':delivery_summary,'invitation_statuses':inv_statuses,'quotation_statuses':quote_statuses,
         'item_diagnostics':item_diagnostics,'eligible_suppliers':eligible_suppliers,'excluded_suppliers':excluded_suppliers,
         'job_status':jobs,'supplier_reasons':reasons,
     }
 
 @router.post('/admin/rfqs/{rfq_id}/rerun',response_model=MatchingRerunOut)
-def admin_rerun(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+def admin_rerun(rfq_id:str,run_now:bool=Query(True,description='Evaluate immediately within the publish time budget; any remainder stays queued.'),
+                user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Re-run matching for a published RFQ without recreating it.
+
+    Existing matches are re-evaluated in place, invitations stay unique per supplier
+    (uq_invitation), and quotations and supplier responses are never modified.
+    """
     if not user.is_admin:raise HTTPException(403,'Admin required')
     rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
     if not rfq:raise HTTPException(404,'RFQ not found')
     if rfq.status not in {'published','collecting_quotes'}:raise HTTPException(409,'RFQ is not open for matching')
     pending=db.scalar(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id,Outbox.status.in_({'pending','retry','processing'})).limit(1))
-    if pending:
-        return {'rfq_id':rfq.id,'job_id':pending.id,'job_status':pending.status,'deduplicated':True}
-    job=Outbox(event='rfq.published',payload={'rfq_id':rfq.id,'requested_by':user.id},dedupe_key=f'rfq-admin-rerun:{rfq.id}:{uuid4().hex}')
-    db.add(job)
-    audit(db,user,'rfq.match_admin_rerun_queued',rfq.buyer_org_id,rfq.id)
+    deduplicated=bool(pending)
+    job=pending or Outbox(event='rfq.published',payload={'rfq_id':rfq.id,'requested_by':user.id},dedupe_key=f'rfq-admin-rerun:{rfq.id}:{uuid4().hex}')
+    if not pending:db.add(job)
+    audit(db,user,'rfq.match_admin_rerun_queued',rfq.buyer_org_id,rfq.id,run_now=run_now,deduplicated=deduplicated)
     db.commit()
-    return {'rfq_id':rfq.id,'job_id':job.id,'job_status':'pending','deduplicated':False}
+    status=job.status
+    if run_now:
+        from app.config import get_settings
+        from app.modules.matching.service import run_matching_job
+        try:
+            run_matching_job(db.get_bind(),job.id,time_budget=get_settings().matching_publish_time_budget_seconds,restart=True)
+        except Exception:
+            import logging
+            logging.getLogger('uvicorn.error').exception('Admin matching rerun failed rfq_id=%s',rfq.id)
+        db.expire_all()
+        status=db.scalar(select(Outbox.status).where(Outbox.id==job.id)) or status
+    return {'rfq_id':rfq.id,'job_id':job.id,'job_status':status,'deduplicated':deduplicated}
 
 @router.post('/rfqs/{rfq_id}/dispatch')
 def dispatch(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -195,24 +194,52 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     from app.modules.capabilities.public_details import published_details_batch
     visible_ids=[org.id for _,org in match_rows if org.is_supplier and org.is_active and org.verified_status=='verified']
     public_by_org=published_details_batch(db,visible_ids,orgs_by_id)
-    taxonomy_names=dict(db.execute(select(Category.id,Category.name_en).where(Category.id.in_(
-        {value for item in rfq_items for value in (item.main_category_id,item.subcategory_id) if value}))).all())
+    # Matched taxonomy may differ from the buyer's line (product family evidence), so
+    # names are resolved for every category recorded on this page's markers too.
+    page_taxonomy={}
+    for match,_ in match_rows:
+        for reason in match.reasons or []:
+            if reason.startswith('taxonomy:') and '=' in reason:
+                item_id,pair=reason[9:].split('=',1)
+                page_taxonomy[(match.id,item_id)]=tuple(value or None for value in pair.split('/',1))
+    category_ids={value for item in rfq_items for value in (item.main_category_id,item.subcategory_id) if value}
+    category_ids|={value for pair in page_taxonomy.values() for value in pair if value}
+    taxonomy_names=dict(db.execute(select(Category.id,Category.name_en).where(Category.id.in_(category_ids))).all()) if category_ids else {}
+    material_ids={item.material_id for item in rfq_items if item.material_id}
+    priced=set()
+    if supplier_ids:
+        # Saved private rates exist for a requested material or the matched subcategory;
+        # prices themselves stay private to the supplier until a quotation is submitted.
+        subcategories={pair[1] for pair in page_taxonomy.values() if pair[1]}|{item.subcategory_id for item in rfq_items if item.subcategory_id}
+        conditions=[PriceBookItem.material_id.in_(material_ids)] if material_ids else []
+        if subcategories:conditions.append(PriceBookItem.subcategory_id.in_(subcategories))
+        if conditions:
+            priced=set(db.scalars(select(PriceBookItem.org_id).where(PriceBookItem.org_id.in_(supplier_ids),
+                PriceBookItem.active.is_(True),or_(*conditions)).distinct()).all())
+    items_by_id={item.id:item for item in rfq_items}
     for match,org in match_rows:
         covered=[reason[5:] for reason in (match.reasons or []) if reason.startswith('item:')]
         directory_visible=bool(org.is_supplier and org.is_active and org.verified_status=='verified')
         public=public_by_org.get(org.id,{}) if directory_visible else {}
         invitation_status,quotation_status=invitation_by_supplier.get(org.id,(None,None))
         # Internal markers remain persisted for legacy consumers, never display them.
-        internal=('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:','keyword_item:','ai_semantic_item:')
-        display_reasons=[reason for reason in (match.reasons or []) if not reason.startswith(internal)]
-        approved_labels=[reason for reason in display_reasons if reason.startswith('Approved ')]
-        levels=sorted({
-            'exact material' if 'exact material' in label.lower()
-            else ('exact subcategory' if 'exact subcategory' in label.lower()
-                  else ('keyword/catalog match' if 'keyword/catalog' in label.lower()
-                        else ('AI-assisted semantic match' if 'ai-assisted' in label.lower() else 'main category')))
-            for label in approved_labels
-        })
+        display_reasons=[reason for reason in (match.reasons or []) if not reason.startswith(INTERNAL_REASON_PREFIXES)]
+        levels=match_level(match.reasons) if match.status in {'eligible','partial'} else []
+        broad='broad_only' in (match.reasons or [])
+        strength=None
+        if levels:
+            strength=('exact' if 'exact material' in levels else 'product' if {'product alias','product family'}&set(levels)
+                      else 'broad' if broad else 'capability')
+        matched_items=[]
+        for item_id in covered:
+            item=items_by_id.get(item_id)
+            if not item:continue
+            main,sub=page_taxonomy.get((match.id,item_id),(item.main_category_id,item.subcategory_id))
+            main_name=taxonomy_names.get(main)
+            matched_items.append({'item_id':item_id,'description':item.description,
+                'match_level':next(iter(match_level(match.reasons,item_id)),None),
+                'discipline':main_name.split(' - ',1)[0] if main_name else None,
+                'main_category':main_name,'subcategory':taxonomy_names.get(sub)})
         historical_review=bool(invitation_status and match.status not in {'eligible','partial'})
         if historical_review:
             display_reasons.append('Historical invitation retained; current eligibility requires administrative review. No invitation was revoked.')
@@ -221,11 +248,13 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
             'verification_status':org.verified_status,'description':public.get('description'),'website':public.get('website'),
             'business_email':public.get('business_email'),'business_phone':public.get('business_phone'),
             'service_locations':sorted(service_cities.get(org.id,set())),
-            'matched_categories':sorted({taxonomy_names.get(item.subcategory_id) or taxonomy_names.get(item.main_category_id,'') for item in rfq_items if item.id in covered}),
+            'matched_categories':sorted({' / '.join(filter(None,(entry['main_category'],entry['subcategory']))) for entry in matched_items}-{''}),
+            'match_strength':strength,'matched_item_count':len(matched_items),'matched_items':matched_items,
+            'saved_price_available':org.id in priced,
             'match_levels':levels,'brand_requirement_status':('saved product data — quotation confirmation required'
                 if any(reason.startswith('Brand requirement matches approved saved product data:') for reason in display_reasons)
                 else 'unverified — confirm requested brands in quotation'),
-            'service_coverage_status':'covered' if match.status in {'eligible','partial'} else ('not covered' if match.status=='location_mismatch' else 'unknown'),
+            'service_coverage_status':('unknown' if 'delivery coverage unconfirmed' in (match.reasons or []) else 'covered') if match.status in {'eligible','partial'} else ('not covered' if match.status=='location_mismatch' else 'unknown'),
             'invitation_review_required':historical_review,
             'invitation_status':invitation_status,'quotation_status':quotation_status,
             'profile_url':f'/suppliers/{org.id}' if directory_visible else None})
@@ -243,6 +272,7 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         progress='matching_in_progress' if matched or job_status=='processing' else 'matching_queued'
     elif job_status in {'failed','uncertain'}:progress='matching_failed'
     elif invited:progress='invitations_available'
+    elif matched and job_status=='processed':progress='matches_available'
     elif job_status=='processed':progress='no_eligible_suppliers'
     else:progress='matching_queued'
     from datetime import timedelta
@@ -288,7 +318,7 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     if progress=='matching_failed':
         explanation='Supplier matching failed. Existing matches and invitations are retained; an administrator can retry the job.'
     elif matched:
-        explanation=f'{matched} supplier(s) qualify based on approved category capability and configured eligibility; technical compliance remains subject to quotation review.'
+        explanation=f'{matched} supplier(s) qualify based on approved product or category capability and configured eligibility; technical compliance remains subject to quotation review.'
     elif status_counts.get('location_mismatch'):
         explanation=f"{status_counts['location_mismatch']} supplier(s) match the requested category but do not cover delivery city {rfq.city}."
     elif status_counts.get('pending_approval'):
@@ -308,7 +338,16 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         explanation='No evaluated supplier currently satisfies the RFQ eligibility requirements.'
     elif progress=='no_eligible_suppliers':
         explanation='No active supplier has an approved capability for the selected category and subcategory.'
-    matching_status=('failed' if progress=='matching_failed' else 'completed' if progress in {'invitations_available','no_eligible_suppliers','closed'} else 'processing' if progress=='matching_in_progress' else 'queued')
+    if not matched and progress not in {'draft','matching_queued','matching_in_progress'}:
+        # Zero results state the real cause and how each line is classified.
+        lines='; '.join(f"{item.description} — {' / '.join(filter(None,(taxonomy_names.get(item.main_category_id),taxonomy_names.get(item.subcategory_id)))) or 'unclassified'}"
+                        for item in rfq_items[:5])
+        common=Counter(reason for reasons in db.scalars(select(RFQMatch.reasons).where(RFQMatch.rfq_id==rfq.id,
+                        RFQMatch.status.not_in({'eligible','partial'})).limit(200)) for reason in (reasons or [])
+                       if not reason.startswith(INTERNAL_REASON_PREFIXES) and reason!='Category eligibility does not confirm technical compliance').most_common(1)
+        explanation=' '.join(filter(None,(explanation,f'RFQ lines: {lines}.' if lines else None,
+                                          f'Most common exclusion: {common[0][0]}' if common else None)))
+    matching_status=('failed' if progress=='matching_failed' else 'completed' if progress in {'invitations_available','matches_available','no_eligible_suppliers','closed'} else 'processing' if progress=='matching_in_progress' else 'queued')
     return {'matches':matches, 'invitations':[{**record(i),'supplier_name':name,'quotation_status':quote,'reminder_eligible':i.supplier_org_id in pending} for i,name,quote in invitation_rows], 'progress':progress,'matching_status':matching_status,
             'pending_invitation_ids':[i.id for i,_,_ in invitation_rows if i.supplier_org_id in pending],
             'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':len(pending),'suppliers_evaluated':evaluated,
@@ -388,18 +427,20 @@ def rfq_notifications_status(rfq_id:str,user:User=Depends(current_user),db:Sessi
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     from types import SimpleNamespace
     from app.modules.notifications.router import display_delivery_status
+    # The JSON key is rendered once in a subquery. Grouping by the same JSON
+    # expression in the outer query bound the key as separate parameters, which
+    # PostgreSQL rejects with GroupingError (a 500 in production).
+    deliveries = select(
+        Outbox.payload['channel'].as_string().label('channel'),
+        Outbox.status.label('status'),
+        Outbox.delivery_status.label('delivery_status'),
+    ).where(
+        Outbox.event == 'notification.delivery',
+        Outbox.payload['context']['rfq_id'].as_string() == rfq.id,
+    ).subquery()
     rows = db.execute(
-        select(
-            Outbox.payload['channel'].as_string(),
-            Outbox.status,
-            Outbox.delivery_status,
-            func.count(),
-        )
-        .where(
-            Outbox.event == 'notification.delivery',
-            Outbox.payload['context']['rfq_id'].as_string() == rfq.id,
-        )
-        .group_by(Outbox.payload['channel'].as_string(), Outbox.status, Outbox.delivery_status)
+        select(deliveries.c.channel, deliveries.c.status, deliveries.c.delivery_status, func.count())
+        .group_by(deliveries.c.channel, deliveries.c.status, deliveries.c.delivery_status)
     ).all()
     by_status: dict[str, int] = {}
     by_channel: dict[str, dict[str, int]] = {'email': {}, 'sms': {}}

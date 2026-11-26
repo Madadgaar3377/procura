@@ -158,7 +158,7 @@ def test_postgresql_actual_lock_timeout_recovers_without_duplicate_matches(flow)
 
 
 @pytest.mark.parametrize('authorized',['complete','exceeds_limit'])
-def test_automatic_submission_requires_current_supplier_authorization(flow,authorized):
+def test_automatic_preparation_requires_supplier_approval(flow,authorized):
     from app.models import User
     client,sessions,ids=flow
     with sessions() as db:
@@ -175,9 +175,10 @@ def test_automatic_submission_requires_current_supplier_authorization(flow,autho
     publish_and_prepare(client,sessions,ids)
     with sessions() as db:
         quote=db.scalar(select(Quotation))
-        assert quote.status==('submitted' if authorized=='complete' else 'draft')
-        assert quote.submission_source==('automatic' if authorized=='complete' else 'automatic_draft')
-        assert db.scalar(select(func.count()).select_from(Outbox).where(Outbox.event=='quotation.submitted'))==(1 if authorized=='complete' else 0)
+        assert quote.status=='draft'
+        assert quote.review_required
+        assert quote.submission_source=='automatic_draft'
+        assert db.scalar(select(func.count()).select_from(Outbox).where(Outbox.event=='quotation.submitted'))==0
 
 
 def test_material_responsibility_does_not_notify_unrelated_employee(flow):

@@ -37,6 +37,8 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
     rfq = db.get(RFQ, rfq_id)
     evaluated = _match_batch(db, rfq, evaluate_only=True, supplier_ids=[org_id]) if rfq else {}
     covered = set(evaluated.get('covered_items', {}).get(org_id, []))
+    # Materials and capability categories that produced each line's match.
+    evidence = evaluated.get('item_evidence', {}).get(org_id, {})
     items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq_id)).all()
     # Only use items actually supported by this supplier, including partial RFQs.
     items = [item for item in items if item.id in covered]
@@ -58,10 +60,15 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
         for contact in contacts:
             scopes = [(link, cap) for link, cap in links if link.contact_id == contact.id]
             ranks = []
+            matched = evidence.get(item.id, {})
             for link, cap in scopes:
                 materials = link.material_ids if link.material_ids is not None else cap.material_ids or []
                 if item.material_id and item.material_id in materials:
                     ranks.append((0, not link.is_primary))
+                elif set(matched.get('material_ids', [])) & set(materials):
+                    ranks.append((0, not link.is_primary))
+                elif cap.category_id in matched.get('category_ids', []) and link.material_ids is None:
+                    ranks.append((1, not link.is_primary))
                 elif not materials and item.subcategory_id and cap.category_id == item.subcategory_id:
                     ranks.append((1, not link.is_primary))
                 elif not materials and item.main_category_id and cap.category_id == item.main_category_id:
@@ -143,9 +150,21 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
     return output
 
 
+def with_whatsapp(recipients):
+    """WhatsApp uses the same category-scoped mobile destinations as SMS."""
+    from app.modules.procurement.whatsapp import configured
+    mobiles = [dict(r) for r in recipients.get('sms', []) if r.get('destination')]
+    if not configured():
+        return {**recipients, 'whatsapp': [{'skip_reason': 'whatsapp_not_configured',
+            'reason_detail': 'Set WHATSAPP_ENABLED, WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID to send WhatsApp quick quotes'}]}
+    return {**recipients, 'whatsapp': mobiles or [{'skip_reason': 'no_contact', 'reason_detail': 'No mobile number for WhatsApp'}]}
+
+
 def enqueue(db, *, org_id, template, context, source_key):
     context={**context, 'supplier_name':db.get(Organization,org_id).name}
     recipients = resolve(db, org_id, context['rfq_id'], template)
+    if template in {'rfq_invitation', 'deadline_reminder'}:
+        recipients = with_whatsapp(recipients)
     rfq_items={item.id:item for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==context['rfq_id']))}
     for channel, rows in recipients.items():
         for recipient in rows:
@@ -168,7 +187,8 @@ def enqueue(db, *, org_id, template, context, source_key):
 def current_recipient(db, payload):
     context = payload['context']
     recipients = resolve(db, context['org_id'], context['rfq_id'], payload['template'])
-    return any(r.get('destination') == payload.get('destination') for r in recipients[payload['channel']])
+    channel = 'sms' if payload['channel'] == 'whatsapp' else payload['channel']
+    return any(r.get('destination') == payload.get('destination') for r in recipients[channel])
 
 
 def queue_invitation_in_app(db, invitation, rfq):

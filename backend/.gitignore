@@ -16,6 +16,7 @@ build/
 dist/
 *.egg-info/
 .eggs/
+tests/*
 
 # Test, analysis and coverage output (tests themselves must be committed)
 .pytest_cache/

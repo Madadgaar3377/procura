@@ -22,11 +22,19 @@ export function eligibilityReason(match: Match): string {
   return 'requirements';
 }
 
-export function matchEvidence(match: Match): 'material' | 'subcategory' | 'category' | null {
+export type MatchEvidence = 'material' | 'description' | 'subcategory' | 'category' | null;
+
+export function matchEvidence(match: Match): MatchEvidence {
+  // match_strength is computed by the backend from persisted evidence markers.
+  if (match.match_strength === 'exact') return 'material';
+  if (match.match_strength === 'product') return 'description';
+  if (match.match_strength === 'capability') return 'subcategory';
+  if (match.match_strength === 'broad') return 'category';
   const levels = match.match_levels || [];
   const reasons = match.reasons || [];
   if (levels.includes('exact material') || reasons.some(r => r.startsWith('Approved exact material capability in '))) return 'material';
-  if (levels.includes('exact subcategory') || reasons.some(r => r.startsWith('Approved exact subcategory capability in '))) return 'subcategory';
+  if (levels.includes('fuzzy description') || levels.includes('product family') || levels.includes('product alias')) return 'description';
+  if (levels.includes('exact subcategory') || levels.includes('subcategory') || reasons.some(r => r.startsWith('Approved exact subcategory capability in '))) return 'subcategory';
   if (
     levels.includes('main category')
     || levels.includes('keyword/catalog match')

@@ -74,7 +74,11 @@ def test_publish_runs_bounded_match_without_waiting_for_outbox_worker():
     finally:engine.dispose()
 
 
-def test_publication_continues_in_durable_batches_without_duplicate_invitations():
+def test_publication_continues_in_durable_batches_without_duplicate_invitations(monkeypatch):
+    from app.config import get_settings
+    # Exhaust the synchronous budget after one small page so the durable job must continue.
+    monkeypatch.setattr(get_settings(),'matching_batch_size',5)
+    monkeypatch.setattr(get_settings(),'matching_publish_time_budget_seconds',0)
     client,sessions,engine,ids=setup_matching_app('')
     try:
         with sessions() as db:
@@ -144,11 +148,16 @@ def test_admin_diagnostics_and_rerun_are_authorized_and_idempotent():
         data=diagnostic.json()
         assert data['rfq_items']==1 and data['active_suppliers_checked']==1
         assert data['matches_created']==1 and data['invitations_created']==1
-        rerun=client.post(f"/api/v1/matching/admin/rfqs/{ids['rfq']}/rerun")
+        rerun=client.post(f"/api/v1/matching/admin/rfqs/{ids['rfq']}/rerun?run_now=false")
         assert rerun.status_code==200,rerun.text
         assert rerun.json()['job_status']=='pending'
-        duplicate=client.post(f"/api/v1/matching/admin/rfqs/{ids['rfq']}/rerun")
+        duplicate=client.post(f"/api/v1/matching/admin/rfqs/{ids['rfq']}/rerun?run_now=false")
         assert duplicate.status_code==200 and duplicate.json()['deduplicated'] is True
+        # Inline repair reuses the queued job and completes without duplicates.
+        repaired=client.post(f"/api/v1/matching/admin/rfqs/{ids['rfq']}/rerun")
+        assert repaired.status_code==200,repaired.text
+        assert repaired.json()['deduplicated'] is True and repaired.json()['job_status']=='processed'
+        assert client.get(f"/api/v1/matching/admin/rfqs/{ids['rfq']}/diagnostics").json()['matching_duration_ms'] is not None
         with sessions() as db:
             from app.worker import process_batch
             process_batch(db)
@@ -193,4 +202,28 @@ def test_pending_inactive_and_mismatched_capabilities_have_distinct_outcomes():
         assert client.post(f"/api/v1/rfqs/{ids['rfq']}/publish").status_code==200
         result=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results").json()
         assert result['matched_suppliers']==0 and result['progress']=='no_eligible_suppliers'
+    finally:engine.dispose()
+
+
+def test_publish_completes_all_pages_within_time_budget():
+    client,sessions,engine,ids=setup_matching_app('')
+    try:
+        with sessions() as db:
+            category=db.scalar(select(Category).where(Category.code=='TOILET-ACC'))
+            for number in range(12):
+                org=Organization(name=f'Budget Supplier {number}',name_normalized=f'budget supplier {number}',
+                    is_supplier=True,is_active=True,verified_status='verified')
+                db.add(org);db.flush()
+                db.add(Capability(org_id=org.id,category_id=category.id,city='ABC',
+                    confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[]))
+            db.commit()
+        response=client.post(f"/api/v1/rfqs/{ids['rfq']}/publish")
+        assert response.status_code==200,response.text
+        assert response.json()['matching_status']=='completed'
+        assert response.json()['invited_suppliers']==13
+        with sessions() as db:
+            job=db.scalar(select(Outbox).where(Outbox.dedupe_key==f"rfq-published:{ids['rfq']}"))
+            assert job.status=='processed'
+        result=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results").json()
+        assert result['matching_status']=='completed' and result['matched_suppliers']==13
     finally:engine.dispose()

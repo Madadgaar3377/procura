@@ -86,20 +86,21 @@ def test_strict_matching_all_batches_idempotency_and_historical_audit(incident):
     with sessions() as db:
         result = match_and_invite(db, db.get(RFQ, RFQ_ID), limit=2, bounded=True)
         db.commit()
-        assert result['eligible_suppliers'] == 3
-        assert result['new_invitations'] == 3
-        assert {inv.supplier_org_id for inv in result['invitations']} == {'z-exact', 'z-sub', 'z-linked'}
+        assert result['eligible_suppliers'] == 4
+        assert result['new_invitations'] == 4
+        assert {inv.supplier_org_id for inv in result['invitations']} == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
         statuses = dict(db.execute(select(RFQMatch.supplier_org_id, RFQMatch.status)).all())
         assert statuses['a-ups'] == statuses['b-generic'] == 'ineligible'
         assert statuses['c-riyadh'] == 'location_mismatch'
-        assert statuses['d-unknown'] == 'coverage_unknown'
+        assert statuses['d-unknown'] == 'eligible'
         assert statuses['e-unapproved'] == 'pending_approval'
         assert len(db.scalars(select(AuditEvent).where(AuditEvent.action == 'rfq.match_eligibility_corrected')).all()) == 2
         again = match_and_invite(db, db.get(RFQ, RFQ_ID), limit=2)
         db.commit()
         assert again['new_invitations'] == 0
-        assert len(db.scalars(select(Invitation)).all()) == 5
-        assert eligible_orgs(db, db.get(RFQ, RFQ_ID), list(statuses)) == {'z-exact', 'z-sub', 'z-linked'}
+        assert len(db.scalars(select(Invitation)).all()) == 6
+        assert eligible_orgs(db, db.get(RFQ, RFQ_ID), list(statuses)) == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
+        assert 'delivery coverage unconfirmed' in db.scalar(select(RFQMatch).where(RFQMatch.supplier_org_id == 'd-unknown')).reasons
         old = db.scalar(select(Invitation).where(Invitation.supplier_org_id == 'a-ups'))
         event = Outbox(event='rfq.invitation', payload={'rfq_id': RFQ_ID, 'supplier_org_id': 'a-ups', 'invitation_id': old.id})
         db.add(event); db.flush(); prepare(db, event)
@@ -108,7 +109,7 @@ def test_strict_matching_all_batches_idempotency_and_historical_audit(incident):
     response = client.get(f'/api/v1/matching/rfqs/{RFQ_ID}/results')
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data['matched_suppliers'] == 3
+    assert data['matched_suppliers'] == 4
     for match in data['matches']:
         assert not any(reason.startswith(('main_category_item:', 'exact_materials:', 'item:')) for reason in match['reasons'])
         assert 'unverified' in match['brand_requirement_status']
@@ -183,12 +184,20 @@ def test_explicit_taxonomy_repair_is_audited_idempotent_and_preserves_material_i
         product.subcategory_id = None
         original_version = product.version
         db.flush()
+        # The linked product has the same normalized name (product alias), so the supplier still
+        # matches while its Material Master subcategory is wrong; the recorded taxonomy
+        # shows the misfiled relationship instead of hiding the supplier.
         before = match_and_invite(db, db.get(RFQ, RFQ_ID))
-        assert 'z-linked' not in {i.supplier_org_id for i in before['invitations']}
+        assert 'z-linked' in {i.supplier_org_id for i in before['invitations']}
+        linked = db.scalar(select(RFQMatch).where(RFQMatch.supplier_org_id == 'z-linked'))
+        assert 'alias_item:item' in linked.reasons and 'taxonomy:item=electrical/' in linked.reasons
         assert reclassify(db, product.id, 'panels')
         db.flush()
         assert not reclassify(db, product.id, 'panels')
         assert product.id == 'supplier-panel' and product.version == original_version + 1
         assert db.scalar(select(AuditEvent.id).where(AuditEvent.action == 'material.rfq_taxonomy_correction'))
         after = match_and_invite(db, db.get(RFQ, RFQ_ID))
-        assert {i.supplier_org_id for i in after['invitations']} == {'z-linked'}
+        assert after['new_invitations'] == 0
+        linked = db.scalar(select(RFQMatch).where(RFQMatch.supplier_org_id == 'z-linked'))
+        assert 'taxonomy:item=electrical/panels' in linked.reasons
+        assert len(db.scalars(select(Invitation).where(Invitation.supplier_org_id == 'z-linked')).all()) == 1

@@ -95,6 +95,22 @@ class Settings(BaseSettings):
         if v and not v.endswith('/3rdparty/v1/messages'):
             v = f'{v}/3rdparty/v1/messages'
         return v
+    # WhatsApp Business Cloud API (Meta). Business-initiated messages require an
+    # approved message template whose body takes: reference, buyer, matched item
+    # count, deadline and the magic link, in that order.
+    whatsapp_enabled: bool = False
+    whatsapp_access_token: SecretStr = SecretStr('')
+    whatsapp_phone_number_id: str = ''
+    whatsapp_api_version: str = Field(default='v21.0', pattern=r'^v[0-9]+\.[0-9]+$')
+    whatsapp_rfq_template: str = 'rfq_quick_quote'
+    whatsapp_template_language: str = 'en'
+    whatsapp_app_secret: SecretStr = SecretStr('')
+    whatsapp_verify_token: SecretStr = SecretStr('')
+    # When set, every external RFQ notification is redirected to these controlled
+    # recipients (staging / acceptance tests). Leave blank in production.
+    notification_redirect_email: str = ''
+    notification_redirect_phone: str = ''
+    magic_link_days: int = Field(default=14, ge=1, le=30)
     support_url: str = ''
     frontend_url: str = 'https://procumaterial.com'
     smtp_host: str = Field(
@@ -152,7 +168,10 @@ class Settings(BaseSettings):
     r2_max_image_bytes: int = Field(default=10_485_760, ge=1)
     r2_max_document_bytes: int = Field(default=26_214_400, ge=1)
     r2_allowed_origins: str = ''
-    matching_batch_size: int = Field(default=5, ge=1, le=100)
+    matching_batch_size: int = Field(default=100, ge=1, le=100)
+    # Publication evaluates candidate pages synchronously until this budget is spent;
+    # any remainder continues in the durable rfq.published job.
+    matching_publish_time_budget_seconds: float = Field(default=2.5, ge=0, le=30)
     gemini_api_key: SecretStr = SecretStr('')
     gemini_model: str = Field(default='gemini-2.5-flash',pattern=r'^[a-zA-Z0-9.-]+$')
     gemini_enabled: bool = Field(default=True, validation_alias=AliasChoices('gemini_enabled', 'GEMINI_ENABLED'))

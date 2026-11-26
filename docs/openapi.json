@@ -10106,7 +10106,7 @@
           "Supplier Matching"
         ],
         "summary": "Admin Diagnostics",
-        "description": "Explain persisted match outcomes, item classification, AI candidates, exclusions, and delivery state to admins.",
+        "description": "Explain classification, Material Master resolution, evidence levels, exclusions, jobs and delivery to admins.\n\nRead-only: classification is recomputed deterministically (no AI call) and nothing is persisted.",
         "operationId": "admin_diagnostics_api_v1_matching_admin_rfqs__rfq_id__diagnostics_get",
         "security": [
           {
@@ -12148,6 +12148,7 @@
           "Supplier Quotations & Buyer Comparison"
         ],
         "summary": "Comparison",
+        "description": "Side-by-side quotations plus the client's weighted ranking (see procurement.scoring).",
         "operationId": "comparison_api_v1_quotations_rfqs__rfq_id__comparison_get",
         "security": [
           {
@@ -12162,6 +12163,60 @@
             "schema": {
               "type": "string",
               "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "price_weight",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Price Weight"
+            }
+          },
+          {
+            "name": "delivery_weight",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Delivery Weight"
+            }
+          },
+          {
+            "name": "terms_weight",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Terms Weight"
             }
           }
         ],
@@ -15625,6 +15680,2684 @@
         ]
       }
     },
+    "/api/v1/procurement/rfqs/classify-list": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Classify Plain List",
+        "description": "Split a plain list into lines and classify each: Discipline, Main Category, Subcategory, Material, Brand.",
+        "operationId": "classify_plain_list_api_v1_procurement_rfqs_classify_list_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlainListIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/procurement/rfqs/{rfq_id}/tracking": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Rfq Tracking",
+        "operationId": "rfq_tracking_api_v1_procurement_rfqs__rfq_id__tracking_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/rfqs/{rfq_id}/comparison": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Weighted Comparison",
+        "operationId": "weighted_comparison_api_v1_procurement_rfqs__rfq_id__comparison_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "price",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Price"
+            }
+          },
+          {
+            "name": "delivery",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Delivery"
+            }
+          },
+          {
+            "name": "warranty",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100,
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warranty"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/rfqs/{rfq_id}/scoring-weights": {
+      "put": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Save Weights",
+        "operationId": "save_weights_api_v1_procurement_rfqs__rfq_id__scoring_weights_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WeightsIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/rfqs/{rfq_id}/document.pdf": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Rfq Pdf",
+        "operationId": "rfq_pdf_api_v1_procurement_rfqs__rfq_id__document_pdf_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "en",
+                "ar"
+              ],
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/quotations/{quotation_id}/document.pdf": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Quotation Pdf",
+        "operationId": "quotation_pdf_api_v1_procurement_quotations__quotation_id__document_pdf_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "quotation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quotation Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "en",
+                "ar"
+              ],
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/supplier/inbox": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Supplier Inbox",
+        "operationId": "supplier_inbox_api_v1_procurement_supplier_inbox_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invitations/{invitation_id}/magic-links": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Magic Links",
+        "operationId": "magic_links_api_v1_procurement_invitations__invitation_id__magic_links_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invitation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invitations/{invitation_id}/magic-links/revoke": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Revoke Magic Links",
+        "operationId": "revoke_magic_links_api_v1_procurement_invitations__invitation_id__magic_links_revoke_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invitation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invitations/{invitation_id}/resend": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Resend Invitation",
+        "description": "Queue one fresh consolidated notification (new magic link) for an invited supplier.",
+        "operationId": "resend_invitation_api_v1_procurement_invitations__invitation_id__resend_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invitation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "List Purchase Orders",
+        "operationId": "list_purchase_orders_api_v1_procurement_purchase_orders_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "buyer",
+                "supplier"
+              ],
+              "type": "string",
+              "default": "buyer",
+              "title": "Side"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders/{po_id}": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Get Purchase Order",
+        "operationId": "get_purchase_order_api_v1_procurement_purchase_orders__po_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Update Purchase Order",
+        "operationId": "update_purchase_order_api_v1_procurement_purchase_orders__po_id__put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/POUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders/{po_id}/issue": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Issue Purchase Order",
+        "operationId": "issue_purchase_order_api_v1_procurement_purchase_orders__po_id__issue_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders/{po_id}/acknowledge": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Acknowledge Purchase Order",
+        "operationId": "acknowledge_purchase_order_api_v1_procurement_purchase_orders__po_id__acknowledge_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders/{po_id}/cancel": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Cancel Purchase Order",
+        "operationId": "cancel_purchase_order_api_v1_procurement_purchase_orders__po_id__cancel_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders/{po_id}/document.pdf": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Purchase Order Pdf",
+        "operationId": "purchase_order_pdf_api_v1_procurement_purchase_orders__po_id__document_pdf_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "en",
+                "ar"
+              ],
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders/{po_id}/delivery-notes": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Create Delivery Note",
+        "operationId": "create_delivery_note_api_v1_procurement_purchase_orders__po_id__delivery_notes_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeliveryIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/delivery-notes/{note_id}/dispatch": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Dispatch Delivery Note",
+        "operationId": "dispatch_delivery_note_api_v1_procurement_delivery_notes__note_id__dispatch_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/delivery-notes/{note_id}/receive": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Receive Delivery",
+        "operationId": "receive_delivery_api_v1_procurement_delivery_notes__note_id__receive_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReceiptIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/delivery-notes": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "List Delivery Notes",
+        "operationId": "list_delivery_notes_api_v1_procurement_delivery_notes_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "buyer",
+                "supplier"
+              ],
+              "type": "string",
+              "default": "buyer",
+              "title": "Side"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/delivery-notes/{note_id}": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Get Delivery Note",
+        "operationId": "get_delivery_note_api_v1_procurement_delivery_notes__note_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/delivery-notes/{note_id}/document.pdf": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Delivery Note Pdf",
+        "operationId": "delivery_note_pdf_api_v1_procurement_delivery_notes__note_id__document_pdf_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "note_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Note Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "en",
+                "ar"
+              ],
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/purchase-orders/{po_id}/invoices": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Create Invoice",
+        "operationId": "create_invoice_api_v1_procurement_purchase_orders__po_id__invoices_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "po_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Po Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invoices/{invoice_id}/submit": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Submit Invoice",
+        "operationId": "submit_invoice_api_v1_procurement_invoices__invoice_id__submit_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invoice Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invoices/{invoice_id}/review": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Review Invoice",
+        "operationId": "review_invoice_api_v1_procurement_invoices__invoice_id__review_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invoice Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceReview"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invoices/{invoice_id}/rematch": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Rematch Invoice",
+        "operationId": "rematch_invoice_api_v1_procurement_invoices__invoice_id__rematch_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invoice Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invoices": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "List Invoices",
+        "operationId": "list_invoices_api_v1_procurement_invoices_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "buyer",
+                "supplier"
+              ],
+              "type": "string",
+              "default": "buyer",
+              "title": "Side"
+            }
+          },
+          {
+            "name": "match_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Match Status"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invoices/{invoice_id}": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Get Invoice",
+        "operationId": "get_invoice_api_v1_procurement_invoices__invoice_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invoice Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/invoices/{invoice_id}/document.pdf": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Invoice Pdf",
+        "operationId": "invoice_pdf_api_v1_procurement_invoices__invoice_id__document_pdf_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Invoice Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "en",
+                "ar"
+              ],
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "download",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Download"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/three-way-matching": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Three Way Overview",
+        "operationId": "three_way_overview_api_v1_procurement_three_way_matching_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "buyer",
+                "supplier"
+              ],
+              "type": "string",
+              "default": "buyer",
+              "title": "Side"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/documents/share": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Share Document",
+        "description": "Email a client-format PDF to the counterparty's business email or to the requesting user.",
+        "operationId": "share_document_api_v1_procurement_documents_share_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ShareIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/procurement/scorecards": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "List Scorecards",
+        "operationId": "list_scorecards_api_v1_procurement_scorecards_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "side",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "buyer",
+                "supplier"
+              ],
+              "type": "string",
+              "default": "buyer",
+              "title": "Side"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/document-ai/extractions": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Upload For Extraction",
+        "operationId": "upload_for_extraction_api_v1_procurement_document_ai_extractions_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_for_extraction_api_v1_procurement_document_ai_extractions_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "List Extractions",
+        "operationId": "list_extractions_api_v1_procurement_document_ai_extractions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/document-ai/extractions/{extraction_id}": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Get Extraction",
+        "operationId": "get_extraction_api_v1_procurement_document_ai_extractions__extraction_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "extraction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Extraction Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/document-ai/extractions/{extraction_id}/confirm": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Confirm Extraction",
+        "operationId": "confirm_extraction_api_v1_procurement_document_ai_extractions__extraction_id__confirm_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "extraction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Extraction Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExtractionConfirm"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/admin/workflow": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Workflow Monitor",
+        "operationId": "workflow_monitor_api_v1_procurement_admin_workflow_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/procurement/admin/outbox/{event_id}/retry": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Retry Job",
+        "operationId": "retry_job_api_v1_procurement_admin_outbox__event_id__retry_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/admin/rfqs/{rfq_id}/recover": {
+      "post": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Recover Stuck Rfq",
+        "description": "Safely requeue matching for a published RFQ (existing scripts.requeue_rfq_matching logic; no deletes).",
+        "operationId": "recover_stuck_rfq_api_v1_procurement_admin_rfqs__rfq_id__recover_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/procurement/admin/sla": {
+      "get": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Get Sla",
+        "operationId": "get_sla_api_v1_procurement_admin_sla_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "Procurement Lifecycle"
+        ],
+        "summary": "Put Sla",
+        "operationId": "put_sla_api_v1_procurement_admin_sla_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Payload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/supplier-portal/open": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Open Portal",
+        "operationId": "open_portal_api_v1_supplier_portal_open_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalAccess"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/save": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Save Draft",
+        "operationId": "save_draft_api_v1_supplier_portal_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalQuote"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/approve": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Approve And Submit",
+        "description": "The supplier's explicit approval is what submits the quotation to the buyer.",
+        "operationId": "approve_and_submit_api_v1_supplier_portal_approve_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalApprove"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/decline": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Decline",
+        "operationId": "decline_api_v1_supplier_portal_decline_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PortalAccess"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/public/document-builder/{kind}/totals": {
+      "post": {
+        "tags": [
+          "Public Document Builders"
+        ],
+        "summary": "Builder Totals",
+        "operationId": "builder_totals_api_v1_public_document_builder__kind__totals_post",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "rfq",
+                "quotation",
+                "purchase_order",
+                "invoice",
+                "delivery_note"
+              ],
+              "type": "string",
+              "title": "Kind"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuilderIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/public/document-builder/{kind}": {
+      "post": {
+        "tags": [
+          "Public Document Builders"
+        ],
+        "summary": "Build Document",
+        "description": "Generate a PDF in the client's format. Requires no account; nothing is stored.",
+        "operationId": "build_document_api_v1_public_document_builder__kind__post",
+        "parameters": [
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "enum": [
+                "rfq",
+                "quotation",
+                "purchase_order",
+                "invoice",
+                "delivery_note"
+              ],
+              "type": "string",
+              "title": "Kind"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuilderIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/whatsapp": {
+      "get": {
+        "tags": [
+          "Public Document Builders"
+        ],
+        "summary": "Whatsapp Verify",
+        "operationId": "whatsapp_verify_api_v1_webhooks_whatsapp_get",
+        "parameters": [
+          {
+            "name": "hub.mode",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Hub.Mode"
+            }
+          },
+          {
+            "name": "hub.verify_token",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Hub.Verify Token"
+            }
+          },
+          {
+            "name": "hub.challenge",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "",
+              "title": "Hub.Challenge"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Public Document Builders"
+        ],
+        "summary": "Whatsapp Status",
+        "operationId": "whatsapp_status_api_v1_webhooks_whatsapp_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
     "/health/live": {
       "get": {
         "tags": [
@@ -16748,6 +19481,36 @@
         ],
         "title": "Body_upload_document_api_v1_organizations__org_id__documents_post"
       },
+      "Body_upload_for_extraction_api_v1_procurement_document_ai_extractions_post": {
+        "properties": {
+          "org_id": {
+            "type": "string",
+            "title": "Org Id"
+          },
+          "rfq_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rfq Id"
+          },
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "org_id",
+          "file"
+        ],
+        "title": "Body_upload_for_extraction_api_v1_procurement_document_ai_extractions_post"
+      },
       "Body_upload_job_api_v1_rfqs_imports_post": {
         "properties": {
           "file": {
@@ -16884,6 +19647,246 @@
           "authenticated"
         ],
         "title": "BrowserSessionOut"
+      },
+      "BuilderIn": {
+        "properties": {
+          "language": {
+            "type": "string",
+            "enum": [
+              "en",
+              "ar"
+            ],
+            "title": "Language",
+            "default": "en"
+          },
+          "sender": {
+            "$ref": "#/components/schemas/Party"
+          },
+          "recipient": {
+            "$ref": "#/components/schemas/Party"
+          },
+          "ship_to": {
+            "type": "string",
+            "maxLength": 400,
+            "title": "Ship To",
+            "default": ""
+          },
+          "number": {
+            "type": "string",
+            "maxLength": 60,
+            "title": "Number",
+            "default": ""
+          },
+          "document_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Document Date"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 120,
+            "title": "Reference",
+            "default": ""
+          },
+          "project": {
+            "type": "string",
+            "maxLength": 250,
+            "title": "Project",
+            "default": ""
+          },
+          "delivery_location": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Delivery Location",
+            "default": ""
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "SAR",
+              "USD",
+              "EUR",
+              "AED",
+              "GBP"
+            ],
+            "title": "Currency",
+            "default": "SAR"
+          },
+          "payment_terms": {
+            "type": "string",
+            "maxLength": 1000,
+            "title": "Payment Terms",
+            "default": ""
+          },
+          "delivery_terms": {
+            "type": "string",
+            "maxLength": 1000,
+            "title": "Delivery Terms",
+            "default": ""
+          },
+          "lead_time": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Lead Time",
+            "default": ""
+          },
+          "warranty": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Warranty",
+            "default": ""
+          },
+          "stock_availability": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Stock Availability",
+            "default": ""
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Notes",
+            "default": ""
+          },
+          "bank_name": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Bank Name",
+            "default": ""
+          },
+          "account_name": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Account Name",
+            "default": ""
+          },
+          "iban": {
+            "type": "string",
+            "maxLength": 40,
+            "title": "Iban",
+            "default": ""
+          },
+          "swift": {
+            "type": "string",
+            "maxLength": 20,
+            "title": "Swift",
+            "default": ""
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/BuilderLine"
+            },
+            "type": "array",
+            "maxItems": 300,
+            "minItems": 1,
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "lines"
+        ],
+        "title": "BuilderIn"
+      },
+      "BuilderLine": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Description"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "title": "Unit",
+            "default": ""
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Unit Price",
+            "default": "0"
+          },
+          "discount_percent": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Discount Percent",
+            "default": "0"
+          },
+          "vat_percent": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Vat Percent",
+            "default": "15"
+          },
+          "remarks": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Remarks",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "quantity"
+        ],
+        "title": "BuilderLine"
       },
       "BulkApproveValidIn": {
         "properties": {
@@ -17236,6 +20239,18 @@
             "format": "date-time",
             "title": "Invited At"
           },
+          "matched_item_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Item Ids"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -17272,6 +20287,7 @@
           "supplier_org_id",
           "status",
           "invited_at",
+          "matched_item_ids",
           "id",
           "created_at",
           "supplier_name"
@@ -19240,6 +22256,31 @@
             ],
             "title": "Delivery Vat Rate",
             "default": "0"
+          },
+          "warranty_months": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 600.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Months"
+          },
+          "warranty_terms": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Warranty Terms",
+            "default": ""
+          },
+          "stock_availability": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Stock Availability",
+            "default": ""
           }
         },
         "type": "object",
@@ -19257,6 +22298,31 @@
             },
             "type": "array",
             "title": "Quotations"
+          },
+          "weights": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Weights"
+          },
+          "ranking": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Ranking"
+          },
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "default": ""
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency",
+            "default": "SAR"
           }
         },
         "type": "object",
@@ -20047,6 +23113,97 @@
         ],
         "title": "DeliveryFeedback"
       },
+      "DeliveryIn": {
+        "properties": {
+          "delivery_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Date"
+          },
+          "vehicle_no": {
+            "type": "string",
+            "maxLength": 60,
+            "title": "Vehicle No",
+            "default": ""
+          },
+          "driver_name": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Driver Name",
+            "default": ""
+          },
+          "carrier": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Carrier",
+            "default": ""
+          },
+          "remarks": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Remarks",
+            "default": ""
+          },
+          "dispatch": {
+            "type": "boolean",
+            "title": "Dispatch",
+            "default": false
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/DeliveryLineIn"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "lines"
+        ],
+        "title": "DeliveryIn"
+      },
+      "DeliveryLineIn": {
+        "properties": {
+          "po_line_id": {
+            "type": "string",
+            "title": "Po Line Id"
+          },
+          "delivered_quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Delivered Quantity"
+          },
+          "remarks": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Remarks",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "po_line_id",
+          "delivered_quantity"
+        ],
+        "title": "DeliveryLineIn"
+      },
       "DeliveryStatusOut": {
         "properties": {
           "id": {
@@ -20327,6 +23484,225 @@
           "code"
         ],
         "title": "EmailOTPVerify"
+      },
+      "ExtractedLineIn": {
+        "properties": {
+          "description": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Description"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 30,
+            "title": "Unit",
+            "default": ""
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Unit Price"
+          },
+          "discount_percent": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Discount Percent",
+            "default": "0"
+          },
+          "rfq_item_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rfq Item Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "description",
+          "quantity",
+          "unit_price"
+        ],
+        "title": "ExtractedLineIn"
+      },
+      "ExtractionConfirm": {
+        "properties": {
+          "supplier_name": {
+            "type": "string",
+            "maxLength": 220,
+            "title": "Supplier Name",
+            "default": ""
+          },
+          "supplier_org_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Org Id"
+          },
+          "rfq_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rfq Id"
+          },
+          "quotation_reference": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Quotation Reference",
+            "default": ""
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "SAR",
+              "USD",
+              "EUR",
+              "AED",
+              "GBP"
+            ],
+            "title": "Currency",
+            "default": "SAR"
+          },
+          "vat_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Vat Rate",
+            "default": "0.15"
+          },
+          "header_discount": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Header Discount",
+            "default": "0"
+          },
+          "payment_terms": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Payment Terms",
+            "default": ""
+          },
+          "delivery_terms": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Delivery Terms",
+            "default": ""
+          },
+          "warranty": {
+            "type": "string",
+            "maxLength": 2000,
+            "title": "Warranty",
+            "default": ""
+          },
+          "warranty_months": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 600.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Months"
+          },
+          "lead_days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 3650.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Lead Days"
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Valid Until"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ExtractedLineIn"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "minItems": 1,
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "lines"
+        ],
+        "title": "ExtractionConfirm"
       },
       "FavoriteStateOut": {
         "properties": {
@@ -21313,6 +24689,18 @@
             "format": "date-time",
             "title": "Invited At"
           },
+          "matched_item_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Item Ids"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -21329,6 +24717,7 @@
           "supplier_org_id",
           "status",
           "invited_at",
+          "matched_item_ids",
           "id",
           "created_at"
         ],
@@ -21352,6 +24741,18 @@
             "type": "string",
             "format": "date-time",
             "title": "Invited At"
+          },
+          "matched_item_ids": {
+            "anyOf": [
+              {
+                "items": {},
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matched Item Ids"
           },
           "id": {
             "type": "string",
@@ -21384,6 +24785,7 @@
           "supplier_org_id",
           "status",
           "invited_at",
+          "matched_item_ids",
           "id",
           "created_at",
           "rfq_reference",
@@ -21391,6 +24793,195 @@
           "item_descriptions"
         ],
         "title": "InvitationSummary"
+      },
+      "InvoiceIn": {
+        "properties": {
+          "invoice_number": {
+            "type": "string",
+            "maxLength": 60,
+            "minLength": 1,
+            "title": "Invoice Number"
+          },
+          "invoice_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invoice Date"
+          },
+          "due_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Due Date"
+          },
+          "delivery_note_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delivery Note Id"
+          },
+          "bank_name": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Bank Name",
+            "default": ""
+          },
+          "account_name": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Account Name",
+            "default": ""
+          },
+          "iban": {
+            "type": "string",
+            "maxLength": 40,
+            "title": "Iban",
+            "default": ""
+          },
+          "swift": {
+            "type": "string",
+            "maxLength": 20,
+            "title": "Swift",
+            "default": ""
+          },
+          "payment_terms": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Payment Terms",
+            "default": ""
+          },
+          "submit": {
+            "type": "boolean",
+            "title": "Submit",
+            "default": false
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/InvoiceLineIn"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "required": [
+          "invoice_number"
+        ],
+        "title": "InvoiceIn"
+      },
+      "InvoiceLineIn": {
+        "properties": {
+          "po_line_id": {
+            "type": "string",
+            "title": "Po Line Id"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Quantity"
+          },
+          "unit_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unit Price"
+          },
+          "discount_percent": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discount Percent"
+          },
+          "vat_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vat Rate"
+          }
+        },
+        "type": "object",
+        "required": [
+          "po_line_id",
+          "quantity"
+        ],
+        "title": "InvoiceLineIn"
+      },
+      "InvoiceReview": {
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "dispute"
+            ],
+            "title": "Decision"
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Notes",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "title": "InvoiceReview"
       },
       "Login": {
         "properties": {
@@ -21454,6 +25045,7 @@
               "matching_completed",
               "matching_failed",
               "invitations_available",
+              "matches_available",
               "no_eligible_suppliers",
               "closed"
             ],
@@ -21723,6 +25315,34 @@
             "type": "boolean",
             "title": "Invitation Review Required",
             "default": false
+          },
+          "match_strength": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Strength"
+          },
+          "matched_item_count": {
+            "type": "integer",
+            "title": "Matched Item Count",
+            "default": 0
+          },
+          "matched_items": {
+            "items": {
+              "$ref": "#/components/schemas/MatchedItemDetail"
+            },
+            "type": "array",
+            "title": "Matched Items"
+          },
+          "saved_price_available": {
+            "type": "boolean",
+            "title": "Saved Price Available",
+            "default": false
           }
         },
         "type": "object",
@@ -21739,6 +25359,68 @@
           "coverage"
         ],
         "title": "MatchSummary"
+      },
+      "MatchedItemDetail": {
+        "properties": {
+          "item_id": {
+            "type": "string",
+            "title": "Item Id"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "match_level": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Match Level"
+          },
+          "discipline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discipline"
+          },
+          "main_category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Main Category"
+          },
+          "subcategory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subcategory"
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "description"
+        ],
+        "title": "MatchedItemDetail"
       },
       "MatchingDiagnosticOut": {
         "properties": {
@@ -21803,6 +25485,32 @@
             "type": "integer",
             "title": "Invitations Created"
           },
+          "product_matches": {
+            "type": "integer",
+            "title": "Product Matches",
+            "default": 0
+          },
+          "subcategory_matches": {
+            "type": "integer",
+            "title": "Subcategory Matches",
+            "default": 0
+          },
+          "main_category_matches": {
+            "type": "integer",
+            "title": "Main Category Matches",
+            "default": 0
+          },
+          "matching_duration_ms": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matching Duration Ms"
+          },
           "delivery_summary": {
             "additionalProperties": {
               "type": "integer"
@@ -21816,6 +25524,13 @@
             },
             "type": "object",
             "title": "Invitation Statuses"
+          },
+          "quotation_statuses": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Quotation Statuses"
           },
           "item_diagnostics": {
             "items": {
@@ -22016,6 +25731,112 @@
             "type": "integer",
             "title": "Matched Supplier Count",
             "default": 0
+          },
+          "specifications_excerpt": {
+            "type": "string",
+            "title": "Specifications Excerpt",
+            "default": ""
+          },
+          "material_master_main_category_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Master Main Category Id"
+          },
+          "material_master_main_category_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Master Main Category Name"
+          },
+          "material_master_subcategory_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Master Subcategory Id"
+          },
+          "material_master_subcategory_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Master Subcategory Name"
+          },
+          "classification_confidence": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Confidence"
+          },
+          "classification_source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Source"
+          },
+          "classification_needs_confirmation": {
+            "type": "boolean",
+            "title": "Classification Needs Confirmation",
+            "default": false
+          },
+          "classification_conflict": {
+            "type": "boolean",
+            "title": "Classification Conflict",
+            "default": false
+          },
+          "classification_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Classification Note"
+          },
+          "product_candidates": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Product Candidates"
+          },
+          "level_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Level Counts"
           }
         },
         "type": "object",
@@ -24149,6 +27970,96 @@
         ],
         "title": "OutboxOut"
       },
+      "POUpdate": {
+        "properties": {
+          "delivery_address": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Delivery Address",
+            "default": ""
+          },
+          "site_contact": {
+            "type": "string",
+            "maxLength": 200,
+            "title": "Site Contact",
+            "default": ""
+          },
+          "payment_terms": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Payment Terms",
+            "default": ""
+          },
+          "delivery_terms": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Delivery Terms",
+            "default": ""
+          },
+          "special_instructions": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Special Instructions",
+            "default": ""
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Notes",
+            "default": ""
+          },
+          "required_delivery_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Delivery Date"
+          }
+        },
+        "type": "object",
+        "title": "POUpdate"
+      },
+      "Party": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 220,
+            "title": "Name",
+            "default": ""
+          },
+          "address": {
+            "type": "string",
+            "maxLength": 400,
+            "title": "Address",
+            "default": ""
+          },
+          "vat_number": {
+            "type": "string",
+            "maxLength": 80,
+            "title": "Vat Number",
+            "default": ""
+          },
+          "cr_number": {
+            "type": "string",
+            "maxLength": 80,
+            "title": "Cr Number",
+            "default": ""
+          },
+          "contact": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Contact",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "Party"
+      },
       "PasswordChange": {
         "properties": {
           "current_password": {
@@ -24461,6 +28372,26 @@
           "phone"
         ],
         "title": "PhoneChangeVerified"
+      },
+      "PlainListIn": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 50000,
+            "minLength": 2,
+            "title": "Text"
+          },
+          "ai_enabled": {
+            "type": "boolean",
+            "title": "Ai Enabled",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "PlainListIn"
       },
       "PlanAction": {
         "properties": {
@@ -24929,6 +28860,64 @@
         "type": "object",
         "title": "PlatformSettingsUpdate"
       },
+      "PortalAccess": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "PortalAccess"
+      },
+      "PortalApprove": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "Token"
+          },
+          "quotation": {
+            "$ref": "#/components/schemas/QuoteIn"
+          },
+          "confirm_submission": {
+            "type": "boolean",
+            "title": "Confirm Submission",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "quotation"
+        ],
+        "title": "PortalApprove"
+      },
+      "PortalQuote": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "Token"
+          },
+          "quotation": {
+            "$ref": "#/components/schemas/QuoteIn"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token",
+          "quotation"
+        ],
+        "title": "PortalQuote"
+      },
       "PriceGroupIn": {
         "properties": {
           "org_id": {
@@ -25155,6 +29144,40 @@
             "title": "Technical Confirmed",
             "default": false
           },
+          "warranty_months": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 600.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Months"
+          },
+          "payment_terms": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Payment Terms",
+            "default": ""
+          },
+          "stock_quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Quantity"
+          },
           "active": {
             "type": "boolean",
             "title": "Active",
@@ -25318,6 +29341,32 @@
             "type": "integer",
             "title": "Material Version"
           },
+          "warranty_months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Months"
+          },
+          "payment_terms": {
+            "type": "string",
+            "title": "Payment Terms"
+          },
+          "stock_quantity": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stock Quantity"
+          },
           "updated_at": {
             "type": "string",
             "format": "date-time",
@@ -25382,6 +29431,9 @@
           "remarks",
           "technical_confirmed",
           "material_version",
+          "warranty_months",
+          "payment_terms",
+          "stock_quantity",
           "updated_at",
           "id",
           "created_at"
@@ -26652,6 +30704,44 @@
             "maxLength": 4000,
             "title": "Note",
             "default": ""
+          },
+          "discount_percent": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 100.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Discount Percent",
+            "default": "0"
+          },
+          "warranty_months": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 600.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Months"
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "limited",
+              "unavailable",
+              "unknown"
+            ],
+            "title": "Availability",
+            "default": "unknown"
           }
         },
         "type": "object",
@@ -26742,6 +30832,25 @@
             ],
             "title": "Vat Rate"
           },
+          "discount_percent": {
+            "type": "string",
+            "title": "Discount Percent"
+          },
+          "warranty_months": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Warranty Months"
+          },
+          "availability": {
+            "type": "string",
+            "title": "Availability"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -26768,6 +30877,9 @@
           "source_rate_id",
           "source_rate_version",
           "vat_rate",
+          "discount_percent",
+          "warranty_months",
+          "availability",
           "id",
           "created_at"
         ],
@@ -27419,6 +31531,12 @@
             "maxLength": 10000,
             "title": "Additional Instructions",
             "default": ""
+          },
+          "delivery_address": {
+            "type": "string",
+            "maxLength": 300,
+            "title": "Delivery Address",
+            "default": ""
           }
         },
         "type": "object",
@@ -27654,6 +31772,22 @@
             "type": "string",
             "title": "Additional Instructions"
           },
+          "scoring_weights": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scoring Weights"
+          },
+          "delivery_address": {
+            "type": "string",
+            "title": "Delivery Address"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -27678,6 +31812,8 @@
           "project_name",
           "required_delivery_date",
           "additional_instructions",
+          "scoring_weights",
+          "delivery_address",
           "id",
           "created_at"
         ],
@@ -28089,6 +32225,77 @@
           "active"
         ],
         "title": "RateStatus"
+      },
+      "ReceiptIn": {
+        "properties": {
+          "received_by_name": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Received By Name",
+            "default": ""
+          },
+          "notes": {
+            "type": "string",
+            "maxLength": 4000,
+            "title": "Notes",
+            "default": ""
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ReceiptLineIn"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Lines"
+          }
+        },
+        "type": "object",
+        "title": "ReceiptIn"
+      },
+      "ReceiptLineIn": {
+        "properties": {
+          "po_line_id": {
+            "type": "string",
+            "title": "Po Line Id"
+          },
+          "received_quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Received Quantity"
+          },
+          "damaged_quantity": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Damaged Quantity",
+            "default": "0"
+          },
+          "remarks": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Remarks",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "po_line_id",
+          "received_quantity"
+        ],
+        "title": "ReceiptLineIn"
       },
       "RecoveryCode": {
         "properties": {
@@ -28557,6 +32764,49 @@
         "additionalProperties": false,
         "type": "object",
         "title": "SettingsInput"
+      },
+      "ShareIn": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "rfq",
+              "quotation",
+              "purchase_order",
+              "delivery_note",
+              "invoice"
+            ],
+            "title": "Kind"
+          },
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "lang": {
+            "type": "string",
+            "enum": [
+              "en",
+              "ar"
+            ],
+            "title": "Lang",
+            "default": "en"
+          },
+          "recipient": {
+            "type": "string",
+            "enum": [
+              "counterparty",
+              "me"
+            ],
+            "title": "Recipient",
+            "default": "counterparty"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "ShareIn"
       },
       "SourceIssue": {
         "properties": {
@@ -30310,6 +34560,35 @@
           "code"
         ],
         "title": "VerifyOTP"
+      },
+      "WeightsIn": {
+        "properties": {
+          "price": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Price"
+          },
+          "delivery": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Delivery"
+          },
+          "warranty": {
+            "type": "integer",
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Warranty"
+          }
+        },
+        "type": "object",
+        "required": [
+          "price",
+          "delivery",
+          "warranty"
+        ],
+        "title": "WeightsIn"
       },
       "WorkspaceSelectionIn": {
         "properties": {
