@@ -30,8 +30,10 @@ def context_for(db, rfq):
     deadline = rfq.response_deadline
     if deadline.tzinfo is None:
         deadline = deadline.replace(tzinfo=UTC)
+    buyer=db.get(Organization,rfq.buyer_org_id)
     return {
         "reference": rfq.reference,
+        "buyer": buyer.name if rfq.public_display_authorized and buyer else "Procumaterial buyer",
         "title": rfq.project_name or rfq.title,
         "delivery_location": rfq.city,
         "deadline": deadline.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC"),
@@ -156,12 +158,16 @@ def quotation_notice(db, event):
     rfq = db.get(RFQ, event.payload.get("rfq_id"))
     if not quote or not rfq or quote.rfq_id != rfq.id or quote.status == "draft":
         raise PermanentOutboxError("Invalid quotation notification target")
+    supplier = db.get(Organization, quote.supplier_org_id)
+    supplier_name = supplier.name if supplier else "Supplier"
+    terms = quote.commercial_terms or {}
+    quotation_ref = terms.get("quotation_reference") or f"QT-{quote.id[:8].upper()}"
     base = get_settings().frontend_url.rstrip("/")
     for org_id, role, template in (
         (rfq.buyer_org_id, "buyer", "quotation_submitted"),
         (quote.supplier_org_id, "supplier", "quotation_confirmation"),
     ):
-        queue_in_app(db,event,org_id,template,f'Procumaterial: {rfq.reference} quotation update.')
+        queue_in_app(db, event, org_id, template, f'Procumaterial: {rfq.reference} quotation {quotation_ref} from {supplier_name}.')
         enqueue_org_notice(
             db,
             org_id=org_id,
@@ -169,7 +175,13 @@ def quotation_notice(db, event):
             context={
                 "reference": rfq.reference,
                 "title": rfq.project_name or rfq.title,
+                "quotation_id": quote.id,
+                "quotation_reference": quotation_ref,
+                "supplier_name": supplier_name,
+                "submission_source": quote.submission_source,
+                "attach_quotation_pdf": True,
                 "org_id": org_id,
+                "rfq_id": rfq.id,
                 "url": base + f"/app/{role}/quote/{quote.id}",
             },
             source_key=f"quotation-submitted:{quote.id}:{role}",

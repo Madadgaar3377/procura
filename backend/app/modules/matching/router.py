@@ -181,22 +181,26 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         .limit(limit).offset(offset)).all()
     matches=[]
     supplier_ids=[org.id for match,org in match_rows]
+    orgs_by_id={org.id:org for _,org in match_rows}
     service_cities={org_id:set() for org_id in supplier_ids}
     if supplier_ids:
         for org_id,city in db.execute(select(Capability.org_id,Capability.city).where(Capability.org_id.in_(supplier_ids),Capability.city!='',Capability.confirmed.is_(True),Capability.accepts_rfqs.is_(True),Capability.eligibility_status=='enabled')).all():
             service_cities[org_id].add(city)
     invitation_by_supplier={}
-    for invitation,org_name,quote_status in db.execute(select(Invitation,Organization.name,Quotation.status)
-        .outerjoin(Organization,Organization.id==Invitation.supplier_org_id)
-        .outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id)).all():
-        invitation_by_supplier[invitation.supplier_org_id]=(invitation.status,quote_status)
-    from app.modules.capabilities.public_details import published_details
+    if supplier_ids:
+        for invitation,quote_status in db.execute(select(Invitation,Quotation.status)
+            .outerjoin(Quotation,Quotation.invitation_id==Invitation.id)
+            .where(Invitation.rfq_id==rfq.id,Invitation.supplier_org_id.in_(supplier_ids))).all():
+            invitation_by_supplier[invitation.supplier_org_id]=(invitation.status,quote_status)
+    from app.modules.capabilities.public_details import published_details_batch
+    visible_ids=[org.id for _,org in match_rows if org.is_supplier and org.is_active and org.verified_status=='verified']
+    public_by_org=published_details_batch(db,visible_ids,orgs_by_id)
     taxonomy_names=dict(db.execute(select(Category.id,Category.name_en).where(Category.id.in_(
         {value for item in rfq_items for value in (item.main_category_id,item.subcategory_id) if value}))).all())
     for match,org in match_rows:
         covered=[reason[5:] for reason in (match.reasons or []) if reason.startswith('item:')]
         directory_visible=bool(org.is_supplier and org.is_active and org.verified_status=='verified')
-        public=published_details(db,org.id) if directory_visible else {}
+        public=public_by_org.get(org.id,{}) if directory_visible else {}
         invitation_status,quotation_status=invitation_by_supplier.get(org.id,(None,None))
         # Internal markers remain persisted for legacy consumers, never display them.
         internal=('item:','coverage:','exact_materials:','exact_subcategory_item:','main_category_item:','keyword_item:','ai_semantic_item:')
@@ -242,10 +246,35 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     elif job_status=='processed':progress='no_eligible_suppliers'
     else:progress='matching_queued'
     from datetime import timedelta
-
-    from app.modules.notifications.procurement import pending_orgs
     from app.modules.notifications.router import display_delivery_status
-    pending=set(pending_orgs(db,rfq)) if progress not in {'draft','closed'} else set()
+    # Fast indexed SQL pending check using persisted RFQMatch + Invitation + Quotation
+    # (never re-runs _match_batch on every results poll).
+    submitted_statuses = {'submitted', 'shortlisted', 'awarded', 'rejected'}
+    quotations_received = int(db.scalar(
+        select(func.count()).select_from(Quotation).where(
+            Quotation.rfq_id == rfq.id,
+            Quotation.status.in_(submitted_statuses),
+        )
+    ) or 0)
+    if progress not in {'draft', 'closed'}:
+        responded_sub = select(Quotation.supplier_org_id).where(
+            Quotation.rfq_id == rfq.id,
+            Quotation.status != 'draft',
+        )
+        eligible_match_sub = select(RFQMatch.supplier_org_id).where(
+            RFQMatch.rfq_id == rfq.id,
+            RFQMatch.status.in_({'eligible', 'partial'}),
+        )
+        pending = set(db.scalars(
+            select(Invitation.supplier_org_id).where(
+                Invitation.rfq_id == rfq.id,
+                Invitation.status.in_({'invited', 'accepted'}),
+                Invitation.supplier_org_id.not_in(responded_sub),
+                Invitation.supplier_org_id.in_(eligible_match_sub),
+            )
+        ).all())
+    else:
+        pending = set()
     deliveries:dict[str,int]={}
     # Aggregate only safe status fields; recipient addresses and provider errors stay private.
     delivery_rows=db.execute(select(Outbox.status,Outbox.delivery_status,func.count()).where(Outbox.event=='notification.delivery',Outbox.payload['context']['rfq_id'].as_string()==rfq.id).group_by(Outbox.status,Outbox.delivery_status)).all()
@@ -283,7 +312,111 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     return {'matches':matches, 'invitations':[{**record(i),'supplier_name':name,'quotation_status':quote,'reminder_eligible':i.supplier_org_id in pending} for i,name,quote in invitation_rows], 'progress':progress,'matching_status':matching_status,
             'pending_invitation_ids':[i.id for i,_,_ in invitation_rows if i.supplier_org_id in pending],
             'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':len(pending),'suppliers_evaluated':evaluated,
+            'quotations_received':quotations_received,
             'explanation':explanation,'deliveries':deliveries,'reminder_available_at':available.isoformat() if available else None,'limit':limit,'offset':offset}
+
+
+@router.get('/rfqs/{rfq_id}/quotations-summary')
+def rfq_quotations_summary(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Independent buyer-safe summary of automatic vs manual quotations and preparation progress.
+
+    Never exposes unapproved supplier draft prices or line items to the buyer.
+    """
+    rfq=db.get(RFQ,rfq_id)
+    if not rfq:raise HTTPException(404,'RFQ not found')
+    org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
+    submitted_statuses = {'submitted', 'shortlisted', 'awarded', 'rejected'}
+    from app.modules.quotations.router import invoice
+    from app.models import QuoteLine
+    all_quotes = db.execute(
+        select(Quotation, Organization.name)
+        .join(Organization, Organization.id == Quotation.supplier_org_id)
+        .where(Quotation.rfq_id == rfq.id)
+        .order_by(Quotation.submitted_at.desc().nullslast(), Quotation.created_at.desc())
+    ).all()
+    total_items = int(db.scalar(select(func.count()).select_from(RFQItem).where(RFQItem.rfq_id == rfq.id)) or 0)
+    submitted_ids = [q.id for q, _ in all_quotes if q.status in submitted_statuses]
+    lines_by_quote: dict[str, list] = {qid: [] for qid in submitted_ids}
+    if submitted_ids:
+        for line in db.scalars(select(QuoteLine).where(QuoteLine.quotation_id.in_(submitted_ids))).all():
+            lines_by_quote[line.quotation_id].append(line)
+    automatic_submitted = []
+    manual_submitted = []
+    preparing_auto_count = 0
+    preparing_manual_count = 0
+    for q, supplier_name in all_quotes:
+        if q.status not in submitted_statuses:
+            if q.submission_source in {'automatic', 'automatic_draft'}:
+                preparing_auto_count += 1
+            else:
+                preparing_manual_count += 1
+            continue
+        q_lines = lines_by_quote.get(q.id, [])
+        totals = invoice(db, q, q_lines)
+        entry = {
+            'id': q.id,
+            'supplier_org_id': q.supplier_org_id,
+            'supplier_name': supplier_name,
+            'status': q.status,
+            'submission_source': q.submission_source,
+            'submitted_at': q.submitted_at.isoformat() if q.submitted_at else None,
+            'currency': q.currency,
+            'price_basis': q.price_basis,
+            'covered_items': len(q_lines),
+            'total_items': total_items,
+            'totals': totals,
+        }
+        if q.submission_source == 'automatic':
+            automatic_submitted.append(entry)
+        else:
+            manual_submitted.append(entry)
+    return {
+        'rfq_id': rfq.id,
+        'automatic_quotations': automatic_submitted,
+        'manual_quotations': manual_submitted,
+        'preparing_automatic_count': preparing_auto_count,
+        'preparing_manual_count': preparing_manual_count,
+        'total_submitted': len(automatic_submitted) + len(manual_submitted),
+    }
+
+
+@router.get('/rfqs/{rfq_id}/notifications-status')
+def rfq_notifications_status(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Independent buyer-safe summary of email and SMS notification delivery statuses."""
+    rfq=db.get(RFQ,rfq_id)
+    if not rfq:raise HTTPException(404,'RFQ not found')
+    org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
+    from types import SimpleNamespace
+    from app.modules.notifications.router import display_delivery_status
+    rows = db.execute(
+        select(
+            Outbox.payload['channel'].as_string(),
+            Outbox.status,
+            Outbox.delivery_status,
+            func.count(),
+        )
+        .where(
+            Outbox.event == 'notification.delivery',
+            Outbox.payload['context']['rfq_id'].as_string() == rfq.id,
+        )
+        .group_by(Outbox.payload['channel'].as_string(), Outbox.status, Outbox.delivery_status)
+    ).all()
+    by_status: dict[str, int] = {}
+    by_channel: dict[str, dict[str, int]] = {'email': {}, 'sms': {}}
+    total = 0
+    for channel, status, provider, count in rows:
+        label = display_delivery_status(SimpleNamespace(status=status, delivery_status=provider))
+        c = int(count or 0)
+        by_status[label] = by_status.get(label, 0) + c
+        ch = channel if channel in by_channel else 'email'
+        by_channel[ch][label] = by_channel[ch].get(label, 0) + c
+        total += c
+    return {
+        'rfq_id': rfq.id,
+        'total': total,
+        'by_status': by_status,
+        'by_channel': by_channel,
+    }
 
 @router.get('/invitations',response_model=list[InvitationSummary])
 def my_invitations(search:ListSearch=Depends(),user:User=Depends(current_user),db:Session=Depends(get_db)):

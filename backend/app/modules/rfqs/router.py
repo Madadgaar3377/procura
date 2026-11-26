@@ -6,7 +6,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError
 import time
 
 from app.database import get_db
@@ -112,12 +112,22 @@ def create(payload:RFQIn,user:User=Depends(current_user),db:Session=Depends(get_
     org_member(db,user,payload.buyer_org_id,{'owner','manager','buyer'})
     org=db.get(Organization,payload.buyer_org_id)
     if not org or not org.is_buyer:raise HTTPException(422,'Organization cannot buy')
+    if payload.client_request_id:
+        existing=db.scalar(select(RFQ).where(RFQ.buyer_org_id==org.id,RFQ.client_request_id==payload.client_request_id))
+        if existing:return contents(db,existing)
     if payload.response_deadline.astimezone(UTC)<datetime.now(UTC):raise HTTPException(422,'Deadline must be in the future')
     lines=prepare_lines(db,payload.items)
-    rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions)
-    db.add(rfq);db.flush()
-    for entry in lines:db.add(RFQItem(rfq_id=rfq.id,**entry))
-    audit(db,user,'rfq.created',org.id,rfq.id);db.commit()
+    rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,client_request_id=payload.client_request_id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions)
+    try:
+        db.add(rfq);db.flush()
+        for entry in lines:db.add(RFQItem(rfq_id=rfq.id,**entry))
+        audit(db,user,'rfq.created',org.id,rfq.id);db.commit()
+    except IntegrityError:
+        db.rollback()
+        if not payload.client_request_id:raise
+        existing=db.scalar(select(RFQ).where(RFQ.buyer_org_id==org.id,RFQ.client_request_id==payload.client_request_id))
+        if not existing:raise
+        rfq=existing
     return contents(db,rfq)
 
 @router.get('',response_model=list[RFQOut])
@@ -302,7 +312,7 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
     from app.config import get_settings
     from app.import_storage import LocalImportStorage
 
-    rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
+    rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status!='draft':raise HTTPException(409,'Only draft attachments may be changed')
@@ -324,26 +334,33 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
     if settings.r2_enabled:
         from app.rate_limit import enforce_rate_limit
         enforce_rate_limit(request,scope='api-r2-upload',identity=user.id,limit=10,window_seconds=60)
-        stored=StoredFile(bucket_type='private',object_key=f'private/rfq/{rfq.id}/{uuid4()}{suffix}',
-            original_filename=filename,safe_filename=filename,content_type=ct,file_extension=suffix,
-            size_bytes=len(content),visibility='private',purpose='rfq_attachment',status='pending_upload',
-            owner_user_id=user.id,uploaded_by_user_id=user.id,organization_id=rfq.buyer_org_id,
-            entity_type='rfq',entity_id=rfq.id)
-        db.add(stored)
+        object_key=f'private/rfq/{rfq.id}/{uuid4()}{suffix}'
+        buyer_org_id=rfq.buyer_org_id
+        # Release any read transaction before network I/O to avoid idle-in-transaction / 55P03 locks.
+        db.rollback()
         uploaded=False
         try:
-            result=r2_upload('private',stored.object_key,io.BytesIO(content),ct,
-                max_bytes=max_bytes)
+            result=r2_upload('private',object_key,io.BytesIO(content),ct,max_bytes=max_bytes)
             uploaded=True
-            stored.size_bytes=result['size_bytes'];stored.etag=result['etag'];stored.checksum_sha256=result['checksum_sha256']
-            stored.status='available'
-            audit(db,user,'rfq.attachment_uploaded',rfq.buyer_org_id,rfq.id,file_id=stored.id)
-            db.commit()
         except StorageUnavailable as exc:
-            db.rollback();raise HTTPException(503,'File storage is temporarily unavailable') from exc
+            raise HTTPException(503,'File storage is temporarily unavailable') from exc
+        try:
+            locked_rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
+            if not locked_rfq or locked_rfq.status!='draft':
+                raise HTTPException(409,'Only draft attachments may be changed')
+            stored=StoredFile(bucket_type='private',object_key=object_key,
+                original_filename=filename,safe_filename=filename,content_type=ct,file_extension=suffix,
+                size_bytes=result['size_bytes'],etag=result['etag'],checksum_sha256=result['checksum_sha256'],
+                visibility='private',purpose='rfq_attachment',status='available',
+                owner_user_id=user.id,uploaded_by_user_id=user.id,organization_id=buyer_org_id,
+                entity_type='rfq',entity_id=locked_rfq.id)
+            db.add(stored)
+            db.flush()
+            audit(db,user,'rfq.attachment_uploaded',buyer_org_id,locked_rfq.id,file_id=stored.id)
+            db.commit()
         except Exception:
             db.rollback()
-            if uploaded:cleanup_object_best_effort('private',stored.object_key)
+            if uploaded:cleanup_object_best_effort('private',object_key)
             raise
         return {'id':stored.id,'filename':stored.safe_filename,'content_type':stored.content_type,'size':stored.size_bytes}
     attachment_id=uuid4().hex
@@ -352,8 +369,11 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
     entry={'id':attachment_id,'filename':filename,'content_type':ct,'size':len(content),'storage_key':key}
     storage.write(key,io.BytesIO(content),settings.max_upload_bytes)
     try:
-        rfq.attachment_records=[*(rfq.attachment_records or []),entry]
-        audit(db,user,'rfq.attachment_uploaded',rfq.buyer_org_id,rfq.id,attachment_id=attachment_id)
+        locked_rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
+        if not locked_rfq or locked_rfq.status!='draft':
+            raise HTTPException(409,'Only draft attachments may be changed')
+        locked_rfq.attachment_records=[*(locked_rfq.attachment_records or []),entry]
+        audit(db,user,'rfq.attachment_uploaded',locked_rfq.buyer_org_id,locked_rfq.id,attachment_id=attachment_id)
         db.commit()
     except Exception:
         db.rollback();storage.delete(key);raise

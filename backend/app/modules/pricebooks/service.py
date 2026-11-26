@@ -145,7 +145,7 @@ def rate_record(db,item,material=None,categories=None):
     main,sub=category_pair(db,material) if material else (item.main_category_id,item.subcategory_id)
     if categories is None:categories={c.id:c for c in db.scalars(select(Category).where(Category.id.in_([main,sub]))).all()}
     stale=material and (not material.active or normalize_unit(material.unit)!=item.unit or material.version!=item.material_version)
-    state='inactive' if not item.active else 'expired' if item.valid_until and utc(item.valid_until)<=datetime.now(timezone.utc) else 'review' if stale else 'active'
+    state='inactive' if not item.active else 'expired' if item.valid_until and utc(item.valid_until)<=datetime.now(timezone.utc) else 'unavailable' if item.availability=='unavailable' else 'review' if stale or item.availability!='available' else 'active'
     selected=capability_categories(db,item.org_id)
     capability_status=selected.get(sub or main,'pending')
     return {**record(item),'main_category_id':main,'subcategory_id':sub,'main_category_name':categories[main].name_en if main in categories else '', 'subcategory_name':categories[sub].name_en if sub in categories else '', 'material_description':item.supplier_description or (material.name_en if material else ''),'status':state,'capability_status':capability_status}

@@ -88,7 +88,7 @@ def email_message_id(key):
     return '<delivery-'+sha256(key.encode()).hexdigest()[:32]+'@'+domain+'>'
 
 
-def send_email(address, subject, plain_text, html_body, idempotency_key):
+def send_email(address, subject, plain_text, html_body, idempotency_key, *, attachments=None):
     settings = get_settings()
     message_id = email_message_id(idempotency_key)
     if settings.mock_notifications:
@@ -122,6 +122,9 @@ def send_email(address, subject, plain_text, html_body, idempotency_key):
         message['Reply-To']=reply_to
     message.set_content(plain_text)
     message.add_alternative(html_body, subtype="html")
+    for filename, data, mime_type in (attachments or ()):
+        maintype, _, subtype = (mime_type or 'application/pdf').partition('/')
+        message.add_attachment(data, maintype=maintype or 'application', subtype=subtype or 'pdf', filename=filename)
     log.info("Email SMTP configured; connecting port=%s security=%s", settings.smtp_port, "SSL/TLS" if is_implicit_ssl else "STARTTLS")
     stage = "connect"
     try:

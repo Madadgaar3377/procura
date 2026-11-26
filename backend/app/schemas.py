@@ -462,6 +462,7 @@ class PriceIn(Model):
     unit_price:Decimal=Field(gt=0,max_digits=14,decimal_places=2)
     min_order_quantity:Decimal|None=Field(default=None,gt=0,max_digits=14,decimal_places=3)
     currency:Literal['SAR','USD','EUR','AED','GBP']='SAR'
+    availability:Literal['available','limited','unavailable','unknown']='unknown'
     price_basis:Literal['supply','supply_install']='supply'
     lead_days:int=Field(default=7,ge=0,le=3650)
     valid_until:datetime|None=None
@@ -526,6 +527,7 @@ class RFQLineIn(Model):
 
 class RFQIn(Model):
     buyer_org_id:str
+    client_request_id:str|None=Field(default=None,min_length=16,max_length=64)
     title:str=Field(min_length=3,max_length=250)
     city:str=Field(default='',max_length=120)
     response_deadline:datetime
@@ -575,6 +577,9 @@ class CommercialTerms(Model):
     validity_until:datetime|None=None
     terms_and_conditions:str=Field(default='',max_length=10000)
     template_key:str=Field(default='pending_client_approval',max_length=100)
+    discount_amount:Decimal=Field(default=Decimal('0'),ge=0,max_digits=14,decimal_places=2)
+    delivery_charge:Decimal=Field(default=Decimal('0'),ge=0,max_digits=14,decimal_places=2)
+    delivery_vat_rate:Decimal=Field(default=Decimal('0'),ge=0,le=1)
 
 
 class QuoteIn(Model):

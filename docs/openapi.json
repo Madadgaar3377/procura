@@ -10310,6 +10310,98 @@
         }
       }
     },
+    "/api/v1/matching/rfqs/{rfq_id}/quotations-summary": {
+      "get": {
+        "tags": [
+          "Supplier Matching"
+        ],
+        "summary": "Rfq Quotations Summary",
+        "description": "Independent buyer-safe summary of automatic vs manual quotations and preparation progress.\n\nNever exposes unapproved supplier draft prices or line items to the buyer.",
+        "operationId": "rfq_quotations_summary_api_v1_matching_rfqs__rfq_id__quotations_summary_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/matching/rfqs/{rfq_id}/notifications-status": {
+      "get": {
+        "tags": [
+          "Supplier Matching"
+        ],
+        "summary": "Rfq Notifications Status",
+        "description": "Independent buyer-safe summary of email and SMS notification delivery statuses.",
+        "operationId": "rfq_notifications_status_api_v1_matching_rfqs__rfq_id__notifications_status_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/matching/invitations": {
       "get": {
         "tags": [
@@ -10652,7 +10744,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(all|active|inactive|expired|review)$",
+              "pattern": "^(all|active|inactive|expired|review|unavailable)$",
               "default": "all",
               "title": "Status"
             }
@@ -10776,7 +10868,7 @@
             "required": false,
             "schema": {
               "type": "string",
-              "pattern": "^(all|active|inactive|expired|review)$",
+              "pattern": "^(all|active|inactive|expired|review|unavailable)$",
               "default": "all",
               "title": "Status"
             }
@@ -11917,6 +12009,78 @@
                 "schema": {
                   "$ref": "#/components/schemas/QuoteDetail"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/quotations/{quotation_id}/export.pdf": {
+      "get": {
+        "tags": [
+          "Supplier Quotations & Buyer Comparison"
+        ],
+        "summary": "Export Quote Pdf",
+        "description": "Download a configurable bilingual (EN/AR + RTL) quotation PDF independently from matching.",
+        "operationId": "export_quote_pdf_api_v1_quotations__quotation_id__export_pdf_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "quotation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quotation Id"
+            }
+          },
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "template_key",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Template Key"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -19036,6 +19200,46 @@
             "maxLength": 100,
             "title": "Template Key",
             "default": "pending_client_approval"
+          },
+          "discount_amount": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Discount Amount",
+            "default": "0"
+          },
+          "delivery_charge": {
+            "anyOf": [
+              {
+                "type": "number",
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Delivery Charge",
+            "default": "0"
+          },
+          "delivery_vat_rate": {
+            "anyOf": [
+              {
+                "type": "number",
+                "maximum": 1.0,
+                "minimum": 0.0
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Delivery Vat Rate",
+            "default": "0"
           }
         },
         "type": "object",
@@ -24907,6 +25111,17 @@
             "title": "Currency",
             "default": "SAR"
           },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "available",
+              "limited",
+              "unavailable",
+              "unknown"
+            ],
+            "title": "Availability",
+            "default": "unknown"
+          },
           "price_basis": {
             "type": "string",
             "enum": [
@@ -25075,6 +25290,10 @@
             "type": "string",
             "title": "Currency"
           },
+          "availability": {
+            "type": "string",
+            "title": "Availability"
+          },
           "price_basis": {
             "type": "string",
             "title": "Price Basis"
@@ -25156,6 +25375,7 @@
           "version",
           "unit",
           "currency",
+          "availability",
           "price_basis",
           "active",
           "offered_description",
@@ -27128,6 +27348,19 @@
           "buyer_org_id": {
             "type": "string",
             "title": "Buyer Org Id"
+          },
+          "client_request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64,
+                "minLength": 16
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Request Id"
           },
           "title": {
             "type": "string",

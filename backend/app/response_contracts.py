@@ -144,7 +144,7 @@ class RateImportOut(ResponseModel):
     limit:int=25
     offset:int=0
 
-RFQOut = contract('RFQOut', models.RFQ, ('attachment_records',))
+RFQOut = contract('RFQOut', models.RFQ, ('attachment_records','client_request_id'))
 RFQItemOut = contract('RFQItemOut', models.RFQItem)
 InvitationOut = contract('InvitationOut', models.Invitation)
 MatchOut = contract('MatchOut', models.RFQMatch)

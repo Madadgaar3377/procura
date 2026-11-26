@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import re
 
-from sqlalchemy import cast, func, literal, or_, select
+from sqlalchemy import cast, func, literal, or_, select, union
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session
 
@@ -163,8 +163,11 @@ def match_and_invite(
     bounded: bool = False,
     single_batch: bool = False,
 ) -> dict:
-    """Drain relevant SQL pages; legacy limit is the page size, never a discovery cap."""
-    db.scalar(select(RFQ).where(RFQ.id == rfq.id).with_for_update())
+    """Drain relevant SQL pages; legacy limit is the page size, never a discovery cap.
+
+    Avoids holding a long-lived FOR UPDATE lock on the RFQ row across candidate
+    scans so concurrent reads, draft edits, and invitations never hit 55P03.
+    """
     summary = {
         'eligible_suppliers': 0,
         'new_invitations': 0,
@@ -250,86 +253,133 @@ def _match_batch(
     all_keywords = {kw for kws in item_keywords.values() for kw in kws}
 
     batch_size = max(1, min(limit if limit is not None else 50, 100))
-    relevant = capability_scope(
-        db,
-        exact_material_ids,
-        sub_ids,
-        main_ids=main_ids,
-        keywords=all_keywords,
-        include_root_only=include_root_only,
-    )
+    all_have_canonical_ids = all(bool(main) for main, _ in item_scope.values())
+    use_keyword_discovery = (not all_have_canonical_ids) or (not exact_material_ids and not sub_ids)
 
-    # Also include suppliers who have verified/active PriceBookItems or ImportedSupplierTrades matching the RFQ
-    pricebook_conds = []
-    if exact_material_ids:
-        pricebook_conds.append(PriceBookItem.material_id.in_(exact_material_ids))
-    if sub_ids:
-        pricebook_conds.append(PriceBookItem.subcategory_id.in_(sub_ids))
-    for kw in sorted(all_keywords, key=len, reverse=True)[:10]:
-        escaped = kw.replace('_', '\\_').replace('%', '\\%')
-        pricebook_conds.append(PriceBookItem.supplier_description.ilike('%' + escaped + '%', escape='\\'))
-
-    trade_conds = []
-    for kw in sorted(all_keywords, key=len, reverse=True)[:10]:
-        escaped = kw.replace('_', '\\_').replace('%', '\\%')
-        trade_conds.append(ImportedSupplierTrade.raw_trade.ilike('%' + escaped + '%', escape='\\'))
-        trade_conds.append(ImportedSupplierTrade.raw_brands.ilike('%' + escaped + '%', escape='\\'))
-
-    org_desc_conds = []
-    for kw in sorted(all_keywords, key=len, reverse=True)[:8]:
-        escaped = kw.replace('_', '\\_').replace('%', '\\%')
-        org_desc_conds.append(Organization.description.ilike('%' + escaped + '%', escape='\\'))
-
-    candidate_sources = [
-        select(Capability.id).where(Capability.org_id == Organization.id, relevant).exists(),
-        select(RFQMatch.id).where(RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id == Organization.id).exists(),
+    # Set-based UNION of indexed candidate org_id sources so PostgreSQL uses Index Scans
+    # rather than a full sequential scan over all organizations with OR EXISTS.
+    union_branches = [
+        select(RFQMatch.supplier_org_id.label('id')).where(RFQMatch.rfq_id == rfq.id),
     ]
-    if pricebook_conds:
-        candidate_sources.append(
-            select(PriceBookItem.id).where(
-                PriceBookItem.org_id == Organization.id,
+    if sub_ids:
+        union_branches.append(
+            select(Capability.org_id.label('id')).where(Capability.category_id.in_(sub_ids))
+        )
+    if main_ids:
+        if include_root_only:
+            union_branches.append(
+                select(Capability.org_id.label('id')).where(Capability.category_id.in_(main_ids))
+            )
+        else:
+            union_branches.append(
+                select(Capability.org_id.label('id')).where(
+                    Capability.category_id.in_(main_ids),
+                    func.coalesce(Capability.trade_keywords, '') != '',
+                )
+            )
+    if exact_material_ids:
+        mat_preds = [material_link(db, mid) for mid in sorted(exact_material_ids)]
+        union_branches.append(
+            select(Capability.org_id.label('id')).where(or_(*mat_preds))
+        )
+        union_branches.append(
+            select(PriceBookItem.org_id.label('id')).where(
                 PriceBookItem.active.is_(True),
-                or_(*pricebook_conds),
-            ).exists()
+                PriceBookItem.material_id.in_(exact_material_ids),
+            )
         )
-    if trade_conds:
-        candidate_sources.append(
-            select(ImportedSupplierTrade.id).where(
-                ImportedSupplierTrade.org_id == Organization.id,
-                or_(*trade_conds),
-            ).exists()
+    if sub_ids:
+        union_branches.append(
+            select(PriceBookItem.org_id.label('id')).where(
+                PriceBookItem.active.is_(True),
+                PriceBookItem.subcategory_id.in_(sub_ids),
+            )
         )
-    if org_desc_conds:
-        candidate_sources.append(
-            or_(*org_desc_conds)
-            & select(Capability.id).where(Capability.org_id == Organization.id).exists()
+    if use_keyword_discovery and all_keywords:
+        top_kw = sorted(all_keywords, key=len, reverse=True)[:8]
+        kw_cap_preds = []
+        kw_pb_preds = []
+        kw_trade_preds = []
+        for kw in top_kw:
+            escaped = kw.replace('_', '\\_').replace('%', '\\%')
+            pattern = '%' + escaped + '%'
+            kw_cap_preds.append(Capability.trade_keywords.ilike(pattern, escape='\\'))
+            kw_pb_preds.append(PriceBookItem.supplier_description.ilike(pattern, escape='\\'))
+            kw_trade_preds.append(ImportedSupplierTrade.raw_trade.ilike(pattern, escape='\\'))
+        union_branches.append(select(Capability.org_id.label('id')).where(or_(*kw_cap_preds)))
+        union_branches.append(
+            select(PriceBookItem.org_id.label('id')).where(
+                PriceBookItem.active.is_(True),
+                or_(*kw_pb_preds),
+            )
         )
+        union_branches.append(select(ImportedSupplierTrade.org_id.label('id')).where(or_(*kw_trade_preds)))
 
-    candidate_query = (
-        select(Organization.id)
-        .where(
-            or_(*candidate_sources),
-            Organization.id != rfq.buyer_org_id,
-        )
-    )
-    if after_supplier_id:
-        candidate_query = candidate_query.where(Organization.id > after_supplier_id)
-    candidate_query = candidate_query.order_by(Organization.id)
     if supplier_ids is not None:
-        candidate_query = candidate_query.where(Organization.id.in_(supplier_ids))
-    if bounded:
-        candidate_query = candidate_query.limit(batch_size + 1)
+        # Targeted evaluation (e.g. eligible_supplier_ids) already knows the exact org IDs.
+        candidate_query = (
+            select(Organization.id)
+            .where(
+                Organization.id.in_(supplier_ids),
+                Organization.id != rfq.buyer_org_id,
+            )
+            .order_by(Organization.id)
+        )
+    else:
+        combined = union(*union_branches).subquery('candidate_orgs')
+        candidate_query = (
+            select(combined.c.id)
+            .where(combined.c.id != rfq.buyer_org_id)
+        )
+        if after_supplier_id:
+            candidate_query = candidate_query.where(combined.c.id > after_supplier_id)
+        candidate_query = candidate_query.order_by(combined.c.id)
+        if bounded:
+            candidate_query = candidate_query.limit(batch_size + 1)
+
     candidate_ids = list(db.scalars(candidate_query).all())
+    # If canonical IDs yielded 0 candidates on the first page and keywords exist, try indexed keyword fallback once.
+    if (
+        not candidate_ids
+        and supplier_ids is None
+        and not after_supplier_id
+        and not use_keyword_discovery
+        and all_keywords
+    ):
+        top_kw = sorted(all_keywords, key=len, reverse=True)[:8]
+        kw_branches = []
+        kw_cap_preds = []
+        kw_pb_preds = []
+        kw_trade_preds = []
+        for kw in top_kw:
+            escaped = kw.replace('_', '\\_').replace('%', '\\%')
+            pattern = '%' + escaped + '%'
+            kw_cap_preds.append(Capability.trade_keywords.ilike(pattern, escape='\\'))
+            kw_pb_preds.append(PriceBookItem.supplier_description.ilike(pattern, escape='\\'))
+            kw_trade_preds.append(ImportedSupplierTrade.raw_trade.ilike(pattern, escape='\\'))
+        kw_branches.append(select(Capability.org_id.label('id')).where(or_(*kw_cap_preds)))
+        kw_branches.append(
+            select(PriceBookItem.org_id.label('id')).where(
+                PriceBookItem.active.is_(True),
+                or_(*kw_pb_preds),
+            )
+        )
+        kw_branches.append(select(ImportedSupplierTrade.org_id.label('id')).where(or_(*kw_trade_preds)))
+        kw_combined = union(*kw_branches).subquery('kw_candidate_orgs')
+        kw_query = select(kw_combined.c.id).where(kw_combined.c.id != rfq.buyer_org_id).order_by(kw_combined.c.id)
+        if bounded:
+            kw_query = kw_query.limit(batch_size + 1)
+        candidate_ids = list(db.scalars(kw_query).all())
+
     has_more = bounded and len(candidate_ids) > batch_size
     if bounded:
         candidate_ids = candidate_ids[:batch_size]
 
-    # Batch-fetch capabilities, organizations, pricebook items, and imported trades (no N+1)
-    candidate_page = (candidate_query.limit(batch_size) if bounded else candidate_query).subquery()
+    # Batch-fetch capabilities, organizations, pricebook items, and imported trades (no N+1, no duplicate candidate scan)
     rows = db.execute(
         select(Capability, Organization)
         .join(Organization, Organization.id == Capability.org_id)
-        .join(candidate_page, candidate_page.c.id == Organization.id)
+        .where(Capability.org_id.in_(candidate_ids))
     ).all() if candidate_ids else []
 
     suppliers_caps: dict[str, list[Capability]] = {}
@@ -583,9 +633,12 @@ def _match_batch(
             'approved_caps': matching_caps,
         }
 
-    # AI-assisted semantic matching ONLY for unresolved items (0 deterministic eligible suppliers)
+    # AI-assisted semantic matching ONLY for unresolved items without canonical IDs (never slows canonical matching)
     covered_by_any = {item_id for cand in eligible_candidates.values() for item_id in cand['covered']}
-    unresolved_item_ids = [item_id for item_id in item_scope if item_id not in covered_by_any]
+    unresolved_item_ids = [
+        item_id for item_id in item_scope
+        if item_id not in covered_by_any and not item_scope[item_id][0]
+    ]
     settings = get_settings()
     if semantic_enabled and unresolved_item_ids and not evaluate_only and getattr(settings, 'gemini_enabled', True) and settings.gemini_api_key.get_secret_value():
         # If ai_pool_orgs is empty, fetch a small bounded slice of active approved suppliers covering the RFQ city

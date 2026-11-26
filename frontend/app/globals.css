@@ -671,3 +671,9 @@ input::placeholder,textarea::placeholder{color:#4b5563;opacity:1}
 .category-duplicates summary{cursor:pointer;font-weight:600}
 .category-duplicates li{overflow-wrap:anywhere}
 @media(max-width:640px){.material-bulk-dialog .admin-modal-footer{flex-wrap:wrap}.material-bulk-dialog .admin-modal-footer button{flex:1;white-space:normal}.material-bulk-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+@media print {
+  .app-topbar, .side-nav, .side-mobile, .page-head, .no-print { display: none !important; }
+  .app-frame, .app-layout, .app-content { background: #fff !important; padding: 0 !important; margin: 0 !important; }
+  .quotation-print-sheet { border: 0 !important; box-shadow: none !important; padding: 0 !important; }
+}

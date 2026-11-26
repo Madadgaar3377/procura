@@ -13,20 +13,32 @@ from app.modules.imports.router import process_queued_supplier_imports
 from app.modules.imports.supplier_jobs import process_supplier_jobs
 from app.modules.pricebooks.worker import process_pricing_jobs
 from app.modules.rfqs.imports import process_rfq_import_jobs
-from app.worker import process_batch as process_outbox_batch
+from app.notification_worker import process_batch as process_outbox_batch
 
 
-def process_once() -> bool:
-    """An unavailable queue must not starve the other import queues.
+def process_once(*, outbox_only: bool = False) -> bool:
+    """An unavailable queue must not starve the other queues.
 
     Every queue executes in its own session that is always rolled back and
     closed on exit so no idle-in-transaction connection can ever leak.
+    Outbox events (RFQ matching, invitations, auto-quotations, email/SMS)
+    run first so real-time procurement workflows are never starved by bulk imports.
     """
     success = True
     logger = logging.getLogger(__name__)
-    for process in (process_queued_material_imports, process_queued_supplier_imports,
-                    process_supplier_jobs, process_pricing_jobs, process_rfq_import_jobs,
-                    process_outbox_batch):
+    queues = (
+        (process_outbox_batch,)
+        if outbox_only
+        else (
+            process_outbox_batch,
+            process_pricing_jobs,
+            process_rfq_import_jobs,
+            process_queued_material_imports,
+            process_queued_supplier_imports,
+            process_supplier_jobs,
+        )
+    )
+    for process in queues:
         db = SessionLocal()
         try:
             started = time.monotonic()
@@ -58,6 +70,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--once', action='store_true', help='Process one bounded chunk and exit')
     parser.add_argument('--interval', type=float, default=1.0)
+    parser.add_argument('--outbox-only', action='store_true', help='Only process outbox events (matching, invitations, quotations, notifications)')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -65,10 +78,10 @@ def main() -> None:
         if not acquired:
             logger.error('Another import worker owns the local queue lock; exiting')
             raise SystemExit(75)
-        logger.info('Import worker started; supplier groups commit independently with short transactions')
+        logger.info('Worker started (outbox_only=%s); queues commit independently with short transactions', args.outbox_only)
         last_heartbeat = time.monotonic()
         while True:
-            success = process_once()
+            success = process_once(outbox_only=args.outbox_only)
             if args.once:
                 if not success:
                     raise SystemExit(1)

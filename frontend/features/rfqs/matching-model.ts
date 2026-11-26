@@ -38,7 +38,7 @@ export function matchEvidence(match: Match): 'material' | 'subcategory' | 'categ
 
 export function matchingState(data?: Schemas['MatchResults'], stalled = false) {
   if (!data) return { label: 'loading', busy: false, inconsistent: false };
-  const busy = ['matching_queued', 'matching_in_progress'].includes(data.progress);
+  const busy = ['published', 'matching_queued', 'matching_in_progress'].includes(data.progress);
   const eligible = data.matches.filter(isRecommended).length;
   const inconsistent = (data.progress === 'no_eligible_suppliers' && (eligible > 0 || (data.matched_suppliers || 0) > 0))
     || (data.matched_suppliers === 0 && eligible > 0)
@@ -47,6 +47,7 @@ export function matchingState(data?: Schemas['MatchResults'], stalled = false) {
     : data.progress === 'matching_failed' ? 'failed'
     : data.progress === 'matching_queued' || data.progress === 'published' ? 'queued'
     : data.progress === 'matching_in_progress' ? 'processing'
+    : data.progress === 'no_eligible_suppliers' ? 'no_eligible'
     : data.progress === 'draft' ? 'draft'
     : data.progress === 'closed' ? 'closed' : 'completed';
   return { label, busy: busy && !stalled && !inconsistent, inconsistent };

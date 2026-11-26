@@ -142,13 +142,27 @@ def deliver(db,event,now):
             raise core.PermanentOutboxError('FRONTEND_URL must be a secure application URL')
         render_context['url']=base+'/reset-password#token='+recovery['link_token']
     subject,plain,html=render_message(template,render_context,secret)
+    email_attachments=None
+    if channel=='email' and context.get('attach_quotation_pdf') and context.get('quotation_id'):
+        try:
+            from app.models import Quotation, QuoteLine
+            from app.modules.quotations.document import build_quotation_pdf, quotation_document
+            quote=db.get(Quotation,context['quotation_id'])
+            if quote and quote.status!='draft':
+                q_lines=db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()
+                doc=quotation_document(db,quote,q_lines)
+                pdf_bytes=build_quotation_pdf(doc,lang=user.notification_language or 'en')
+                safe_ref=''.join(ch if ch.isalnum() or ch in {'-','_'} else '_' for ch in str(doc.get('quotation_reference') or quote.id))
+                email_attachments=[(f'Quotation-{safe_ref}.pdf',pdf_bytes,'application/pdf')]
+        except Exception as exc:  # noqa: BLE001 - never block email delivery if PDF fails
+            log.warning('Quotation PDF attachment skipped quote_id=%s (%s)',context.get('quotation_id'),type(exc).__name__)
     event.delivery_status='submitting';event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_message_id(event.id)
     delivery_id=event.id
     update_delivery_notification(db,delivery_id,'sending');db.commit()
     if channel=='sms':
         result=send_sms(recipient,plain,delivery_id,ttl_seconds=ttl);event.attempts+=1;apply_sms(db,event,result,now)
     else:
-        event.provider_message_id=send_email(recipient,subject,plain,html,delivery_id);event.attempts+=1
+        event.provider_message_id=send_email(recipient,subject,plain,html,delivery_id,attachments=email_attachments);event.attempts+=1
         event.delivery_status='accepted';event.status='processed';event.next_attempt_at=None
         event.payload={**event.payload,'smtp_accepted':True}
         update_delivery_notification(db,event.id,'accepted')
@@ -216,8 +230,12 @@ def process_batch(db,limit=25,now=None,event_ids=None):
     if event_ids is None:
         from app.modules.notifications.procurement import schedule_reminders
         from app.modules.organizations.auto_approval import run_auto_approval_sweep
-        schedule_reminders(db,now)
-        run_auto_approval_sweep(db,now)
+        for sweep in (schedule_reminders, run_auto_approval_sweep):
+            try:
+                sweep(db, now)
+            except Exception as exc:  # noqa: BLE001 - isolate background sweeps from outbox queue
+                db.rollback()
+                log.warning('Background sweep=%s failed (%s)', sweep.__name__, type(exc).__name__)
     due=or_(Outbox.next_attempt_at.is_(None),Outbox.next_attempt_at<=now)
     eligible=or_(and_(Outbox.status.in_({'pending','retry','awaiting_status'}),due),and_(Outbox.status=='processing',or_(Outbox.lock_until.is_(None),Outbox.lock_until<=now)))
     query=select(Outbox.id).where(eligible)

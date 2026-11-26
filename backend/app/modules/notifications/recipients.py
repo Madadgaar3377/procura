@@ -86,6 +86,15 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
         account_optouts = {'email': set(), 'sms': set()}
         # Authorized account roles are primary procurement fallbacks, never viewers.
         for member, user in account_fallbacks:
+            # A supplier employee with an assigned contact scope must not become
+            # a company-wide fallback for a different RFQ item.
+            if member.role == 'supplier' and contacts:
+                ranked_destinations = {
+                    contact.email.strip().casefold() for _, _, _, contact in ranked
+                    if contact.email
+                }
+                if not user.email or user.email.strip().casefold() not in ranked_destinations:
+                    continue
             prefs = db.get(AccountPreference, user.id)
             if prefs and not prefs.events.get(template, True):
                 for channel,value in [('email',user.email),('sms',user.phone_e164)]:
@@ -117,8 +126,11 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
                     reasons[channel].append(blocked)
                     continue
                 selected = {'destination': destination, 'contact_id': contact_id, 'contact_name': name,
-                            'recipient_source': source, 'user_id': user_id}
-                if not any(r['destination'] == destination for r in output[channel]):
+                            'recipient_source': source, 'user_id': user_id, 'item_ids': [item.id]}
+                existing = next((r for r in output[channel] if r['destination'] == destination), None)
+                if existing:
+                    if item.id not in existing['item_ids']:existing['item_ids'].append(item.id)
+                else:
                     output[channel].append(selected)
                 break
     for channel in output:
@@ -134,6 +146,7 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
 def enqueue(db, *, org_id, template, context, source_key):
     context={**context, 'supplier_name':db.get(Organization,org_id).name}
     recipients = resolve(db, org_id, context['rfq_id'], template)
+    rfq_items={item.id:item for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==context['rfq_id']))}
     for channel, rows in recipients.items():
         for recipient in rows:
             suffix = sha256(recipient.get('destination', 'skipped').encode()).hexdigest()
@@ -141,10 +154,14 @@ def enqueue(db, *, org_id, template, context, source_key):
             if db.scalar(select(Outbox.id).where(Outbox.dedupe_key == key)):
                 continue
             skip = recipient.get('skip_reason')
+            relevant=[rfq_items[item_id] for item_id in recipient.get('item_ids',[]) if item_id in rfq_items]
+            recipient_context={**context,'materials':[
+                {'description':item.description,'quantity':str(item.quantity),'unit':item.unit}
+                for item in relevant]}
             db.add(Outbox(event='notification.delivery', dedupe_key=key,
                 status='skipped' if skip else 'pending', delivery_status=skip,
                 payload={'channel': channel, 'template': template, 'procurement_recipient': True,
-                         **recipient, 'context': context}))
+                         **recipient, 'context': recipient_context}))
     db.flush()
 
 

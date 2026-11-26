@@ -40,7 +40,7 @@ function RFQWizardForm({id}:{id?:string}) {
  const [showBatchByCategory,setShowBatchByCategory]=useState(false);
  const [importOpen,setImportOpen]=useState(false);
  const [fieldErrors,setFieldErrors]=useState<Record<string,string>>({});
- const [savedId,setSavedId]=useState(id);const [pendingPublication,setPendingPublication]=useState(false);const initialized=useRef<string|undefined>(undefined);const submitting=useRef(false);
+ const [savedId,setSavedId]=useState(id);const [requestId,setRequestId]=useState('');const [pendingPublication,setPendingPublication]=useState(false);const initialized=useRef<string|undefined>(undefined);const submitting=useRef(false);
  const [items,setItems]=useState<MaterialLine[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const taxonomy=useApi<Schemas['CategoryOut'][]>('taxonomy/categories');
  const units=useApi<{code:string;name_en:string}[]>('taxonomy/units');
@@ -58,40 +58,45 @@ function RFQWizardForm({id}:{id?:string}) {
      if(typeof saved.savedId==='string'&&saved.savedId){
       try{const existing=await api<Schemas['RFQDetail']>(`rfqs/${encodeURIComponent(saved.savedId)}`);
        if(existing.rfq.buyer_org_id===org!.id&&existing.rfq.status==='draft')editableId=existing.rfq.id;
-       else if(existing.rfq.buyer_org_id===org!.id&&saved.pendingPublication&&['published','collecting_quotes'].includes(existing.rfq.status)){
+       else if(existing.rfq.buyer_org_id===org!.id&&['published','collecting_quotes'].includes(existing.rfq.status)){
         sessionStorage.removeItem(localDraftKey);window.location.assign(`/app/buyer/matches?rfq=${encodeURIComponent(existing.rfq.id)}`);return;
        }
       }catch(cause){if(!(cause instanceof ApiError)||cause.status!==404)throw cause;}
      }
      if(!active)return;
-     setItems(saved.items);setTitle(saved.title||'');setCity(saved.city||'');setDeadline(saved.deadline||'');setProjectName(saved.projectName||'');setDeliveryDate(saved.deliveryDate||'');setInstructions(saved.instructions||'');setSavedId(editableId);setPendingPublication(false);
+     setItems(saved.items);setTitle(saved.title||'');setCity(saved.city||'');setDeadline(saved.deadline||'');setProjectName(saved.projectName||'');setDeliveryDate(saved.deliveryDate||'');setInstructions(saved.instructions||'');setSavedId(editableId);setRequestId(saved.requestId||crypto.randomUUID());setPendingPublication(false);
     }
+    else setRequestId(crypto.randomUUID());
     checked=true;
    }catch{if(active)setError('Could not check the saved draft. Please retry before publishing.');}
    finally{if(active&&checked)setLocalRestored(true);}
   }
   void restore();return()=>{active=false};
  },[id,localDraftKey,org?.id]);
- useEffect(()=>{if(id||!localRestored)return;try{sessionStorage.setItem(localDraftKey,JSON.stringify({items,title,city,deadline,projectName,deliveryDate,instructions,savedId,pendingPublication}));}catch{}},[id,localRestored,localDraftKey,items,title,city,deadline,projectName,deliveryDate,instructions,savedId,pendingPublication]);
+ useEffect(()=>{if(id||!localRestored)return;try{sessionStorage.setItem(localDraftKey,JSON.stringify({items,title,city,deadline,projectName,deliveryDate,instructions,savedId,requestId,pendingPublication}));}catch{}},[id,localRestored,localDraftKey,items,title,city,deadline,projectName,deliveryDate,instructions,savedId,requestId,pendingPublication]);
  useEffect(()=>{if(draft.data&&initialized.current!==id){initialized.current=id;const d=draft.data;setTitle(d.rfq.title);setProjectName(d.rfq.project_name||'');setDeliveryDate(d.rfq.required_delivery_date||'');setInstructions(d.rfq.additional_instructions||'');setCity(d.rfq.city);setDeadline(new Date(new Date(d.rfq.response_deadline).getTime()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16));setItems(d.items.map(i=>({key:i.id,material_id:i.material_id,main_category_id:i.main_category_id,subcategory_id:i.subcategory_id,description:i.description,specifications:i.specifications,unit:i.unit,quantity:i.quantity})));}},[draft.data]);
  async function save(publish:boolean){if(submitting.current||!org||(!id&&!localRestored)||draft.loading)return;setRetryPublish(publish);submitting.current=true;setBusy(true);setError('');try{
-  const body:Schemas['RFQIn']={buyer_org_id:org.id,title,city,project_name:projectName,required_delivery_date:deliveryDate||null,additional_instructions:instructions,response_deadline:new Date(deadline).toISOString(),required_qualifications:draft.data?.rfq.required_qualifications||[],items:items.map(({key,...item})=>item)};
+  const body:Schemas['RFQIn']={buyer_org_id:org.id,client_request_id:id?undefined:requestId,title,city,project_name:projectName,required_delivery_date:deliveryDate||null,additional_instructions:instructions,response_deadline:new Date(deadline).toISOString(),required_qualifications:draft.data?.rfq.required_qualifications||[],items:items.map(({key,...item})=>item)};
   let editableId=savedId;
   if(editableId){
    try{const existing=await api<Schemas['RFQDetail']>(`rfqs/${encodeURIComponent(editableId)}`);
     if(existing.rfq.buyer_org_id!==org.id)throw new Error('Select the buyer organization that owns this RFQ.');
     if(existing.rfq.status!=='draft'){
-     if(publish&&pendingPublication&&['published','collecting_quotes'].includes(existing.rfq.status)){sessionStorage.removeItem(localDraftKey);window.location.assign(`/app/buyer/matches?rfq=${encodeURIComponent(editableId)}`);return;}
+     if(['published','collecting_quotes'].includes(existing.rfq.status)){sessionStorage.removeItem(localDraftKey);window.location.assign(`/app/buyer/matches?rfq=${encodeURIComponent(editableId)}`);return;}
      if(id)throw new Error('This RFQ is already published. Open its matching results.');
      editableId=undefined;setSavedId(undefined);
     }
    }catch(cause){if(cause instanceof ApiError&&cause.status===404&&!id){editableId=undefined;setSavedId(undefined);}else throw cause;}
   }
-  const result=await api<Schemas['RFQDetail']>(editableId?`rfqs/${editableId}`:'rfqs',{method:editableId?'PUT':'POST',body:json(body)});
+  let result=await api<Schemas['RFQDetail']>(editableId?`rfqs/${editableId}`:'rfqs',{method:editableId?'PUT':'POST',body:json(body)});
+  if(['published','collecting_quotes'].includes(result.rfq.status)){sessionStorage.removeItem(localDraftKey);window.location.assign(`/app/buyer/matches?rfq=${encodeURIComponent(result.rfq.id)}`);return;}
+  // A replayed create can return the server's earlier snapshot after the buyer
+  // edits the form. Save the current form against that same draft ID.
+  if(!editableId){result=await api<Schemas['RFQDetail']>(`rfqs/${result.rfq.id}`,{method:'PUT',body:json(body)});}
   setSavedId(result.rfq.id);
-  try{sessionStorage.setItem(localDraftKey,JSON.stringify({items,title,city,deadline,projectName,deliveryDate,instructions,savedId:result.rfq.id,pendingPublication:false}));}catch{}
+  try{sessionStorage.setItem(localDraftKey,JSON.stringify({items,title,city,deadline,projectName,deliveryDate,instructions,savedId:result.rfq.id,requestId,pendingPublication:false}));}catch{}
   for(const file of files){const body=new FormData();body.set('file',file);await upload(`rfqs/${result.rfq.id}/attachments`,body,percent=>setUploadProgress({name:file.name,percent}));setFiles(previous=>previous.filter(entry=>entry!==file));}
-  if(publish){setPendingPublication(true);try{sessionStorage.setItem(localDraftKey,JSON.stringify({items,title,city,deadline,projectName,deliveryDate,instructions,savedId:result.rfq.id,pendingPublication:true}));}catch{}
+  if(publish){setPendingPublication(true);try{sessionStorage.setItem(localDraftKey,JSON.stringify({items,title,city,deadline,projectName,deliveryDate,instructions,savedId:result.rfq.id,requestId,pendingPublication:true}));}catch{}
    try{await api(`rfqs/${result.rfq.id}/publish`,{method:'POST'});}catch(cause){
     const existing=await api<Schemas['RFQDetail']>(`rfqs/${encodeURIComponent(result.rfq.id)}`);
     if(!['published','collecting_quotes'].includes(existing.rfq.status))throw cause;
@@ -99,7 +104,14 @@ function RFQWizardForm({id}:{id?:string}) {
   }
   try{sessionStorage.removeItem(localDraftKey);}catch{}
   window.location.assign(publish?`/app/buyer/matches?rfq=${encodeURIComponent(result.rfq.id)}`:`/app/buyer/rfqs/${result.rfq.id}`);
- }catch(e){setError(e instanceof ApiError&&e.status===409?'This RFQ changed. Refresh its status before trying again.':e instanceof Error?e.message:'Could not save RFQ');if(e instanceof ApiError){setFieldErrors(e.fieldErrors);if(Object.keys(e.fieldErrors).length)setStep(Object.keys(e.fieldErrors).some(key=>key.startsWith('items.'))?1:0);}}finally{submitting.current=false;setBusy(false);setUploadProgress(null);}}
+ }catch(e){
+  if(e instanceof ApiError&&e.status===409&&savedId){
+   try{const current=await api<Schemas['RFQDetail']>(`rfqs/${encodeURIComponent(savedId)}`);
+    if(['published','collecting_quotes'].includes(current.rfq.status)){sessionStorage.removeItem(localDraftKey);window.location.assign(`/app/buyer/matches?rfq=${encodeURIComponent(savedId)}`);return;}
+   }catch{}
+  }
+  setError(e instanceof ApiError&&e.status===409?'This RFQ changed. Refresh its status before trying again.':e instanceof Error?e.message:'Could not save RFQ');if(e instanceof ApiError){setFieldErrors(e.fieldErrors);if(Object.keys(e.fieldErrors).length)setStep(Object.keys(e.fieldErrors).some(key=>key.startsWith('items.'))?1:0);}
+ }finally{submitting.current=false;setBusy(false);setUploadProgress(null);}}
  if(!org)return <State error={new Error('Create a buyer company before creating an RFQ.')}/>;
  if(id&&draft.data&&draft.data.rfq.buyer_org_id!==org.id)return <State error={new Error('Select the buyer organization that owns this RFQ.')}/>;
  const names=new Map((taxonomy.data||[]).map(c=>[c.id,c.name_en]));

@@ -1,6 +1,7 @@
 """Rate-prefilled drafts and fail-closed, explicitly authorized submission."""
 from datetime import datetime,timezone
 from decimal import Decimal
+import re
 from sqlalchemy import select,func,or_
 from app.models import Invitation,Quotation,QuoteLine,RFQ,RFQItem,Material,PriceBookItem,Organization,Capability,Category,Member,User,Notification,Outbox
 from app.modules.materials.service import normalize_text,normalize_unit
@@ -20,12 +21,18 @@ def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True)
     for item in items:
         material=materials.get(item.material_id);rate=by_material.get(item.material_id)
         if not material or not material.active or not rate:reasons.append(f'Missing active price for item {item.id}');continue
+        if rate.availability=='unavailable':reasons.append(f'Saved price is unavailable for item {item.id}');continue
         if normalize_unit(item.unit)!=rate.unit or normalize_unit(material.unit)!=rate.unit:reasons.append(f'Unit mismatch for item {item.id}');continue
         if material.version!=rate.material_version:reasons.append(f'Saved price needs review for changed Material Master item {item.id}');continue
         if rate.min_order_quantity and Decimal(item.quantity)<rate.min_order_quantity:reasons.append(f'Quantity below saved minimum for item {item.id}');continue
         descriptions={normalize_text(v) for v in (material.name_en,material.name_ar,rate.offered_description,rate.supplier_description) if v}
         if normalize_text(item.description) not in descriptions:reasons.append(f'Description requires technical review for item {item.id}');continue
         if item.specifications.strip() and normalize_text(item.specifications)!=normalize_text(rate.offered_specs):reasons.append(f'Specification mismatch for item {item.id}');continue
+        brand_requirement=re.search(r'\bbrands?\s*:\s*([^;\n]+)',f'{item.description}\n{item.specifications}',re.I)
+        if brand_requirement:
+            permitted={normalize_text(value) for value in re.split(r'[,/|]',brand_requirement.group(1)) if value.strip()}
+            if normalize_text(rate.brand) not in permitted:
+                reasons.append(f'Brand requirement mismatch for item {item.id}');continue
         if rate.unit_price<=0:reasons.append(f'Invalid saved price for item {item.id}');continue
         if currency and rate.currency!=currency:reasons.append(f'Currency mismatch for item {item.id}; no currency conversion authorized');continue
         currency=rate.currency
@@ -51,8 +58,6 @@ def prepare_invitation_quote(db, invitation_id):
     if not inv or inv.status not in {'invited','accepted'}:return None
     rfq=db.get(RFQ,inv.rfq_id)
     if not rfq or rfq.status not in {'published','collecting_quotes'} or utc(rfq.response_deadline)<=datetime.now(timezone.utc):return None
-    from app.modules.notifications.procurement import eligible_orgs
-    if inv.supplier_org_id not in eligible_orgs(db,rfq,[inv.supplier_org_id]):return None
     from app.modules.notifications.procurement import eligible_orgs
     if inv.supplier_org_id not in eligible_orgs(db,rfq,[inv.supplier_org_id]):return None
     quote=prepare_authorized_quote(db,invitation_id)
@@ -81,17 +86,23 @@ def prepare_authorized_quote(db,invitation_id):
     if old:return old # Never overwrite or automatically submit an existing reviewed/manual draft.
     rfq=db.get(RFQ,inv.rfq_id)
     if not rfq or rfq.status not in {'published','collecting_quotes'} or utc(rfq.response_deadline)<=datetime.now(timezone.utc):return None
-    quote=build_draft(db,inv,basis=policy.get('price_basis','supply'),automatic=True);quote.policy_revision=policy.get('revision')
+    quote=build_draft(db,inv,basis=policy.get('price_basis','supply'),automatic=True,allow_empty=False)
+    if not quote:return None
+    quote.policy_revision=policy.get('revision')
     actor=db.get(User,policy.get('authorized_by'));reasons=[]
     if not actor or not actor.is_active or not actor.phone_verified or not db.scalar(select(Member.id).where(Member.user_id==actor.id,Member.organization_id==org.id,Member.role.in_({'owner','manager'}))):reasons.append('Automatic authorization owner no longer has permission')
     if not policy.get('confirm_terms') or not org.is_active or not org.is_supplier or org.verified_status!='verified':reasons.append('Company verification or authorization is no longer valid')
     if not policy.get('valid_until') or utc(datetime.fromisoformat(policy['valid_until']))<=datetime.now(timezone.utc):reasons.append('Automatic authorization expired')
-    if rfq.city.casefold() not in {c.casefold() for c in policy.get('service_cities',[])}:reasons.append('RFQ service city is outside the authorized coverage')
+    from app.modules.matching.service import city_covered_by
+    if rfq.city and rfq.city.strip():
+        if not any(city_covered_by(rfq.city, c)[0] for c in (policy.get('service_cities') or [])):
+            reasons.append('RFQ service city is outside the authorized coverage')
     items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()
     lines={line.rfq_item_id:line for line in db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()}
     materials={m.id:m for m in db.scalars(select(Material).where(Material.id.in_([i.material_id for i in items if i.material_id]))).all()}
     rates={r.id:r for r in db.scalars(select(PriceBookItem).where(PriceBookItem.id.in_([l.source_rate_id for l in lines.values() if l.source_rate_id]))).all()}
-    caps=db.scalars(select(Capability).where(Capability.org_id==org.id,*eligibility_predicates(),func.lower(Capability.city)==rfq.city.casefold())).all()
+    all_caps=db.scalars(select(Capability).where(Capability.org_id==org.id,*eligibility_predicates())).all()
+    caps=[c for c in all_caps if city_covered_by(rfq.city, c.city)[0]]
     required={q.strip().casefold() for q in (rfq.required_qualifications or [])}
     allowed={c.category_id for c in caps if required.issubset({q.strip().casefold() for q in (c.qualifications or [])})}
     for item in items:
@@ -100,6 +111,7 @@ def prepare_authorized_quote(db,invitation_id):
         main,sub=category_pair(db,material)
         if item.material_id not in policy.get('material_ids',[]) or (sub or main) not in allowed or item.main_category_id not in {None,main} or item.subcategory_id not in {None,sub}:reasons.append('Requested material or category is outside approved coverage')
         if not rate.technical_confirmed or rate.material_version!=material.version or not rate.valid_until or utc(rate.valid_until)<=datetime.now(timezone.utc):reasons.append('A saved rate requires technical or validity review')
+        if rate.availability!='available':reasons.append('Saved rate availability requires supplier confirmation')
         if normalize_text(item.description)!=normalize_text(material.name_en) or item.specifications.strip() or (rate.offered_description and normalize_text(rate.offered_description)!=normalize_text(material.name_en)) or (rate.supplier_description and normalize_text(rate.supplier_description)!=normalize_text(material.name_en)):reasons.append('Buyer description or specifications require manual technical confirmation')
         if normalize_unit(item.unit)!=rate.unit or rate.unit!=normalize_unit(material.unit) or rate.price_basis!=policy.get('price_basis') or rate.currency!='SAR':reasons.append('Unit, currency or price basis mismatch')
         if Decimal(item.quantity)>Decimal(str(policy.get('max_quantity') or 0)):reasons.append('Requested quantity exceeds the authorized limit')

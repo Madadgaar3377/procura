@@ -70,10 +70,11 @@ def listing(db,user,org_id,q,main_category_id,subcategory_id,status,limit,offset
     now=datetime.now(timezone.utc)
     valid=or_(PriceBookItem.valid_until.is_(None),PriceBookItem.valid_until>now)
     current=or_(PriceBookItem.material_id.is_(None),and_(Material.active.is_(True),Material.version==PriceBookItem.material_version,func.upper(func.trim(Material.unit))==PriceBookItem.unit))
-    if status=='active':query=query.where(PriceBookItem.active.is_(True),valid,current)
+    if status=='active':query=query.where(PriceBookItem.active.is_(True),valid,current,PriceBookItem.availability=='available')
     elif status=='inactive':query=query.where(PriceBookItem.active.is_(False))
     elif status=='expired':query=query.where(PriceBookItem.active.is_(True),PriceBookItem.valid_until<=now)
-    elif status=='review':query=query.where(PriceBookItem.active.is_(True),valid,~current)
+    elif status=='review':query=query.where(PriceBookItem.active.is_(True),valid,or_(~current,PriceBookItem.availability.in_({'unknown','limited'})))
+    elif status=='unavailable':query=query.where(PriceBookItem.active.is_(True),PriceBookItem.availability=='unavailable')
     total=int(db.scalar(select(func.count()).select_from(query.subquery())) or 0)
     rows=db.execute(query.order_by(PriceBookItem.created_at.desc(),PriceBookItem.id).limit(limit).offset(offset)).all()
     ids={key for p,m in rows for key in [p.main_category_id,p.subcategory_id,*([m.category_id,m.main_category_id,m.subcategory_id] if m else [])] if key}
@@ -83,11 +84,11 @@ def listing(db,user,org_id,q,main_category_id,subcategory_id,status,limit,offset
     return {'items':[rate_record(db,p,m,cats) for p,m in rows],'total':total,'limit':limit,'offset':offset}
 
 @router.get('/{org_id}/page',response_model=PricePage)
-def page(org_id:str,q:str=Query('',max_length=200),main_category_id:str|None=None,subcategory_id:str|None=None,status:str=Query('all',pattern='^(all|active|inactive|expired|review)$'),limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
+def page(org_id:str,q:str=Query('',max_length=200),main_category_id:str|None=None,subcategory_id:str|None=None,status:str=Query('all',pattern='^(all|active|inactive|expired|review|unavailable)$'),limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
     return listing(db,user,org_id,q,main_category_id,subcategory_id,status,limit,offset)
 
 @router.get('/{org_id}',response_model=list[PriceOut])
-def list_private(org_id:str,q:str=Query('',max_length=200),main_category_id:str|None=None,subcategory_id:str|None=None,status:str=Query('all',pattern='^(all|active|inactive|expired|review)$'),limit:int=Query(100,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
+def list_private(org_id:str,q:str=Query('',max_length=200),main_category_id:str|None=None,subcategory_id:str|None=None,status:str=Query('all',pattern='^(all|active|inactive|expired|review|unavailable)$'),limit:int=Query(100,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
     return listing(db,user,org_id,q,main_category_id,subcategory_id,status,limit,offset)['items']
 
 @router.put('/{price_id}',response_model=PriceOut)

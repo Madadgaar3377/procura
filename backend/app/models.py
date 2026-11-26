@@ -485,6 +485,7 @@ class PriceBookItem(TimeID, Base):
 
     unit: Mapped[str] = mapped_column(String(30), default='')
     currency: Mapped[str] = mapped_column(String(5), default='SAR', server_default='SAR')
+    availability: Mapped[str] = mapped_column(String(20), default='unknown', server_default='unknown')
     price_basis: Mapped[str] = mapped_column(String(30), default='supply', server_default='supply')
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
     offered_description: Mapped[str] = mapped_column(Text, default='', server_default='')
@@ -495,9 +496,12 @@ class PriceBookItem(TimeID, Base):
 
 class RFQ(TimeID, Base):
     __tablename__='rfqs'
+    __table_args__=(Index('uq_rfq_buyer_request','buyer_org_id','client_request_id',unique=True,
+        sqlite_where=text('client_request_id IS NOT NULL'),postgresql_where=text('client_request_id IS NOT NULL')),)
     public_display_authorized: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
     reference: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     buyer_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
+    client_request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     title: Mapped[str] = mapped_column(String(250))
     city: Mapped[str] = mapped_column(String(120))
     response_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True))

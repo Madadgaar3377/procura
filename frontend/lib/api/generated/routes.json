@@ -529,6 +529,12 @@
   "matching/rfqs/{rfq_id}/results": [
     "GET"
   ],
+  "matching/rfqs/{rfq_id}/quotations-summary": [
+    "GET"
+  ],
+  "matching/rfqs/{rfq_id}/notifications-status": [
+    "GET"
+  ],
   "matching/invitations": [
     "GET"
   ],
@@ -600,6 +606,9 @@
     "PUT"
   ],
   "quotations/{quotation_id}": [
+    "GET"
+  ],
+  "quotations/{quotation_id}/export.pdf": [
     "GET"
   ],
   "quotations/{quotation_id}/submit": [

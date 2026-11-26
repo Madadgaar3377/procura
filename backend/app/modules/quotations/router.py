@@ -29,8 +29,18 @@ def invoice(db,quote,lines=None):
     if lines is None:
         lines=db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()
     subtotal=sum((Decimal(l.quantity)*Decimal(l.unit_price) for l in lines),Decimal('0')).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
-    vat=sum((Decimal(l.quantity)*Decimal(l.unit_price)*Decimal(l.vat_rate if l.vat_rate is not None else quote.vat_rate) for l in lines),Decimal('0')).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
-    return {'subtotal':str(subtotal),'vat':str(vat),'total':str(subtotal+vat),'currency':quote.currency}
+    terms=quote.commercial_terms or {}
+    discount=Decimal(str(terms.get('discount_amount') or '0'))
+    delivery=Decimal(str(terms.get('delivery_charge') or '0'))
+    delivery_vat_rate=Decimal(str(terms.get('delivery_vat_rate') or '0'))
+    if discount<0 or discount>subtotal or delivery<0 or not 0<=delivery_vat_rate<=1:
+        raise HTTPException(422,'Invalid quotation discount or delivery charge')
+    taxable=sum((Decimal(l.quantity)*Decimal(l.unit_price)*Decimal(l.vat_rate if l.vat_rate is not None else quote.vat_rate) for l in lines),Decimal('0'))
+    taxable=(taxable*(subtotal-discount)/subtotal if subtotal else Decimal('0'))+delivery*delivery_vat_rate
+    vat=taxable.quantize(Decimal('.01'),rounding=ROUND_HALF_UP)
+    result={'subtotal':str(subtotal),'vat':str(vat),'total':str(subtotal-discount+delivery+vat),'currency':quote.currency}
+    if discount or delivery:result.update(discount=str(discount),delivery_charge=str(delivery))
+    return result
 
 @router.get('',response_model=list[QuotationSummary])
 def list_quotes(search:ListSearch=Depends(),org_id:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -114,6 +124,44 @@ def get_quote(quotation_id:str,user:User=Depends(current_user),db:Session=Depend
     result['supplier_name']=db.get(Organization,quote.supplier_org_id).name
     result['rfq_reference']=rfq.reference
     return result
+
+
+@router.get('/{quotation_id}/export.pdf')
+def export_quote_pdf(
+    quotation_id: str,
+    lang: str = 'en',
+    template_key: str | None = None,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    """Download a configurable bilingual (EN/AR + RTL) quotation PDF independently from matching."""
+    from io import BytesIO
+    from fastapi.responses import StreamingResponse
+    from app.modules.quotations.document import build_quotation_pdf, quotation_document
+
+    quote = db.get(Quotation, quotation_id)
+    if not quote:
+        raise HTTPException(404, 'Quotation not found')
+    rfq = db.get(RFQ, quote.rfq_id)
+    supplier_role = db.scalar(select(Member.role).join(Organization, Organization.id == Member.organization_id).where(Organization.is_active.is_(True), Member.user_id == user.id, Member.organization_id == quote.supplier_org_id))
+    buyer_role = db.scalar(select(Member.role).join(Organization, Organization.id == Member.organization_id).where(Organization.is_active.is_(True), Member.user_id == user.id, Member.organization_id == rfq.buyer_org_id))
+    supplier_access = supplier_role in {'owner', 'manager', 'supplier'}
+    buyer_access = quote.status in SUBMITTED_STATUSES and buyer_role in {'owner', 'manager', 'buyer'}
+    if not (user.is_admin or supplier_access or buyer_access):
+        raise HTTPException(404, 'Quotation not found')
+    lines = db.scalars(select(QuoteLine).where(QuoteLine.quotation_id == quote.id)).all()
+    doc = quotation_document(db, quote, lines)
+    pdf_bytes = build_quotation_pdf(doc, lang=lang, template_key=template_key)
+    safe_ref = ''.join(ch if ch.isalnum() or ch in {'-', '_'} else '_' for ch in str(doc.get('quotation_reference') or quote.id))
+    filename = f'Quotation-{safe_ref}-{lang}.pdf'
+    return StreamingResponse(
+        BytesIO(pdf_bytes),
+        media_type='application/pdf',
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Cache-Control': 'private, no-store',
+        },
+    )
 
 @router.post('/{quotation_id}/submit')
 def submit(quotation_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -203,7 +251,7 @@ def upload_quote_attachment(quotation_id:str,request:Request,file:UploadFile=Fil
     from app.storage import (ALLOWED_DOCUMENT_TYPES,StorageUnavailable,StorageValidationError,
         build_object_key,cleanup_object_best_effort,safe_filename,upload_file as r2_upload,validate_file_content)
 
-    quote=db.scalar(select(Quotation).where(Quotation.id==quotation_id).with_for_update())
+    quote=db.get(Quotation,quotation_id)
     if not quote:raise HTTPException(404,'Quotation not found')
     org_member(db,user,quote.supplier_org_id,{'owner','manager','supplier'})
     if quote.status!='draft':raise HTTPException(409,'Only draft quotation attachments may be changed')
@@ -222,10 +270,13 @@ def upload_quote_attachment(quotation_id:str,request:Request,file:UploadFile=Fil
     enforce_rate_limit(request,scope='api-r2-upload',identity=user.id,limit=10,window_seconds=60)
     filename=safe_filename(file.filename,suffix)
     key=build_object_key('private/quotation',quote.id,suffix)
+    supplier_org_id=quote.supplier_org_id
+    # Release read transaction before network/disk I/O so no DB lock is held during upload.
+    db.rollback()
     stored=StoredFile(bucket_type='private',object_key=key,original_filename=filename,safe_filename=filename,
         content_type=ct,file_extension=suffix,size_bytes=len(content),visibility='private',
         purpose='quotation_attachment',status='pending_upload',owner_user_id=user.id,
-        uploaded_by_user_id=user.id,organization_id=quote.supplier_org_id,entity_type='quotation',entity_id=quote.id)
+        uploaded_by_user_id=user.id,organization_id=supplier_org_id,entity_type='quotation',entity_id=quotation_id)
     uploaded_to_r2=False
     local_target:Path|None=None
     if settings.r2_enabled:
@@ -237,16 +288,19 @@ def upload_quote_attachment(quotation_id:str,request:Request,file:UploadFile=Fil
             raise HTTPException(503,'File storage is temporarily unavailable') from exc
     else:
         root=(Path(settings.upload_dir).resolve()/'quotation-attachments').resolve()
-        local_target=(root/f'{quote.id}/{uuid4().hex}{suffix}').resolve()
+        local_target=(root/f'{quotation_id}/{uuid4().hex}{suffix}').resolve()
         local_target.parent.mkdir(parents=True,exist_ok=True)
         local_target.write_bytes(content)
         stored.object_key=str(local_target.relative_to(root).as_posix())
         stored.checksum_sha256=sha256(content).hexdigest()
     try:
+        locked_quote=db.scalar(select(Quotation).where(Quotation.id==quotation_id).with_for_update())
+        if not locked_quote or locked_quote.status!='draft':
+            raise HTTPException(409,'Only draft quotation attachments may be changed')
         stored.status='available'
         db.add(stored)
         db.flush()
-        audit(db,user,'quotation.attachment_uploaded',quote.supplier_org_id,quote.id,file_id=stored.id)
+        audit(db,user,'quotation.attachment_uploaded',supplier_org_id,locked_quote.id,file_id=stored.id)
         db.commit()
     except Exception:
         db.rollback()

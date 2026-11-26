@@ -19,6 +19,33 @@ import { AdminMatchingDiagnostics } from './admin-matching-diagnostics';
 
 type Favorite = { supplier_org_id: string; name: string };
 type Translate = (english: string) => string;
+type QuotationBrief = {
+  id: string;
+  supplier_org_id: string;
+  supplier_name: string;
+  status: string;
+  submission_source: string;
+  submitted_at: string | null;
+  currency: string;
+  price_basis: string;
+  covered_items: number;
+  total_items: number;
+  totals: { subtotal: string; vat: string; total: string; currency: string };
+};
+type QuotationsSummary = {
+  rfq_id: string;
+  automatic_quotations: QuotationBrief[];
+  manual_quotations: QuotationBrief[];
+  preparing_automatic_count: number;
+  preparing_manual_count: number;
+  total_submitted: number;
+};
+type NotificationsStatus = {
+  rfq_id: string;
+  total: number;
+  by_status: Record<string, number>;
+  by_channel: { email: Record<string, number>; sms: Record<string, number> };
+};
 
 function SupplierRow({ match, city, favorite, toggle, tr }: {
   match: Match; city?: string; favorite: boolean; toggle: (id: string, saved: boolean) => Promise<void>;
@@ -101,19 +128,21 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
   const [pollRevision, setPollRevision] = useState(0);
 
   const qRfqs = useServerList<Schemas['RFQOut']>(embedded ? null : user.is_admin ? 'rfqs' : org ? `rfqs?org_id=${org.id}` : null, 'Search RFQs');
-  const detail = useApi<Schemas['RFQDetail']>(currentId ? `rfqs/${currentId}` : null);
-  const taxonomy = useApi<Schemas['CategoryOut'][]>(currentId ? 'taxonomy/categories' : null);
+  const detail = useApi<Schemas['RFQDetail']>(currentId ? `rfqs/${currentId}` : null, { staleTimeMs: 60000 });
+  const taxonomy = useApi<Schemas['CategoryOut'][]>(currentId ? 'taxonomy/categories' : null, { staleTimeMs: 600000 });
   const resultPath = (start: number) => `matching/rfqs/${currentId}/results?limit=${PAGE_SIZE}&offset=${start}`;
-  const results = useApi<Schemas['MatchResults']>(currentId ? resultPath(offset) : null);
+  const results = useApi<Schemas['MatchResults']>(currentId ? resultPath(offset) : null, { staleTimeMs: 5000 });
   // Separate invitation paging only needs another bounded request when its page differs.
-  const invitationResults = useApi<Schemas['MatchResults']>(currentId && invitationOffset !== offset ? resultPath(invitationOffset) : null);
+  const invitationResults = useApi<Schemas['MatchResults']>(currentId && invitationOffset !== offset ? resultPath(invitationOffset) : null, { staleTimeMs: 5000 });
+  const quotationsSummary = useApi<QuotationsSummary>(currentId ? `matching/rfqs/${currentId}/quotations-summary` : null, { staleTimeMs: 10000 });
+  const notificationsStatus = useApi<NotificationsStatus>(currentId ? `matching/rfqs/${currentId}/notifications-status` : null, { staleTimeMs: 10000 });
   const progressResult = invitationOffset === offset ? results : invitationResults;
-  const favorites = useApi<Favorite[]>(org ? `organizations/${org.id}/favorites?limit=26&offset=${favoriteOffset}` : null);
+  const favorites = useApi<Favorite[]>(org ? `organizations/${org.id}/favorites?limit=26&offset=${favoriteOffset}` : null, { staleTimeMs: 60000 });
   const rfq = detail.data?.rfq;
   const data = results.data;
   const invitations = progressResult.data?.invitations || [];
   const state = matchingState(data, stalled);
-  const busyProgress = data?.progress === 'matching_queued' || data?.progress === 'matching_in_progress';
+  const busyProgress = data?.progress === 'published' || data?.progress === 'matching_queued' || data?.progress === 'matching_in_progress';
   const [pollState] = useState(() => ({ key: '', started: 0, count: 0 }));
 
   const choose = (value: string) => {
@@ -163,6 +192,7 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
 
   const refresh = () => {
     setStalled(false); setPollRevision(v => v + 1); results.reload(); detail.reload();
+    quotationsSummary.reload(); notificationsStatus.reload();
     if (invitationOffset !== offset) invitationResults.reload();
   };
   const toggleFavorite = async (supplierId: string, saved: boolean) => {
@@ -199,8 +229,9 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
     finally { setReminding(false); }
   };
   const stateLabels: Record<string, string> = {
-    loading: tr('Loading'), queued: tr('Queued'), processing: tr('Processing'),
-    completed: tr('Completed'), failed: tr('Failed'), review: tr('Status needs review'),
+    loading: tr('Matching in progress'), queued: tr('Matching in progress'), processing: tr('Matching in progress'),
+    completed: tr('Matching completed'), no_eligible: tr('No eligible suppliers found'),
+    failed: tr('Matching failed'), review: tr('Status needs review'),
     draft: tr('Draft RFQ'), closed: tr('RFQ closed'),
   };
   const row = (match: Match) => <SupplierRow key={match.id} match={match} city={rfq?.city} favorite={saved(match.supplier_org_id)} toggle={toggleFavorite} tr={tr}/>;
@@ -291,6 +322,69 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
         <nav className={styles.pagination} aria-label={tr('Invitation pages')}><span>{tr('Invitation page')} {Math.floor(invitationOffset / PAGE_SIZE) + 1}</span><div>
           <Button size="sm" variant="outline" disabled={!invitationOffset || progressResult.fetching} onClick={() => { setInvPage({ rfq: currentId, offset: Math.max(0, invitationOffset - PAGE_SIZE) }); setSelectedReminders([]); }}>{t('Previous')}</Button>
           <Button size="sm" variant="outline" disabled={progressResult.fetching || (data?.invited_suppliers != null ? invitationOffset + PAGE_SIZE >= data.invited_suppliers : invitations.length < PAGE_SIZE)} onClick={() => { setInvPage({ rfq: currentId, offset: invitationOffset + PAGE_SIZE }); setSelectedReminders([]); }}>{t('Next')}</Button></div></nav>
+      </section>
+      <section className={styles.progress} aria-label={tr('Automatic quotations')}>
+        <div className={styles.sectionHeader}><div><h2>{tr('Automatic quotations')}</h2>
+          <p>{tr('Submitted quotations generated automatically from authorized supplier Private Price Books.')}</p></div>
+          <span role="status" className={styles.status} data-state={quotationsSummary.data?.automatic_quotations.length ? 'completed' : quotationsSummary.data?.preparing_automatic_count ? 'processing' : 'idle'}>
+            {quotationsSummary.data?.automatic_quotations.length ? tr('Quotations received')
+              : quotationsSummary.data?.preparing_automatic_count ? tr('Quotations being prepared')
+              : tr('No automatic quotations yet')}
+          </span></div>
+        <State loading={quotationsSummary.loading} error={quotationsSummary.error} retry={quotationsSummary.reload}/>
+        {quotationsSummary.data && <>
+          <div className={styles.responseCounts}>
+            <span>{tr('Submitted automatic quotations')}: <b>{quotationsSummary.data.automatic_quotations.length}</b></span>
+            <span>{tr('Automatic drafts pending supplier review')}: <b>{quotationsSummary.data.preparing_automatic_count}</b></span>
+          </div>
+          {quotationsSummary.data.automatic_quotations.length > 0 ? quotationsSummary.data.automatic_quotations.map(q => (
+            <div key={q.id} className={styles.invitationRow}>
+              <span><strong>{q.supplier_name}</strong> · {q.covered_items}/{q.total_items} {t('items')}</span>
+              <span><strong>{q.totals.total} {q.currency}</strong></span>
+              <Link className={styles.profileLink} href={`/app/buyer/quote/${q.id}`}>{t('Open quotation')}<IconArrowUpRight size={15}/></Link>
+            </div>
+          )) : <p className={styles.empty}>{quotationsSummary.data.preparing_automatic_count > 0
+            ? tr('Quotations being prepared from saved supplier rates. Drafts remain private until authorized and submitted.')
+            : tr('No automatic quotations submitted yet.')}</p>}
+        </>}
+      </section>
+      <section className={styles.progress} aria-label={tr('Manual quotations')}>
+        <div className={styles.sectionHeader}><div><h2>{tr('Manual quotations')}</h2>
+          <p>{tr('Quotations prepared and submitted manually by invited suppliers.')}</p></div>
+          <span role="status" className={styles.status} data-state={quotationsSummary.data?.manual_quotations.length ? 'completed' : quotationsSummary.data?.preparing_manual_count ? 'processing' : 'idle'}>
+            {quotationsSummary.data?.manual_quotations.length ? tr('Quotations received')
+              : quotationsSummary.data?.preparing_manual_count ? tr('Quotations being prepared')
+              : tr('No manual quotations yet')}
+          </span></div>
+        <State loading={quotationsSummary.loading} error={quotationsSummary.error} retry={quotationsSummary.reload}/>
+        {quotationsSummary.data && <>
+          <div className={styles.responseCounts}>
+            <span>{tr('Submitted manual quotations')}: <b>{quotationsSummary.data.manual_quotations.length}</b></span>
+            <span>{tr('Manual drafts in progress')}: <b>{quotationsSummary.data.preparing_manual_count}</b></span>
+          </div>
+          {quotationsSummary.data.manual_quotations.length > 0 ? quotationsSummary.data.manual_quotations.map(q => (
+            <div key={q.id} className={styles.invitationRow}>
+              <span><strong>{q.supplier_name}</strong> · {q.covered_items}/{q.total_items} {t('items')}</span>
+              <span><strong>{q.totals.total} {q.currency}</strong></span>
+              <Link className={styles.profileLink} href={`/app/buyer/quote/${q.id}`}>{t('Open quotation')}<IconArrowUpRight size={15}/></Link>
+            </div>
+          )) : <p className={styles.empty}>{tr('No manual quotations submitted yet.')}</p>}
+        </>}
+      </section>
+      <section className={styles.progress} aria-label={tr('Notification status')}>
+        <div className={styles.sectionHeader}><div><h2>{tr('Notification status')}</h2>
+          <p>{tr('Background email and SMS delivery status tracked independently from invitations.')}</p></div>
+          <Button variant="ghost" size="sm" onClick={notificationsStatus.reload} disabled={notificationsStatus.fetching}><IconRefresh size={15}/>{t('Refresh')}</Button></div>
+        <State loading={notificationsStatus.loading} error={notificationsStatus.error} retry={notificationsStatus.reload}/>
+        {notificationsStatus.data && <>
+          <div className={styles.responseCounts}>
+            <span>{tr('Total queued/processed')}: <b>{notificationsStatus.data.total}</b></span>
+            {Object.entries(notificationsStatus.data.by_status).map(([label, count]) => (
+              <span key={label}>{t(label.replaceAll('_', ' '))}: <b>{count}</b></span>
+            ))}
+          </div>
+          {notificationsStatus.data.total === 0 && <p className={styles.empty}>{tr('No email or SMS notifications recorded yet.')}</p>}
+        </>}
       </section>
       {user.is_admin && !embedded && <AdminMatchingDiagnostics rfqId={currentId} onRerunDone={results.reload} />}
     </>}

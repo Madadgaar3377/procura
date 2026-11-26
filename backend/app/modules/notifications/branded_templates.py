@@ -79,8 +79,8 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
             "quotation_submitted": (
                 "New quotation received",
                 "تم استلام عرض سعر جديد",
-                f"A supplier submitted a quotation for RFQ {ref}: {title}. Review it in your buyer dashboard.",
-                f"قدم مورد عرض سعر لطلب {ref}: {title}. راجعه عبر لوحة المشتري.",
+                f"{context.get('supplier_name', 'A supplier')} submitted quotation {context.get('quotation_reference', '')} for RFQ {ref}: {title}. Your quotation is now available for review and comparison in your buyer dashboard.",
+                f"قدم المورد {context.get('supplier_name', '')} عرض السعر {context.get('quotation_reference', '')} لطلب {ref}: {title}. عرض السعر متاح الآن للمراجعة والمقارنة في لوحة المشتري.",
             ),
             "quotation_confirmation": (
                 "Quotation submitted",
@@ -179,6 +179,21 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         plain = 'تم تغيير كلمة مرور حسابك في Procumaterial. إذا لم تقم بذلك، تواصل مع فريق الدعم فوراً.' if arabic else 'Your Procumaterial password was changed. If this was not you, contact support immediately.'
     if template=='rfq_invitation' and context.get('pricing_message'):
         plain+='\n\n'+str(context['pricing_message'])
+    if template=='rfq_invitation':
+        if context.get('buyer') and not sms:
+            plain+='\n\n'+(('المشتري: ' if arabic else 'Buyer: ')+str(context['buyer']))
+        materials=context.get('materials') or []
+        if materials and not sms:
+            plain+='\n\n'+('المواد المطلوبة:' if arabic else 'Relevant materials:')
+            for item in materials:
+                plain+=f"\n- {item['description']}: {item['quantity']} {item['unit']}"
+        elif materials:
+            first=materials[0]
+            plain+=f" {str(first['description'])[:40]}: {first['quantity']} {first['unit']}"
+            if len(materials)>1:plain+=f" (+{len(materials)-1} items)"
+        deadline=context.get('deadline')
+        if deadline:
+            plain+='\n\n'+(('الموعد النهائي: ' if arabic else 'Response deadline: ')+str(deadline))
     subject = f"Procumaterial | {heading}" + (f" — {ref}" if ref else "")
     url = str(context.get("url", "")) if not security or template=='password_reset' else ""
     parsed = urlsplit(url)
@@ -210,7 +225,7 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
         f'<p style="font-size:14px;line-height:1.6;margin-top:28px">{"فريق Procumaterial" if arabic else "Procumaterial Team"}<br>{TAGLINE}</p>'
         "</td></tr></table></td></tr></table></body></html>"
     )
-    if sms and template in {'rfq_invitation','deadline_reminder'} and url:
+    if sms and template in {'rfq_invitation','deadline_reminder','quotation_submitted'} and url:
         plain += f' {url}'
     if not sms:
         plain = (

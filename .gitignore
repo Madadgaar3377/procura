@@ -10,6 +10,8 @@
 *.p12
 *.pfx
 
+backend/.test-pg-*/
+
 # Python environments, bytecode, packaging, and tool caches
 .venv/
 .venv-*/
