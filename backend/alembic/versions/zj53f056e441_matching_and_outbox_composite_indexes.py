@@ -23,93 +23,74 @@ def upgrade() -> None:
         'supplier_capabilities',
         ['category_id', 'eligibility_status', 'confirmed', 'accepts_rfqs', 'org_id'],
         unique=False,
-        if_not_exists=True,
     )
     op.create_index(
         'ix_capabilities_org_elig',
         'supplier_capabilities',
         ['org_id', 'eligibility_status', 'confirmed', 'accepts_rfqs'],
         unique=False,
-        if_not_exists=True,
     )
     op.create_index(
         'ix_pricebook_org_mat_active',
         'price_book_items',
         ['org_id', 'material_id', 'active', 'price_basis'],
         unique=False,
-        if_not_exists=True,
     )
     op.create_index(
         'ix_pricebook_mat_active_org',
         'price_book_items',
         ['material_id', 'active', 'org_id'],
         unique=False,
-        if_not_exists=True,
     )
     op.create_index(
         'ix_pricebook_sub_active_org',
         'price_book_items',
         ['subcategory_id', 'active', 'org_id'],
         unique=False,
-        if_not_exists=True,
     )
     op.create_index(
         'ix_rfq_matches_rfq_score',
         'rfq_matches',
         ['rfq_id', sa.text('score DESC'), 'supplier_org_id'],
         unique=False,
-        if_not_exists=True,
     )
+    # ze41b760f892 owns ix_rfq_matches_rfq_status; do not drop it here.
     op.create_index(
-        'ix_rfq_matches_rfq_status',
-        'rfq_matches',
-        ['rfq_id', 'status'],
-        unique=False,
-        if_not_exists=True,
-    )
-    op.create_index(
-        'ix_invitations_rfq_status_org',
-        'invitations',
+        'ix_rfq_invitations_rfq_status_org',
+        'rfq_invitations',
         ['rfq_id', 'status', 'supplier_org_id'],
         unique=False,
-        if_not_exists=True,
     )
     op.create_index(
         'ix_quotations_rfq_status_source',
         'quotations',
         ['rfq_id', 'status', 'submission_source'],
         unique=False,
-        if_not_exists=True,
     )
 
     if is_pg:
+        # r18f4a932c70 already owns the material_ids GIN index.
         op.execute(sa.text(
-            "CREATE INDEX IF NOT EXISTS ix_outbox_delivery_rfq_id "
+            "CREATE INDEX ix_outbox_delivery_rfq_id "
             "ON outbox_events ((payload->'context'->>'rfq_id'), status, delivery_status) "
             "WHERE event = 'notification.delivery'"
         ))
         op.execute(sa.text(
-            "CREATE INDEX IF NOT EXISTS ix_outbox_reminder_rfq_id "
+            "CREATE INDEX ix_outbox_reminder_rfq_id "
             "ON outbox_events ((payload->>'rfq_id'), created_at) "
             "WHERE event = 'rfq.deadline.reminder'"
-        ))
-        op.execute(sa.text(
-            "CREATE INDEX IF NOT EXISTS ix_capabilities_material_ids_gin "
-            "ON supplier_capabilities USING gin ((material_ids::jsonb))"
         ))
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == 'postgresql':
-        op.execute(sa.text('DROP INDEX IF EXISTS ix_capabilities_material_ids_gin'))
-        op.execute(sa.text('DROP INDEX IF EXISTS ix_outbox_reminder_rfq_id'))
-        op.execute(sa.text('DROP INDEX IF EXISTS ix_outbox_delivery_rfq_id'))
+        op.execute(sa.text('DROP INDEX ix_outbox_reminder_rfq_id'))
+        op.execute(sa.text('DROP INDEX ix_outbox_delivery_rfq_id'))
 
     for name, table in [
         ('ix_quotations_rfq_status_source', 'quotations'),
-        ('ix_invitations_rfq_status_org', 'invitations'),
-        ('ix_rfq_matches_rfq_status', 'rfq_matches'),
+        ('ix_rfq_invitations_rfq_status_org', 'rfq_invitations'),
         ('ix_rfq_matches_rfq_score', 'rfq_matches'),
         ('ix_pricebook_sub_active_org', 'price_book_items'),
         ('ix_pricebook_mat_active_org', 'price_book_items'),
@@ -117,4 +98,4 @@ def downgrade() -> None:
         ('ix_capabilities_org_elig', 'supplier_capabilities'),
         ('ix_capabilities_cat_elig_org', 'supplier_capabilities'),
     ]:
-        op.drop_index(name, table_name=table, if_exists=True)
+        op.drop_index(name, table_name=table)
