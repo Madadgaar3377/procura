@@ -241,37 +241,22 @@ def _process_event(db: Session, event: Outbox, now: datetime) -> None:
             event.status = 'retry'
             event.next_attempt_at = now + timedelta(seconds=15)
     elif event.event == 'rfq.published':
-        from app.modules.matching.service import match_and_invite
-        # The queue lease is committed before this point. Matching uses its own
-        # transaction; the outbox row never holds the RFQ lock while it runs.
-        matching_session = sessionmaker(bind=db.get_bind(), autoflush=False, expire_on_commit=False)
-        payload = dict(event.payload)
-        db.commit()  # Release any ORM refresh transaction before independent work.
-        with matching_session() as matching_db:
-            try:
-                rfq = matching_db.get(RFQ, payload.get('rfq_id'))
-                if not rfq or rfq.status not in {'published', 'collecting_quotes'}:
-                    raise PermanentOutboxError('RFQ is not dispatchable')
-                started = time.monotonic()
-                result = match_and_invite(
-                    matching_db, rfq, bounded=True, single_batch=True,
-                    limit=get_settings().matching_batch_size,
-                    after_supplier_id=payload.get('cursor', payload.get('after_supplier_id')),
-                )
-                matching_db.commit()
-            except Exception:
-                matching_db.rollback()
-                raise
-        cursor = result.get('next_cursor')
-        # Durations accumulate across continuation pages for admin diagnostics.
-        event.payload = {**event.payload, 'progressed_at': now.isoformat(), 'matching_duration_ms': round(
-            float(event.payload.get('matching_duration_ms') or 0) + (time.monotonic() - started) * 1000, 1)}
-        if cursor:
-            event.payload = {**event.payload, 'cursor': cursor}
-            event.status = 'pending'
-            event.next_attempt_at = now
-        else:
-            event.payload = {key: value for key, value in event.payload.items() if key != 'cursor'}
+        from app.modules.matching.service import run_matching_job
+        # Same runner as publication and the repair script. The lease is committed
+        # before this point; every supplier page commits in its own short transaction
+        # and the job keeps its cursor, so the rest continues on the next poll.
+        rfq = db.get(RFQ, event.payload.get('rfq_id'))
+        if not rfq or rfq.status not in {'published', 'collecting_quotes'}:
+            raise PermanentOutboxError('RFQ is not dispatchable')
+        if event.status != 'processing':
+            event.status = 'processing'
+        db.commit()  # Release the outbox row before the runner locks it in its own session.
+        result = run_matching_job(db.get_bind(), event.id, leased=True,
+                                  time_budget=get_settings().matching_worker_time_budget_seconds)
+        db.refresh(event)
+        log.info('RFQ matching rfq_id=%s evaluated=%s eligible=%s new_invitations=%s status=%s duration_ms=%s',
+                 rfq.id, (result or {}).get('evaluated_suppliers', 0), (result or {}).get('eligible_suppliers', 0),
+                 (result or {}).get('new_invitations', 0), event.status, event.payload.get('matching_duration_ms'))
     elif event.event in {'rfq.invitation', 'quotation.submitted', 'rfq.deadline.reminder'}:
         from app.modules.notifications.procurement import prepare, quotation_notice
         if event.event == 'quotation.submitted':
@@ -346,6 +331,7 @@ def process_batch(db: Session, limit: int = 25, now: datetime | None = None):
     ids = _claim_batch(db, limit, now)
     processed = []
     for event_id in ids:
+        db.info.pop('eligibility_memo', None)  # Eligibility is reused within one event only.
         try:
             event = db.scalar(select(Outbox).where(Outbox.id == event_id).with_for_update())
             if not event:

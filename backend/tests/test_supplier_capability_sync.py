@@ -49,11 +49,13 @@ def test_private_rate_creates_pending_capability_then_approval_publishes_and_mat
 
         buyer = Organization(name='Buyer', name_normalized='buyer', is_buyer=True, is_supplier=False)
         db.add(buyer); db.flush()
-        rfq = RFQ(reference='RFQ-TEST', buyer_org_id=buyer.id, title='Different wording', city='Riyadh',
+        rfq = RFQ(reference='RFQ-TEST', buyer_org_id=buyer.id, title='Insulation', city='Riyadh',
                   response_deadline=datetime.now(UTC) + timedelta(days=1), status='published')
         db.add(rfq); db.flush()
-        item = RFQItem(rfq_id=rfq.id, main_category_id=main.id, subcategory_id=sub.id,
-                       description='Different buyer specification wording', specifications='', unit='PCS',
+        # The buyer requests the supplier's priced Material Master product (product evidence);
+        # unrelated wording under the same subcategory would not be a match.
+        item = RFQItem(rfq_id=rfq.id, main_category_id=main.id, subcategory_id=sub.id, material_id=material.id,
+                       description='Supplier insulation', specifications='', unit='PCS',
                        quantity=Decimal('1'))
         db.add(item); db.flush()
         assert match_and_invite(db, rfq)['eligible_suppliers'] == 0

@@ -13,6 +13,9 @@ from app.modules.matching.router import router as matching_router
 from app.modules.rfqs.router import router as rfq_router
 from app.security import current_user
 
+# Supplier product wording for the requested line (strict matching needs product evidence).
+PRODUCT='Non-plumbed washroom accessories'
+
 
 def setup_matching_app(delivery_city='', *, engine=None):
     if engine is None:
@@ -30,7 +33,7 @@ def setup_matching_app(delivery_city='', *, engine=None):
         db.add(main);db.flush()
         sub=Category(code='TOILET-ACC',name_en='Toilet Partitions, Mirrors & Accessories',normalized_name='toilet partitions mirrors accessories',parent_id=main.id,active=True)
         db.add(sub);db.flush()
-        db.add(Capability(org_id=supplier.id,category_id=sub.id,city='ABC',confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[]))
+        db.add(Capability(org_id=supplier.id,category_id=sub.id,city='ABC',confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[],trade_keywords=PRODUCT))
         # A supplier may declare both the broader category and the exact subcategory.
         db.add(Capability(org_id=supplier.id,category_id=main.id,city='ABC',confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[]))
         rfq=RFQ(reference='RFQ-TEST-MATCH',buyer_org_id=buyer.id,title='Washroom Accessories',city=delivery_city,status='draft',response_deadline=datetime.now(UTC)+timedelta(days=7))
@@ -60,7 +63,7 @@ def test_publish_runs_bounded_match_without_waiting_for_outbox_worker():
             event=db.scalar(select(Outbox).where(Outbox.dedupe_key==f"rfq-published:{ids['rfq']}"))
             notice=db.scalar(select(Notification).where(Notification.event=='rfq.invitation'))
             assert match and match.status=='eligible'
-            assert any(reason.startswith('exact_subcategory_item:') for reason in match.reasons)
+            assert any(reason.startswith('alias_item:') for reason in match.reasons)  # supplier product wording
             assert invitation and invitation.status=='invited'
             assert event and event.status=='processed'
             assert notice
@@ -88,7 +91,7 @@ def test_publication_continues_in_durable_batches_without_duplicate_invitations(
                     is_supplier=True,is_active=True,verified_status='verified')
                 db.add(org);db.flush()
                 db.add(Capability(org_id=org.id,category_id=category.id,city='ABC',
-                    confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[]))
+                    confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[],trade_keywords=PRODUCT))
             db.commit()
         response=client.post(f"/api/v1/rfqs/{ids['rfq']}/publish")
         assert response.status_code==200,response.text
@@ -125,9 +128,10 @@ def test_delivery_city_mismatch_is_reported_and_not_counted_as_match():
         assert result.status_code==200,result.text
         data=result.json()
         assert data['progress']=='no_eligible_suppliers'
-        assert data['suppliers_evaluated']==1
-        assert data['matches'][0]['status']=='location_mismatch'
-        assert data['matches'][0]['supplier_name']=='Supplier Tech'
+        # Excluded suppliers are admin diagnostics, never buyer results.
+        assert data['matched_suppliers']==0 and data['matches']==[] and data['excluded_suppliers']==0
+        with sessions() as db:
+            assert db.scalar(select(RFQMatch.status).where(RFQMatch.rfq_id==ids['rfq']))=='location_mismatch'
         assert 'do not cover delivery city RAS' in data['explanation']
         with sessions() as db:
             assert db.scalar(select(Invitation.id).where(Invitation.rfq_id==ids['rfq'])) is None
@@ -175,7 +179,8 @@ def test_pending_inactive_and_mismatched_capabilities_have_distinct_outcomes():
             db.commit()
         assert client.post(f"/api/v1/rfqs/{ids['rfq']}/publish").status_code==200
         result=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results").json()
-        assert result['matched_suppliers']==0 and result['matches'][0]['status']=='pending_approval'
+        assert result['matched_suppliers']==0 and result['matches']==[]
+        with sessions() as db:assert db.scalar(select(RFQMatch.status).where(RFQMatch.rfq_id==ids['rfq']))=='pending_approval'
     finally:engine.dispose()
 
     client,sessions,engine,ids=setup_matching_app('')
@@ -185,7 +190,8 @@ def test_pending_inactive_and_mismatched_capabilities_have_distinct_outcomes():
             db.commit()
         assert client.post(f"/api/v1/rfqs/{ids['rfq']}/publish").status_code==200
         result=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results").json()
-        assert result['matched_suppliers']==0 and result['matches'][0]['status']=='inactive'
+        assert result['matched_suppliers']==0 and result['matches']==[]
+        with sessions() as db:assert db.scalar(select(RFQMatch.status).where(RFQMatch.rfq_id==ids['rfq']))=='inactive'
     finally:engine.dispose()
 
     client,sessions,engine,ids=setup_matching_app('')
@@ -215,7 +221,7 @@ def test_publish_completes_all_pages_within_time_budget():
                     is_supplier=True,is_active=True,verified_status='verified')
                 db.add(org);db.flush()
                 db.add(Capability(org_id=org.id,category_id=category.id,city='ABC',
-                    confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[]))
+                    confirmed=True,accepts_rfqs=True,eligibility_status='enabled',material_ids=[],trade_keywords=PRODUCT))
             db.commit()
         response=client.post(f"/api/v1/rfqs/{ids['rfq']}/publish")
         assert response.status_code==200,response.text

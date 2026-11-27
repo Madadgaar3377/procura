@@ -3,9 +3,10 @@
 Dry run (default): evaluates the current matcher in a transaction that is rolled back
 and prints the persisted (before) and evaluated (after) results. Nothing is written.
 
---apply: re-evaluates every candidate in one transaction, updates rfq_matches in place,
-creates at most one invitation per supplier (uq_invitation), and marks the RFQ's open
-rfq.published jobs processed. Existing quotations, supplier responses and invitations
+--apply: runs the RFQ's rfq.published matching job from the first supplier with the same
+runner that publication and the outbox worker use (run_matching_job), page by page in
+short transactions. It updates rfq_matches in place and creates at most one invitation
+per supplier (uq_invitation). Existing quotations, supplier responses and invitations
 are never deleted or modified (an invitation only has its matched item list refreshed).
 New invitations queue rfq.invitation jobs; email/SMS is sent later by the notification
 worker, never by this script.
@@ -29,12 +30,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import uuid  # noqa: E402
+
 from sqlalchemy import func, select  # noqa: E402
 
 from app.database import SessionLocal  # noqa: E402
 from app.models import RFQ, Invitation, Material, Outbox, Quotation, RFQItem, RFQMatch  # noqa: E402
 from app.modules.matching.service import (  # noqa: E402
-    _match_batch, active_categories, match_and_invite, resolve_item_scopes, taxonomy_label,
+    CATEGORY_WIDE_MIN_LINKS, CATEGORY_WIDE_SHARE, LEVEL_ALIAS, LEVEL_EXACT, LEVEL_FAMILY, LEVEL_MAIN, LEVEL_SUB,
+    MATCHED_STATUSES, _match_batch, active_categories, resolve_item_scopes, run_matching_job, supersede_plan,
+    taxonomy_label,
 )
 from app.modules.rfqs.material_matching import classify_material_description  # noqa: E402
 from app.security import as_utc, audit  # noqa: E402
@@ -72,6 +77,30 @@ def taxonomy_corrections(db, rfq, min_confidence):
     return changes
 
 
+def provenance(db, rfq):
+    """Supplier-to-material links for the RFQ's selected materials, by source and breadth.
+
+    A capability linked to most active materials of its category was assigned the whole
+    category; its links are not counted as exact product evidence by the matcher.
+    """
+    from app.models import Capability
+    material_ids = [mid for mid in db.scalars(select(RFQItem.material_id).where(
+        RFQItem.rfq_id == rfq.id, RFQItem.material_id.is_not(None)))]
+    for mid in dict.fromkeys(material_ids):
+        material = db.get(Material, mid)
+        caps = [cap for cap in db.scalars(select(Capability).where(Capability.category_id.in_(
+            {material.category_id, material.subcategory_id, material.main_category_id} - {None})))
+            if mid in (cap.material_ids or [])]
+        in_category = int(db.scalar(select(func.count()).select_from(Material).where(
+            Material.active.is_(True), Material.category_id == material.category_id)) or 0)
+        wide = [cap for cap in caps if len(cap.material_ids or []) >= CATEGORY_WIDE_MIN_LINKS
+                and in_category and len(cap.material_ids or []) >= CATEGORY_WIDE_SHARE * in_category]
+        print(f"  provenance '{material.name_en}': {len({c.org_id for c in caps})} supplier(s) link it; "
+              f"by source {dict(Counter(c.mapping_source or 'portal/admin' for c in caps))}; "
+              f"category-wide assignments (not exact evidence)={len({c.org_id for c in wide})} "
+              f"(category has {in_category} active materials)")
+
+
 def run(db, rfq_id, *, apply, correct_taxonomy, min_confidence):
     # Accept the database ID or the buyer-visible reference (e.g. RFQ-F14D3711EC55).
     rfq = db.get(RFQ, rfq_id) or db.scalar(select(RFQ).where(RFQ.reference == rfq_id))
@@ -97,20 +126,33 @@ def run(db, rfq_id, *, apply, correct_taxonomy, min_confidence):
     started = time.monotonic()
     if not apply:
         evaluated = _match_batch(db, rfq, evaluate_only=True)
-        levels = Counter(level for values in evaluated.get('match_levels', {}).values() for level in values)
-        eligible_ids = evaluated.get('eligible_ids', [])
-        auto = set(evaluated.get('auto_invite_ids', []))
-        already = set(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq.id)))
-        print(f"  after (dry run): evaluated={evaluated.get('evaluated_suppliers', 0)} eligible={len(eligible_ids)} "
-              f"auto_invite={len(auto)} broad_only={len(eligible_ids) - len(auto)} "
-              f"new_invitations_if_applied={len(auto - already)} levels={dict(levels)} "
-              f'in {time.monotonic() - started:.1f}s; nothing written')
+        elapsed = time.monotonic() - started
+        new_matched = set(evaluated.get('eligible_ids', []))
+        active = set(db.scalars(select(Invitation.supplier_org_id).where(
+            Invitation.rfq_id == rfq.id, Invitation.status != 'cancelled')))
+        old_matched = set(db.scalars(select(RFQMatch.supplier_org_id).where(
+            RFQMatch.rfq_id == rfq.id, RFQMatch.status.in_(MATCHED_STATUSES))))
         descriptions = dict(db.execute(select(RFQItem.id, RFQItem.description).where(RFQItem.rfq_id == rfq.id)).all())
+        # Strongest evidence per final supplier: exact and fuzzy product evidence are separate
+        # from the category fallback a line may use only when it names no specific product.
+        strongest = Counter((values or ['none'])[0] for oid, values in evaluated.get('match_levels', {}).items())
+        print(f"  OLD (stored): matched suppliers={len(old_matched)} active invitations={len(active)}")
+        print(f"  NEW (dry run): candidates evaluated={evaluated.get('evaluated_suppliers', 0)} "
+              f"final eligible suppliers={len(new_matched)} in {elapsed:.1f}s; nothing written")
+        print(f"    exact material={strongest.get(LEVEL_EXACT, 0)} "
+              f"fuzzy/alias product={strongest.get(LEVEL_ALIAS, 0) + strongest.get(LEVEL_FAMILY, 0)} "
+              f"category fallback (line names no product)={strongest.get(LEVEL_SUB, 0) + strongest.get(LEVEL_MAIN, 0)}")
         for item_id, counts in evaluated.get('item_levels', {}).items():
             print(f"    item '{descriptions.get(item_id, item_id)}': {sum(counts.values())} supplier(s) {counts}")
-        print(f"  excluded by status: {evaluated.get('ineligible_by_status', {})}")
+        print(f"    not matched, by classification: {evaluated.get('ineligible_by_status', {})}")
         for reason, count in evaluated.get('ineligible_reasons', {}).items():
-            print(f'    {count} x {reason[:160]}')
+            print(f'      {count} x {reason[:160]}')
+        removed = old_matched - new_matched
+        plan = supersede_plan(db, rfq, removed)
+        print(f"  CHANGE if applied: newly matched={len(new_matched - old_matched)} no longer matched={len(removed)} "
+              f"new invitations={len(new_matched - active)} invitations superseded (never delivered)={len(plan['cancel'])} "
+              f"invitations preserved (delivered/answered)={len(plan['preserve'])} unsent messages cancelled={plan['unsent_events']}")
+        provenance(db, rfq)
         db.rollback()
         return
 
@@ -125,14 +167,23 @@ def run(db, rfq_id, *, apply, correct_taxonomy, min_confidence):
                   previous=previous, corrected={'main_category_id': item.main_category_id, 'subcategory_id': item.subcategory_id},
                   confidence=change['confidence'], reason='Material Master product family and classifier agree')
         db.flush()
-    result = match_and_invite(db, rfq, bounded=True, limit=100)
-    for job in db.scalars(select(Outbox).where(Outbox.event == 'rfq.published', Outbox.payload['rfq_id'].as_string() == rfq.id,
-                                               Outbox.status.in_({'pending', 'retry'})).with_for_update(skip_locked=True)):
-        job.payload = {**{k: v for k, v in job.payload.items() if k != 'cursor'},
-                       'matching_duration_ms': round((time.monotonic() - started) * 1000, 1),
-                       'evaluated_suppliers': result['evaluated_suppliers'], 'repaired': True}
-        job.status = 'processed'
-        job.next_attempt_at = None
+    db.commit()  # Taxonomy corrections (if any) before matching reads the lines.
+    job = db.scalar(select(Outbox).where(Outbox.event == 'rfq.published', Outbox.payload['rfq_id'].as_string() == rfq.id,
+                                         Outbox.status.in_({'pending', 'retry', 'processing'}))
+                    .order_by(Outbox.created_at.desc()).limit(1))
+    if job is not None and job.status == 'processing':
+        print("  the worker is running this RFQ's matching job now; rerun after it finishes")
+        return
+    if job is None:
+        job = Outbox(event='rfq.published', payload={'rfq_id': rfq.id, 'repaired': True},
+                     dedupe_key=f'rfq-repair:{rfq.id}:{uuid.uuid4().hex}')
+        db.add(job)
+        db.commit()
+    # Same runner as publication and the worker; restart evaluates every supplier again.
+    result = run_matching_job(db.get_bind(), job.id, time_budget=None, restart=True)
+    if result is None:
+        print('  matching job is locked by another process; rerun after it finishes')
+        return
     audit(db, None, 'rfq.matching_repair_rerun', rfq.buyer_org_id, rfq.id,
           eligible=result['eligible_suppliers'], new_invitations=result['new_invitations'])
     db.commit()

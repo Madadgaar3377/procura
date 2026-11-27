@@ -51,19 +51,30 @@ def eligible_orgs(db, rfq, org_ids=None):
     return eligible_supplier_ids(db, rfq, org_ids)
 
 
+def pending_invitations(db, rfq, invitation_ids=None):
+    """Invitations awaiting a response, from the persisted matching result.
+
+    Active (invited/accepted, never cancelled or declined) invitations of suppliers that
+    are currently matched, active and not suspended, with no submitted quotation. The
+    buyer page, the reminder endpoint and the reminder worker all use this one query,
+    so a supplier offered for a reminder is exactly a supplier the endpoint accepts.
+    """
+    from app.models import RFQMatch
+    from app.modules.matching.service import MATCHED_STATUSES
+
+    responded = select(Quotation.supplier_org_id).where(Quotation.rfq_id == rfq.id, Quotation.status != "draft")
+    matched = select(RFQMatch.supplier_org_id).where(RFQMatch.rfq_id == rfq.id, RFQMatch.status.in_(MATCHED_STATUSES))
+    query = (select(Invitation).join(Organization, Organization.id == Invitation.supplier_org_id).where(
+        Invitation.rfq_id == rfq.id, Invitation.status.in_({"invited", "accepted"}),
+        Invitation.supplier_org_id.not_in(responded), Invitation.supplier_org_id.in_(matched),
+        Organization.is_active.is_(True), Organization.verified_status.not_in({"rejected", "suspended"})))
+    if invitation_ids is not None:
+        query = query.where(Invitation.id.in_(list(invitation_ids)))
+    return db.scalars(query.order_by(Invitation.id)).all()
+
+
 def pending_orgs(db, rfq):
-    responded = select(Quotation.supplier_org_id).where(
-        Quotation.rfq_id == rfq.id, Quotation.status != "draft"
-    )
-    ids = db.scalars(
-        select(Invitation.supplier_org_id).where(
-            Invitation.rfq_id == rfq.id,
-            Invitation.status.in_({"invited", "accepted"}),
-            Invitation.supplier_org_id.not_in(responded),
-        )
-    ).all()
-    eligible = eligible_orgs(db, rfq, ids)
-    return [org_id for org_id in ids if org_id in eligible]
+    return [invitation.supplier_org_id for invitation in pending_invitations(db, rfq)]
 
 
 def prepare(db, event):
@@ -85,9 +96,14 @@ def prepare(db, event):
         org = db.get(Organization, event.payload.get("supplier_org_id"))
         if not invitation or not org or invitation.rfq_id != rfq.id or invitation.supplier_org_id != org.id:
             raise PermanentOutboxError("Invalid invitation notification target")
-        if org.id not in eligible_orgs(db, rfq, [org.id]) or invitation.status == "declined":
+        from app.modules.matching.service import supplier_eligibility
+
+        reason = "invitation_declined: supplier declined this invitation" if invitation.status == "declined" \
+            else supplier_eligibility(db, rfq, [org.id])[org.id]
+        if reason:
             event.status = "skipped"
             event.delivery_status = "eligibility_review_required"
+            event.payload = {**event.payload, "eligibility_reason": reason[:500]}
             return
         from app.modules.procurement.portal import matched_item_ids
         quote=db.scalar(select(Quotation).where(Quotation.invitation_id==invitation.id))

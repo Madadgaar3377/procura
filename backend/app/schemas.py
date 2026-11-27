@@ -26,8 +26,16 @@ class Model(BaseModel):
 
 
 class RFQReminderIn(Model):
-    # Omitted means all pending recipients, preserving the existing API contract.
-    invitation_ids: list[str] | None = Field(default=None, min_length=1, max_length=100)
+    # Omitted (or null) means every pending supplier, preserving the existing API contract.
+    # One id is an individual reminder; several are a selected reminder.
+    invitation_ids: list[str] | None = Field(default=None, min_length=1, max_length=1000)
+    supplier_org_ids: list[str] | None = Field(default=None, min_length=1, max_length=1000)
+
+    @model_validator(mode='after')
+    def one_selection(self):
+        if self.invitation_ids is not None and self.supplier_org_ids is not None:
+            raise ValueError('Send invitation_ids or supplier_org_ids, not both')
+        return self
 
 class DatabaseConnectStatus(Model):
     connected: bool

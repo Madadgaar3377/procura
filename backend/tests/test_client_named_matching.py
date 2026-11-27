@@ -61,8 +61,12 @@ def test_named_items_preserve_partial_suppliers_and_notification_scope():
         started = perf_counter()
         before = _match_batch(db, rfq, evaluate_only=True)
         assert set(before['auto_invite_ids']) == {'flood', 'fuzzy', 'female', 'pipe'}
-        assert 'broad' in before['eligible_ids']
-        assert 'undeclared_city' in before['eligible_ids']
+        # Category capability alone and undeclared delivery coverage are not matches.
+        assert 'broad' not in before['eligible_ids']
+        assert before['ineligible_detail']['broad'].startswith('insufficient_evidence')
+        assert 'undeclared_city' not in before['eligible_ids']
+        assert before['ineligible_detail']['undeclared_city'].startswith('location_unconfirmed')
+        # "Plug Mi" restates the Plugs and Sockets subcategory: that capability is the evidence.
         assert 'undeclared_city' not in before['auto_invite_ids']
         assert 'unrelated' not in before['auto_invite_ids']
         assert before['item_levels']['plugmi-item'].get('subcategory', 0) >= 1

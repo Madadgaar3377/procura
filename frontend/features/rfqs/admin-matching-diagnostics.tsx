@@ -58,7 +58,32 @@ type DiagnosticResponse = {
     status: string;
     reasons: string[];
   }[];
+  funnel?: Record<string, number>;
+  channel_delivery?: Record<string, Record<string, number>>;
+  reminders?: { requests?: number; suppliers_reminded?: number; recent?: { created_at: string | null; status: string; suppliers: number | null }[] };
+  failed_job_reasons?: string[];
+  matching_duration_ms?: number | null;
 };
+
+// Candidate funnel, in pipeline order, computed by the backend from persisted results.
+const FUNNEL: [string, string, string][] = [
+  ['initial_candidates', 'Initial candidates', 'المرشحون الأوليون'],
+  ['discipline_qualified', 'Discipline qualified', 'مؤهلون حسب التخصص'],
+  ['main_category_qualified', 'Main category qualified', 'مؤهلون حسب الفئة الرئيسية'],
+  ['subcategory_qualified', 'Subcategory qualified', 'مؤهلون حسب الفئة الفرعية'],
+  ['exact_product_matches', 'Exact product matches', 'مطابقات منتج دقيقة'],
+  ['fuzzy_product_matches', 'Fuzzy product matches', 'مطابقات منتج تقريبية'],
+  ['category_capability_fallback_matches', 'Category fallback (no product named)', 'مطابقة الفئة (دون منتج محدد)'],
+  ['insufficient_product_evidence', 'Insufficient product evidence', 'دليل منتج غير كافٍ'],
+  ['location_exclusions', 'Location exclusions', 'استبعادات الموقع'],
+  ['brand_exclusions', 'Brand exclusions', 'استبعادات العلامة التجارية'],
+  ['inactive_or_rejected', 'Inactive, rejected or pending', 'غير نشط أو مرفوض أو معلق'],
+  ['final_eligible_suppliers', 'Final eligible suppliers', 'الموردون المؤهلون النهائيون'],
+  ['invitations_active', 'Invitations created', 'الدعوات المنشأة'],
+  ['invitations_cancelled', 'Invitations superseded', 'الدعوات الملغاة'],
+  ['automatic_quotations', 'Automatic quotations', 'عروض الأسعار التلقائية'],
+  ['quotations_submitted', 'Quotations submitted', 'عروض الأسعار المقدمة'],
+];
 
 export function AdminMatchingDiagnostics({
   rfqId,
@@ -162,6 +187,37 @@ export function AdminMatchingDiagnostics({
               <span>{w('Excluded suppliers', 'الموردون المستبعدون')}</span>
             </div>
           </div>
+
+          {d.funnel && (
+            <div>
+              <h3>{w('Candidate filtering', 'تصفية المرشحين')}{d.matching_duration_ms != null ? ` · ${Math.round(d.matching_duration_ms)} ms` : ''}</h3>
+              <div className="diag-kpis">
+                {FUNNEL.filter(([key]) => d.funnel?.[key] != null).map(([key, en, ar]) => (
+                  <div className="diag-kpi" key={key}>
+                    <strong>{d.funnel?.[key]}</strong>
+                    <span>{w(en, ar)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {(Object.keys(d.channel_delivery || {}).length > 0 || !!d.reminders?.requests || !!d.failed_job_reasons?.length) && (
+            <div>
+              <h3>{w('Email, SMS and reminders', 'البريد والرسائل والتذكيرات')}</h3>
+              <div className="rfq-grouped-controls">
+                {Object.entries(d.channel_delivery || {}).flatMap(([channel, statuses]) =>
+                  Object.entries(statuses).map(([status, count]) => (
+                    <span key={`${channel}-${status}`} className="diag-badge">{channel.toUpperCase()} {status}: {count}</span>
+                  )))}
+                <span className="diag-badge">{w('Reminder requests', 'طلبات التذكير')}: {d.reminders?.requests ?? 0}</span>
+                <span className="diag-badge">{w('Suppliers reminded', 'الموردون المذكَّرون')}: {d.reminders?.suppliers_reminded ?? 0}</span>
+                {(d.failed_job_reasons || []).map(reason => (
+                  <span key={reason} className="diag-badge" data-tone="warn">{reason}</span>
+                ))}
+              </div>
+            </div>
+          )}
 
           {(invStatusEntries.length > 0 || deliveryEntries.length > 0) && (
             <div>

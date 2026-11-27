@@ -1013,6 +1013,8 @@ def test_hierarchy_repair_electrical_civil_capabilities_matching_and_typos():
                 confirmed=True,
                 accepts_rfqs=True,
                 eligibility_status='enabled',
+                # The supplier's product link (strict matching needs product evidence).
+                material_ids=[mat_canon_acc.id],
             )
             rfq = RFQ(
                 reference='RFQ-HIER-001',

@@ -121,12 +121,15 @@ class PerformanceAndMatchingTestCase(unittest.TestCase):
             res = match_and_invite(db, rfq)
             db.commit()
 
-            self.assertEqual(res['eligible_suppliers'], 2)  # sup-exact and sup-cat; sup-wrong-city excluded
-            self.assertEqual(res['new_invitations'], 2)
+            # sup-exact only: sup-cat has category capability but no product evidence for
+            # "Steel Pipe"; sup-wrong-city does not cover Riyadh.
+            self.assertEqual(res['eligible_suppliers'], 1)
+            self.assertEqual(res['new_invitations'], 1)
 
             # Check matches: sup-exact should be ranked first with exact_materials in reasons
             matches = db.scalars(select(RFQMatch).where(RFQMatch.rfq_id == 'rfq-1').order_by(RFQMatch.score.desc())).all()
-            self.assertEqual(len(matches), 3)  # two eligible suppliers and one persisted location rejection
+            self.assertEqual(len(matches), 3)  # one eligible, one insufficient evidence, one location rejection
+            self.assertTrue(any(m.supplier_org_id=='sup-cat' and m.status=='insufficient_evidence' for m in matches))
             self.assertEqual(matches[0].supplier_org_id, 'sup-exact')
             self.assertTrue(any('exact_materials:1/1' in r for r in matches[0].reasons))
             self.assertTrue(any(m.supplier_org_id=='sup-city' and m.status=='location_mismatch' for m in matches))

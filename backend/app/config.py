@@ -172,6 +172,16 @@ class Settings(BaseSettings):
     # Publication evaluates candidate pages synchronously until this budget is spent;
     # any remainder continues in the durable rfq.published job.
     matching_publish_time_budget_seconds: float = Field(default=2.5, ge=0, le=30)
+    # Each worker claim of a matching job runs pages until this budget (below the
+    # 90 s outbox lease) is spent, then the job continues on the next poll.
+    matching_worker_time_budget_seconds: float = Field(default=20, ge=1, le=60)
+    # A worker poll stops claiming further outbox events after this many seconds so
+    # one poll cannot run for minutes and starve the other queues.
+    outbox_poll_time_budget_seconds: float = Field(default=30, ge=1, le=600)
+    # Manual buyer reminders: one per supplier invitation within this window, and at most
+    # this many reminder requests per buyer user per hour.
+    rfq_reminder_cooldown_hours: float = Field(default=24, ge=0.25, le=720)
+    rfq_reminder_requests_per_hour: int = Field(default=20, ge=1, le=500)
     # A queued/continuing matching job that has not progressed for this long is reported
     # as failed (worker stopped). It stays queued and resumes when a worker runs.
     matching_stalled_after_seconds: int = Field(default=600, ge=60, le=86400)

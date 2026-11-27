@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -86,37 +86,46 @@ def test_strict_matching_all_batches_idempotency_and_historical_audit(incident):
     with sessions() as db:
         result = match_and_invite(db, db.get(RFQ, RFQ_ID), limit=2, bounded=True)
         db.commit()
-        # a-ups / b-generic hold main-category capabilities: broad matches, shown but not invited.
-        assert result['eligible_suppliers'] == 6
-        assert result['new_invitations'] == 3
-        assert {inv.supplier_org_id for inv in result['invitations']} == {'z-exact', 'z-sub', 'z-linked'}
+        # "Distribution Panels" restates its subcategory: product links and the Distribution
+        # Panels capability qualify; main-category capability (a-ups, b-generic) does not.
+        assert result['eligible_suppliers'] == 4
+        assert result['new_invitations'] == 4
+        assert {inv.supplier_org_id for inv in result['invitations']} == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
         statuses = dict(db.execute(select(RFQMatch.supplier_org_id, RFQMatch.status)).all())
-        assert statuses['a-ups'] == statuses['b-generic'] == 'partial'
-        for key in ('a-ups', 'b-generic'):
-            assert 'broad_only' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == key))
+        assert statuses['a-ups'] == statuses['b-generic'] == 'insufficient_evidence'
         assert statuses['c-riyadh'] == 'location_mismatch'
-        assert statuses['d-unknown'] == 'partial'
+        # Service area undeclared, office in the delivery city (Jeddah): covered.
+        assert statuses['d-unknown'] == 'eligible'
         assert statuses['e-unapproved'] == 'pending_approval'
+        # Earlier incorrect matches are corrected with an audit; their undelivered
+        # invitations are superseded (kept as cancelled records), never deleted.
         assert len(db.scalars(select(AuditEvent).where(AuditEvent.action == 'rfq.match_eligibility_corrected')).all()) == 2
+        assert len(db.scalars(select(AuditEvent).where(AuditEvent.action == 'rfq.invitation_superseded')).all()) == 2
+        for key in ('a-ups', 'b-generic'):
+            invitation = db.scalar(select(Invitation).where(Invitation.supplier_org_id == key))
+            assert invitation.status == 'cancelled' and invitation.cancelled_at is not None
         again = match_and_invite(db, db.get(RFQ, RFQ_ID), limit=2)
         db.commit()
         assert again['new_invitations'] == 0
-        assert len(db.scalars(select(Invitation)).all()) == 5
-        assert eligible_orgs(db, db.get(RFQ, RFQ_ID), list(statuses)) == {'z-exact', 'z-sub', 'z-linked'}
-        assert 'delivery coverage unconfirmed' in db.scalar(select(RFQMatch).where(RFQMatch.supplier_org_id == 'd-unknown')).reasons
+        # 4 new + 2 historical records (cancelled), nothing deleted or duplicated.
+        assert len(db.scalars(select(Invitation)).all()) == 6
+        assert eligible_orgs(db, db.get(RFQ, RFQ_ID), list(statuses)) == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
+        assert any('office is in Jeddah' in r for r in db.scalar(select(RFQMatch).where(RFQMatch.supplier_org_id == 'd-unknown')).reasons)
         old = db.scalar(select(Invitation).where(Invitation.supplier_org_id == 'a-ups'))
         event = Outbox(event='rfq.invitation', payload={'rfq_id': RFQ_ID, 'supplier_org_id': 'a-ups', 'invitation_id': old.id})
         db.add(event); db.flush(); prepare(db, event)
-        assert event.status == 'skipped'
-        assert old.status == 'invited'
+        assert event.status == 'skipped' and event.payload['eligibility_reason'].startswith('insufficient_evidence')
+        assert old.status == 'cancelled'
     response = client.get(f'/api/v1/matching/rfqs/{RFQ_ID}/results')
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data['matched_suppliers'] == 6
+    assert data['matched_suppliers'] == 4 and data['invited_suppliers'] == 4
     for match in data['matches']:
         assert not any(reason.startswith(('main_category_item:', 'exact_materials:', 'item:')) for reason in match['reasons'])
         assert 'unverified' in match['brand_requirement_status']
-    assert next(m for m in data['matches'] if m['supplier_org_id'] == 'a-ups')['invitation_review_required']
+    # Superseded suppliers are neither listed as matches nor as active invitations.
+    assert 'a-ups' not in {m['supplier_org_id'] for m in data['matches']}
+    assert 'a-ups' not in {i['supplier_org_id'] for i in data['invitations']}
 
 
 def test_material_family_and_buyer_subcategory_both_searched(incident):
@@ -130,9 +139,11 @@ def test_material_family_and_buyer_subcategory_both_searched(incident):
                           confirmed=True, accepts_rfqs=True, eligibility_status='enabled'))
         db.flush()
         result = _match_batch(db, db.get(RFQ, RFQ_ID), evaluate_only=True)
-        # Buyer's subcategory (UPS) and the Material Master subcategory (panels) are both searched.
-        assert 'ups-only' in result['eligible_ids'] and 'z-sub' in result['eligible_ids']
-        assert 'z-exact' in result['auto_invite_ids']
+        # Both subcategories are searched, but only the one the line names (Distribution
+        # Panels, from the Material Master) is evidence: a UPS-only supplier is unrelated.
+        assert 'z-sub' in result['eligible_ids'] and 'z-exact' in result['auto_invite_ids']
+        assert 'ups-only' not in result['eligible_ids']
+        assert result['ineligible_detail']['ups-only'].startswith(('insufficient_evidence', 'location'))
         db.rollback()
 
 
@@ -221,3 +232,30 @@ def test_explicit_taxonomy_repair_is_audited_idempotent_and_preserves_material_i
         linked = db.scalar(select(RFQMatch).where(RFQMatch.supplier_org_id == 'z-linked'))
         assert 'taxonomy:item=electrical/panels' in linked.reasons
         assert len(db.scalars(select(Invitation).where(Invitation.supplier_org_id == 'z-linked')).all()) == 1
+
+
+def test_rematch_script_dry_run_compares_then_apply_supersedes(incident, capsys):
+    """Authorized repair: dry run reports old vs new without writing; apply supersedes."""
+    from scripts.rematch_published_rfqs import run
+    sessions, _, _ = incident
+    with sessions() as db:
+        run(db, RFQ_ID, apply=False, correct_taxonomy=False, min_confidence=0.8)
+        out = capsys.readouterr().out
+        assert 'OLD (stored): matched suppliers=2 active invitations=2' in out
+        assert 'final eligible suppliers=4' in out
+        assert 'invitations superseded (never delivered)=2' in out and 'new invitations=4' in out
+        assert "provenance 'Distribution Panels; Brands: ABB': 1 supplier(s) link it" in out
+        # Dry run wrote nothing.
+        assert {i.status for i in db.scalars(select(Invitation))} == {'invited'}
+        assert db.scalar(select(func.count()).select_from(Outbox)) == 0
+    with sessions() as db:
+        run(db, RFQ_ID, apply=True, correct_taxonomy=False, min_confidence=0.8)
+    with sessions() as db:
+        statuses = {i.supplier_org_id: i.status for i in db.scalars(select(Invitation))}
+        assert statuses['a-ups'] == statuses['b-generic'] == 'cancelled'
+        assert {k for k, v in statuses.items() if v == 'invited'} == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
+        # Applying again changes nothing.
+        before = db.scalar(select(func.count()).select_from(Invitation))
+    with sessions() as db:
+        run(db, RFQ_ID, apply=True, correct_taxonomy=False, min_confidence=0.8)
+        assert db.scalar(select(func.count()).select_from(Invitation)) == before

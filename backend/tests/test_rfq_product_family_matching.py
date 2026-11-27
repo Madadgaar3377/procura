@@ -4,6 +4,10 @@ Shape of the production data: imported suppliers hold blanket approved capabilit
 every Electrical subcategory; flood-light products live in the Material Master under
 Electrical / Third Fix; the buyer filed the line under Electrical / Second Fix. No
 supplier communications are sent.
+
+Strict rule: an "RGB Flood Light" line is met only by RGB flood-light product evidence.
+Ordinary daylight floodlights, switches, other lighting and category capability alone
+are retained for admin review and never shown, counted or invited.
 """
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -58,6 +62,7 @@ def incident():
         materials = {
             'flood-day': ('Flood Light LED Type Day Light', 'third'),
             'flood-made': ('LED Flood Light Made In', 'third'),
+            'flood-rgb': ('RGB LED Floodlight DMX 100W', 'third'),
             'emergency': ('Lighting System Emergency Light LED Twin-Head', 'third'),
             'switch': ('Lighting System Way Light Switch Gang Masterseal Wp', 'second'),
             'tie': ('Cable Tie 200mm', 'second'),
@@ -72,7 +77,14 @@ def incident():
             for sub in ('first', 'second'):
                 _cap(db, key, sub, city=city)
             _cap(db, key, 'third', city=city, materials=['flood-day', 'flood-made', 'switch'])
-        # Saved private price for a family product.
+        # Genuine RGB flood-light product evidence (linked Material Master product).
+        for key, org_city, city in [('rgb-riyadh', 'Riyadh', 'Riyadh'), ('rgb-multi', 'Dammam', 'Riyadh, Jeddah'),
+                                    ('rgb-blank', 'Dammam', ''), ('rgb-jeddah', 'Jeddah', 'Jeddah')]:
+            _org(db, key, city=org_city)
+            _cap(db, key, 'third', city=city, materials=['flood-rgb'])
+        db.add(PriceBookItem(org_id='rgb-riyadh', material_id='flood-rgb', main_category_id='elec', subcategory_id='third',
+                             supplier_description='RGB LED Floodlight DMX 100W', unit='No.', unit_price=Decimal('540.00'), active=True))
+        # Saved private price for a daylight flood light (not the requested product).
         db.add(PriceBookItem(org_id='flood-riyadh', material_id='flood-day', main_category_id='elec', subcategory_id='third',
                              supplier_description='Flood Light LED Type Day Light', unit='No.', unit_price=Decimal('320.00'), active=True))
         # Blanket electrical supplier: every subcategory, but no flood-light product.
@@ -135,42 +147,38 @@ def test_product_family_beats_misfiled_subcategory_and_blanket_capabilities(inci
         db.commit()
         statuses = _statuses(db)
         eligible = {key for key, status in statuses.items() if status in {'eligible', 'partial'}}
-        # Product evidence, plus subcategory capability on the buyer's (Second Fix) or the
-        # Material Master (Third Fix) subcategory, plus the blanket import as broad only.
-        assert eligible == {'flood-riyadh', 'flood-multi', 'flood-blank', 'text-only', 'declared-third',
-                            'declared-second', 'emergency-only', 'blanket-electrical'}
-        assert statuses['flood-jeddah'] == 'location_mismatch'
+        # RGB flood-light product evidence only (Material Master link or own product wording).
+        assert eligible == {'rgb-riyadh', 'rgb-multi', 'text-only'}, statuses
+        # Ordinary daylight floodlights, other lighting, switches and category capability
+        # alone (including the misfiled Second Fix and blanket imports) are not matches.
+        for supplier in ('flood-riyadh', 'flood-multi', 'flood-blank', 'emergency-only', 'declared-third',
+                         'declared-second', 'blanket-electrical'):
+            assert statuses[supplier] == 'insufficient_evidence', (supplier, statuses[supplier])
+        assert statuses['flood-jeddah'] == 'location_mismatch' and statuses['rgb-jeddah'] == 'location_mismatch'
+        # RGB product, but service area undeclared and office outside Riyadh.
+        assert statuses['rgb-blank'] == 'location_unconfirmed'
         assert statuses['suspended-flood'] == 'suspended'
-        # A supplier imported into every Electrical subcategory is discipline-wide: broad, never invited.
-        assert 'broad_only' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'blanket-electrical'))
-        # A different lighting product is a subcategory match, never a product match.
-        emergency = db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'emergency-only'))
-        assert 'exact_subcategory_item:rgb' in emergency and 'family_item:rgb' not in emergency
-        assert 'exact_subcategory_item:rgb' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'declared-second'))
         invited = set(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == 'granada')))
-        assert invited == eligible - {'blanket-electrical', 'flood-blank'} and result['new_invitations'] == 6
-        reasons = db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'flood-riyadh'))
+        assert invited == eligible and result['new_invitations'] == 3
+        reasons = db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'rgb-riyadh'))
         assert 'family_item:rgb' in reasons and 'taxonomy:rgb=elec/third' in reasons
-        assert 'Category eligibility does not confirm technical compliance' in reasons
-        assert 'delivery coverage unconfirmed' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'flood-blank'))
-        assert 'exact_subcategory_item:rgb' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'declared-third'))
+        assert 'Product evidence does not confirm technical compliance; confirm in the quotation' in reasons
         assert any(r.startswith(('family_item:rgb', 'alias_item:rgb')) for r in
                    db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'text-only')))
         # Imported suppliers without members, contacts or saved prices still participate.
-        assert db.scalar(select(func.count()).select_from(Member).where(Member.organization_id == 'flood-multi')) == 0
+        assert db.scalar(select(func.count()).select_from(Member).where(Member.organization_id == 'rgb-multi')) == 0
 
     response = client.get('/api/v1/matching/rfqs/granada/results')
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data['matched_suppliers'] == 8 and data['matching_status'] in {'completed', 'queued'}
+    assert data['matched_suppliers'] == 3 and data['matching_status'] in {'completed', 'queued'}
     rows = {row['supplier_org_id']: row for row in data['matches']}
-    top = rows['flood-riyadh']
+    assert set(rows) == eligible
+    top = rows['rgb-riyadh']
     assert top['match_strength'] == 'product' and top['matched_item_count'] == 1
     assert top['matched_items'][0]['main_category'] == 'Electrical' and top['matched_items'][0]['subcategory'] == 'Third Fix'
-    assert top['saved_price_available'] is True and rows['flood-multi']['saved_price_available'] is False
-    assert rows['flood-blank']['service_coverage_status'] == 'unknown'
-    assert rows['flood-riyadh']['service_coverage_status'] == 'covered'
-    assert rows['declared-third']['match_strength'] == 'capability'
+    assert top['saved_price_available'] is True and rows['rgb-multi']['saved_price_available'] is False
+    assert rows['rgb-multi']['service_coverage_status'] == 'covered'
     assert not any(r.startswith(('item:', 'taxonomy:', 'family_item:')) for row in data['matches'] for r in row['reasons'])
 
 
@@ -179,8 +187,8 @@ def test_repeated_matching_is_idempotent_and_preserves_quotations(incident):
     with sessions() as db:
         match_and_invite(db, db.get(RFQ, 'granada'))
         db.commit()
-        invitation = db.scalar(select(Invitation).where(Invitation.supplier_org_id == 'flood-riyadh'))
-        db.add(Quotation(rfq_id='granada', invitation_id=invitation.id, supplier_org_id='flood-riyadh', status='submitted'))
+        invitation = db.scalar(select(Invitation).where(Invitation.supplier_org_id == 'rgb-riyadh'))
+        db.add(Quotation(rfq_id='granada', invitation_id=invitation.id, supplier_org_id='rgb-riyadh', status='submitted'))
         invitation.status = 'accepted'
         db.commit()
         counts = (db.scalar(select(func.count()).select_from(RFQMatch)), db.scalar(select(func.count()).select_from(Invitation)),
@@ -192,7 +200,7 @@ def test_repeated_matching_is_idempotent_and_preserves_quotations(incident):
         assert counts == (db.scalar(select(func.count()).select_from(RFQMatch)), db.scalar(select(func.count()).select_from(Invitation)),
                           db.scalar(select(func.count()).select_from(Outbox).where(Outbox.event == 'rfq.invitation')))
         assert db.scalar(select(Quotation.status)) == 'submitted'
-        assert db.scalar(select(Invitation.status).where(Invitation.supplier_org_id == 'flood-riyadh')) == 'accepted'
+        assert db.scalar(select(Invitation.status).where(Invitation.supplier_org_id == 'rgb-riyadh')) == 'accepted'
     # Admin repair rerun on an already matched RFQ is also duplicate-free.
     actor('admin-user')
     rerun = client.post('/api/v1/matching/admin/rfqs/granada/rerun')
@@ -212,12 +220,19 @@ def test_admin_diagnostics_explain_classification_conflict_and_exclusions(incide
     assert item['subcategory_name'] == 'Second Fix'
     assert item['material_master_subcategory_name'] == 'Third Fix' and item['classification_conflict'] is True
     assert 'Third Fix' in item['classification_note']
-    assert set(item['product_candidates']) == {'Flood Light LED Type Day Light', 'LED Flood Light Made In'}
-    assert item['level_counts'].get('product family', 0) >= 3
-    assert data['product_matches'] >= 3 and data['invitations_created'] == 6
+    # Daylight floodlights are not RGB floodlights: not product candidates for this line.
+    assert set(item['product_candidates']) == {'RGB LED Floodlight DMX 100W'}
+    assert item['level_counts'].get('product family', 0) >= 2
+    assert data['product_matches'] == 3 and data['invitations_created'] == 3
     excluded = {row['supplier_org_id']: row for row in data['excluded_suppliers']}
-    assert "supplier serves 'Jeddah'" in excluded['flood-jeddah']['reasons'][0]
+    assert "supplier serves 'Jeddah'" in excluded['rgb-jeddah']['reasons'][0]
     assert excluded['suspended-flood']['status'] == 'suspended'
+    assert excluded['flood-riyadh']['status'] == 'insufficient_evidence'
+    funnel = data['funnel']
+    assert funnel['final_eligible_suppliers'] == 3 and funnel['fuzzy_product_matches'] == 3
+    assert funnel['insufficient_product_evidence'] == 7 and funnel['location_exclusions'] == 3
+    assert funnel['initial_candidates'] >= funnel['main_category_qualified'] >= funnel['subcategory_qualified']
+    assert funnel['invitations_active'] == 3
 
 
 @pytest.mark.parametrize('description', ['RGB Flood Light', 'RGB Floodlight', 'LED RGB Flood Light',
@@ -232,7 +247,7 @@ def test_classification_variants_resolve_to_material_master_family(incident, des
         assert result['category_candidates'][0]['main_category_name'] == 'Electrical'
 
 
-def test_multi_item_rfq_groups_lines_per_supplier_and_broad_matches_are_not_invited(incident):
+def test_multi_item_rfq_groups_lines_per_supplier_and_category_only_is_not_matched(incident):
     sessions, client, _ = incident
     with sessions() as db:
         db.add(RFQItem(id='tie', rfq_id='granada', description='Cable Tie 200mm', specifications='',
@@ -245,19 +260,19 @@ def test_multi_item_rfq_groups_lines_per_supplier_and_broad_matches_are_not_invi
         match_and_invite(db, db.get(RFQ, 'granada'))
         db.commit()
         statuses = _statuses(db)
-        # blanket-electrical links Cable Tie 200mm exactly; the flood light line is broad only.
+        # blanket-electrical carries the Cable Tie product: it qualifies for that line only.
         blanket = db.scalar(select(Invitation).where(Invitation.supplier_org_id == 'blanket-electrical'))
         assert statuses['blanket-electrical'] == 'partial' and blanket.matched_item_ids == ['tie']
         blanket_reasons = db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'blanket-electrical'))
-        assert any(r in blanket_reasons for r in ('exact_material_item:tie', 'alias_item:tie')) and 'main_category_item:rgb' in blanket_reasons
-        # The flood-light supplier also links the Cable Tie? No: only its own family line.
-        assert db.scalar(select(Invitation.matched_item_ids).where(Invitation.supplier_org_id == 'flood-riyadh')) == ['rgb']
-        # A root-category capability is shown as broad and never invited automatically.
-        assert statuses['root-only'] == 'partial'
+        assert any(r in blanket_reasons for r in ('exact_material_item:tie', 'alias_item:tie'))
+        assert 'item:rgb' not in blanket_reasons and 'coverage:1/3' in blanket_reasons
+        # One supplier, its own qualifying line only.
+        assert db.scalar(select(Invitation.matched_item_ids).where(Invitation.supplier_org_id == 'rgb-riyadh')) == ['rgb']
+        # A root-category capability for a specific description is not a match or invitation.
+        assert statuses['root-only'] == 'insufficient_evidence'
         assert db.scalar(select(Invitation.id).where(Invitation.supplier_org_id == 'root-only')) is None
-        assert 'broad_only' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'root-only'))
     rows = {row['supplier_org_id']: row for row in client.get('/api/v1/matching/rfqs/granada/results?limit=50').json()['matches']}
-    assert rows['root-only']['match_strength'] == 'broad'
+    assert 'root-only' not in rows and rows['blanket-electrical']['matched_item_count'] == 1
 
 
 def test_notification_failure_does_not_block_matching_results(incident, monkeypatch):
@@ -274,12 +289,12 @@ def test_notification_failure_does_not_block_matching_results(incident, monkeypa
         failed = db.scalars(select(Outbox.status).where(Outbox.event == 'rfq.invitation')).all()
         assert failed and set(failed) <= {'retry', 'failed'}
     results = client.get('/api/v1/matching/rfqs/granada/results')
-    assert results.status_code == 200 and results.json()['matched_suppliers'] == 8
+    assert results.status_code == 200 and results.json()['matched_suppliers'] == 3
     status = client.get('/api/v1/matching/rfqs/granada/notifications-status')
     assert status.status_code == 200 and status.json()['rfq_id'] == 'granada'
 
 
-def test_thousands_of_blanket_imports_are_broad_and_never_invited(incident):
+def test_thousands_of_blanket_imports_and_daylight_floodlights_are_never_matched(incident):
     sessions, _, _ = incident
     with sessions() as db:
         for number in range(3000):
@@ -290,7 +305,13 @@ def test_thousands_of_blanket_imports_are_broad_and_never_invited(incident):
                 db.add(Capability(org_id=key, category_id=sub, city='Riyadh', material_ids=['switch'], confirmed=True,
                                   accepts_rfqs=True, eligibility_status='enabled', mapping_source='admin_import'))
         for number in range(200):
-            key = f'flood-{number:03d}'
+            key = f'rgbsup-{number:03d}'
+            db.add(Organization(id=key, name=key, name_normalized=key, city='Riyadh', is_supplier=True, is_buyer=False,
+                                verified_status='verified'))
+            db.add(Capability(org_id=key, category_id='third', city='Riyadh', material_ids=['flood-rgb'], confirmed=True,
+                              accepts_rfqs=True, eligibility_status='enabled', mapping_source='admin_import'))
+        for number in range(100):
+            key = f'daylight-{number:03d}'
             db.add(Organization(id=key, name=key, name_normalized=key, city='Riyadh', is_supplier=True, is_buyer=False,
                                 verified_status='verified'))
             db.add(Capability(org_id=key, category_id='third', city='Riyadh', material_ids=['flood-made'], confirmed=True,
@@ -300,11 +321,14 @@ def test_thousands_of_blanket_imports_are_broad_and_never_invited(incident):
         result = match_and_invite(db, db.get(RFQ, 'granada'), bounded=True, limit=100)
         elapsed = time.perf_counter() - started
         db.commit()
-        # 200 product suppliers + 8 fixture suppliers + 3,000 blanket imports (broad only).
-        assert result['eligible_suppliers'] == 3208
-        bulk = db.scalars(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id.like('bulk-%'))).all()
-        assert len(bulk) == 3000 and all('broad_only' in reasons for reasons in bulk)
-        # Blanket imports are never auto-invited, so no email/SMS goes to them.
+        # 200 RGB product suppliers + 3 fixture suppliers. 3,000 blanket imports and 100
+        # daylight flood-light suppliers are evaluated but none is a match.
+        assert result['eligible_suppliers'] == 203
+        bulk = db.scalars(select(RFQMatch.status).where(RFQMatch.supplier_org_id.like('bulk-%'))).all()
+        assert len(bulk) == 3000 and set(bulk) == {'insufficient_evidence'}
+        assert set(db.scalars(select(RFQMatch.status).where(RFQMatch.supplier_org_id.like('daylight-%')))) == {'insufficient_evidence'}
+        # Never invited, so no email/SMS goes to them.
         assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('bulk-%'))) == 0
-        assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('flood-%'))) == 202  # Jeddah is outside coverage; blank service city is unconfirmed.
+        assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('daylight-%'))) == 0
+        assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('rgbsup-%'))) == 200
         assert elapsed < 30, elapsed

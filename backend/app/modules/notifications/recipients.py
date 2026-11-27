@@ -33,12 +33,19 @@ def restriction(db, channel, destination):
 
 def resolve(db, org_id, rfq_id, template='rfq_invitation'):
     org = db.get(Organization, org_id)
-    from app.modules.matching.service import _match_batch
+    from app.models import Invitation
+    from app.modules.matching.service import supplier_evaluations
     rfq = db.get(RFQ, rfq_id)
-    evaluated = _match_batch(db, rfq, evaluate_only=True, supplier_ids=[org_id]) if rfq else {}
-    covered = set(evaluated.get('covered_items', {}).get(org_id, []))
+    invitation = db.scalar(select(Invitation).where(Invitation.rfq_id == rfq_id, Invitation.supplier_org_id == org_id))
+    if template == 'deadline_reminder' and invitation and invitation.matched_item_ids:
+        # Reminders follow the invitation's recorded scope; matching is not re-run.
+        evaluated = {'covered_items': invitation.matched_item_ids, 'item_evidence': {}}
+    else:
+        # Shares the eligibility evaluation already made for this outbox event.
+        evaluated = supplier_evaluations(db, rfq, [org_id])[org_id] if rfq else {}
+    covered = set(evaluated.get('covered_items', []))
     # Materials and capability categories that produced each line's match.
-    evidence = evaluated.get('item_evidence', {}).get(org_id, {})
+    evidence = evaluated.get('item_evidence', {})
     items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq_id)).all()
     # Only use items actually supported by this supplier, including partial RFQs.
     items = [item for item in items if item.id in covered]

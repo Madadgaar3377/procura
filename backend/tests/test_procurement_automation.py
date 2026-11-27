@@ -86,7 +86,9 @@ def test_publish_prepares_only_eligible_prices_and_is_idempotent(flow,case,expec
             assert invoice(db,quote)=={'subtotal':'125.00','vat':'6.25','total':'131.25','currency':'SAR'}
             rate=db.get(PriceBookItem,ids['rate']);rate.unit_price=999;db.commit()
             assert lines[0].source_rate_snapshot['unit_price']=='12.50'
-            if case=='partial':assert any('Missing active price' in reason for reason in quote.review_reasons)
+            if case=='partial':
+                # The supplier qualifies only for the priced line; the unrelated line is not in its scope.
+                assert db.scalar(select(Invitation.matched_item_ids))==[ids['item']]
 
 
 def test_guest_explicit_submission_reaches_buyer_comparison_and_revokes(flow):

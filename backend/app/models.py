@@ -577,6 +577,12 @@ class Invitation(TimeID, Base):
     invited_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     # RFQ item ids this supplier matched; the portal's default "Matched Items" view.
     matched_item_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Superseded before delivery because the supplier no longer qualifies (record kept).
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Manual buyer reminders: per-supplier cooldown and history count.
+    last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reminder_count: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
 
 class Quotation(TimeID, Base):
     __tablename__='quotations'

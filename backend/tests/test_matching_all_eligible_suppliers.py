@@ -1,9 +1,11 @@
-"""Matching must return every eligible supplier (RFQ-F14D3711EC55 stopped at five).
+"""Strict, complete matching for the four-material Granada/3D International RFQ.
 
-Isolated SQLite fixtures mirroring the production taxonomy of the four-material RFQ:
-imported suppliers with subcategory capabilities and no products are subcategory
-matches; blanket imports and main-category capabilities are broad (shown, never
-auto-invited); unrelated suppliers are not matched; counts are database totals.
+Isolated SQLite fixtures mirroring the production taxonomy. Every genuinely eligible
+supplier is returned (no artificial limit), and only those: a supplier qualifies for a
+line with product evidence (linked Material Master product, price list or its own
+product wording). Category capability alone qualifies only a line that names no
+specific product ("Pipe" under Pipes). Category-only, blanket-import and main-category
+candidates are retained for admin diagnostics, never shown, counted or invited.
 """
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -122,15 +124,18 @@ def reasons(db, supplier, rfq_id='rfq4'):
 
 
 def invited(db, rfq_id='rfq4'):
-    return set(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq_id)))
+    """Active invitations (superseded ones are kept as 'cancelled' records)."""
+    return set(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq_id,
+                                                                     Invitation.status != 'cancelled')))
 
 
-def bulk_suppliers(sessions, count, sub='consumable', city=''):
+def bulk_suppliers(sessions, count, sub='consumable', city='', products='Female plug 13A; 3 way female plug'):
+    """Suppliers whose capability states the requested products (product evidence)."""
     with sessions() as db:
         for n in range(count):
             key = f'bulk-{sub}-{n:04d}'
             org(db, key)
-            cap(db, key, sub, city=city)
+            cap(db, key, sub, city=city, trade_keywords=products)
         db.commit()
 
 
@@ -141,37 +146,37 @@ def test_four_material_rfq_matches_every_eligible_supplier(env):
         db.commit()
         found = statuses(db)
         matched = {k for k, v in found.items() if v in {'eligible', 'partial'}}
-        assert matched == {'exact-fittings', 'imp-fittings', 'imp-pipes', 'imp-consumable', 'imp-wiring',
-                           'text-plugs', 'blanket-mech', 'main-elec'}, found
-        assert result['eligible_suppliers'] == 8
+        # Product evidence, or category capability for the line that names no product.
+        assert matched == {'exact-fittings', 'imp-pipes', 'text-plugs'}, found
+        assert result['eligible_suppliers'] == 3
+        # Category capability only for a specific product: retained for review, not matched.
+        for supplier in ('imp-fittings', 'imp-consumable', 'imp-wiring', 'blanket-mech', 'main-elec'):
+            assert found[supplier] == 'insufficient_evidence', (supplier, found[supplier])
+        assert reasons(db, 'imp-consumable')[0].startswith('Category capability only (subcategory)')
+        assert reasons(db, 'main-elec')[0].startswith('Category capability only (main category)')
         # Unrelated suppliers are never matched solely by discipline.
-        assert found.get('valves-only') in {None, 'ineligible'} and 'civil-only' not in found
+        assert found.get('valves-only') in {None, 'ineligible', 'insufficient_evidence'} and 'civil-only' not in found
         assert found['suspended-fittings'] == 'suspended'
-        # Strongest reason per supplier and line; fuzzy/category never labelled exact.
-        # "Plug Mi" is a one-word product after normalization ("mi" is noise): too vague for
-        # a fuzzy product match, so the linked supplier is a subcategory match, not exact.
-        assert 'exact_subcategory_item:i-plug' in reasons(db, 'exact-fittings')
-        assert 'exact_subcategory_item:i-plug' in reasons(db, 'imp-fittings')
-        assert not any(r.startswith('exact_material_item:') for r in reasons(db, 'imp-fittings'))
-        assert {'exact_subcategory_item:i-3way', 'exact_subcategory_item:i-female'} <= set(reasons(db, 'imp-consumable'))
-        assert 'exact_subcategory_item:i-female' in reasons(db, 'imp-wiring')
+        # "Plug Mi": the supplier's linked Material Master product in the line's subcategory.
+        assert 'family_item:i-plug' in reasons(db, 'exact-fittings')
+        assert not any(r.startswith('exact_material_item:') for r in reasons(db, 'exact-fittings'))
+        # "Pipe" restates its subcategory: the Pipes capability is the most specific evidence.
+        assert 'exact_subcategory_item:i-pipe' in reasons(db, 'imp-pipes')
+        assert {'item:i-3way', 'item:i-female'} <= set(reasons(db, 'text-plugs'))
         assert any(r.startswith(('family_item:i-female', 'alias_item:i-female')) for r in reasons(db, 'text-plugs'))
-        assert 'broad_only' in reasons(db, 'blanket-mech') and 'broad_only' in reasons(db, 'main-elec')
         assert 'delivery location not specified; city coverage not used' in reasons(db, 'imp-pipes')
-        # One invitation per supplier; broad matches are not invited.
-        assert invited(db) == matched - {'blanket-mech', 'main-elec'}
-        assert db.scalar(select(Invitation.matched_item_ids).where(Invitation.supplier_org_id == 'imp-consumable')) == ['i-3way', 'i-female']
-        assert db.scalar(select(func.count()).select_from(Outbox).where(Outbox.event == 'rfq.invitation')) == 6
+        # One invitation per qualifying supplier, scoped to its qualifying lines.
+        assert invited(db) == matched
+        assert db.scalar(select(Invitation.matched_item_ids).where(Invitation.supplier_org_id == 'text-plugs')) == ['i-3way', 'i-female']
+        assert db.scalar(select(func.count()).select_from(Outbox).where(Outbox.event == 'rfq.invitation')) == 3
 
     data = client.get('/api/v1/matching/rfqs/rfq4/results').json()
-    assert data['matched_suppliers'] == 8 and data['invited_suppliers'] == 6
-    assert data['subcategory_matches'] == 5 and data['main_category_matches'] == 2
-    assert data['exact_material_matches'] == 0 and data['product_description_matches'] == 1
-    assert data['excluded_by_status'].get('suspended') == 1 and data['excluded_suppliers'] == data['suppliers_evaluated'] - 8
-    # Matched suppliers come before excluded ones on the first page.
-    page = [row['status'] for row in data['matches']]
-    assert all(status in {'eligible', 'partial'} for status in page[:8])
-    assert not any(status in {'eligible', 'partial'} for status in page[8:])
+    assert data['matched_suppliers'] == 3 and data['invited_suppliers'] == 3
+    assert data['subcategory_matches'] == 1 and data['main_category_matches'] == 0
+    assert data['exact_material_matches'] == 0 and data['product_description_matches'] == 2
+    # The buyer sees final eligible suppliers only.
+    assert {row['supplier_org_id'] for row in data['matches']} == matched
+    assert data['excluded_suppliers'] == 0 and data['excluded_by_status'] == {}
 
 
 def test_exact_material_id_match_is_exact(env):
@@ -186,38 +191,69 @@ def test_exact_material_id_match_is_exact(env):
         match_and_invite(db, db.get(RFQ, 'rfq-exact'))
         db.commit()
         assert 'exact_material_item:e1' in reasons(db, 'exact-fittings', 'rfq-exact')
-        assert 'exact_subcategory_item:e1' in reasons(db, 'imp-fittings', 'rfq-exact')
+        # Subcategory membership is not evidence for a specific Material Master product.
+        assert statuses(db, 'rfq-exact')['imp-fittings'] == 'insufficient_evidence'
+
+
+def test_category_wide_material_links_are_not_exact_evidence(env):
+    """An import that linked every material of a category proves membership, not products."""
+    sessions, _, _ = env
+    with sessions() as db:
+        for n in range(30):
+            db.add(Material(id=f'fit-{n}', code=f'FIT-{n}', name_en=f'Fitting part {n}', category_id='fittings',
+                            main_category_id='mech', subcategory_id='fittings', unit='PCS', active=True))
+        db.flush()
+        all_fittings = ['plug-mi', *[f'fit-{n}' for n in range(30)]]
+        org(db, 'every-fitting'); cap(db, 'every-fitting', 'fittings', materials=all_fittings)
+        db.add(RFQ(id='rfq-wide', reference='RFQ-WIDE', buyer_org_id='buyer', title='Wide', city='', status='published',
+                   response_deadline=datetime.now(UTC) + timedelta(days=5)))
+        db.flush()
+        db.add(RFQItem(id='w1', rfq_id='rfq-wide', material_id='plug-mi', description='Plug MI 1/2 inch', specifications='',
+                       main_category_id='mech', subcategory_id='fittings', unit='PCS', quantity=Decimal(5)))
+        db.commit()
+        match_and_invite(db, db.get(RFQ, 'rfq-wide'))
+        db.commit()
+        found = statuses(db, 'rfq-wide')
+        assert found['exact-fittings'] == 'eligible'
+        assert found['every-fitting'] == 'insufficient_evidence'
+        assert 'every-fitting' not in invited(db, 'rfq-wide')
 
 
 def test_delivery_city_and_multiple_service_cities(env):
     sessions, _, _ = env
     with sessions() as db:
-        org(db, 'multi-city'); cap(db, 'multi-city', 'pipes', city='Jeddah, Riyadh')
-        org(db, 'jeddah-only'); cap(db, 'jeddah-only', 'pipes', city='Jeddah')
+        org(db, 'multi-city', city='Dammam'); cap(db, 'multi-city', 'pipes', city='Jeddah, Riyadh')
+        org(db, 'nationwide', city='Dammam'); cap(db, 'nationwide', 'pipes', city='All Saudi Arabia')
+        org(db, 'jeddah-only', city='Jeddah'); cap(db, 'jeddah-only', 'pipes', city='Jeddah')
+        org(db, 'undeclared', city='Dammam'); cap(db, 'undeclared', 'pipes')
         db.get(RFQ, 'rfq4').city = 'Riyadh'
         db.commit()
         match_and_invite(db, db.get(RFQ, 'rfq4'))
         db.commit()
         found = statuses(db)
-        assert found['multi-city'] in {'eligible', 'partial'}
-        assert 'delivery coverage unconfirmed' not in reasons(db, 'multi-city')
+        # Service coverage decides, whatever the registered office city.
+        assert found['multi-city'] in {'eligible', 'partial'} and found['nationwide'] in {'eligible', 'partial'}
         assert found['jeddah-only'] == 'location_mismatch'
-        # Blank capability city: included, coverage clearly marked unconfirmed.
+        # Coverage not declared and office elsewhere: unconfirmed, not matched or invited.
+        assert found['undeclared'] == 'location_unconfirmed'
+        assert 'undeclared' not in invited(db)
+        # Coverage not declared but the supplier's own office is in the delivery city.
         assert found['imp-pipes'] in {'eligible', 'partial'}
-        assert 'delivery coverage unconfirmed' in reasons(db, 'imp-pipes')
+        assert any('office is in Riyadh' in r for r in reasons(db, 'imp-pipes'))
 
 
 def test_optional_and_mandatory_brands(env):
     sessions, _, _ = env
     with sessions() as db:
-        org(db, 'abb-dealer'); cap(db, 'abb-dealer', 'consumable', brands=['ABB'])
+        org(db, 'abb-dealer'); cap(db, 'abb-dealer', 'consumable', brands=['ABB'], trade_keywords='Female plug; 3 way female plug')
+        org(db, 'no-brand-data'); cap(db, 'no-brand-data', 'consumable', trade_keywords='Female plug; 3 way female plug')
         db.get(RFQItem, 'i-female').specifications = 'Brand: ABB'
         db.commit()
         match_and_invite(db, db.get(RFQ, 'rfq4'))
         db.commit()
-        # Optional brand: nobody excluded; unconfirmed brands are labelled as such.
-        assert statuses(db)['imp-consumable'] in {'eligible', 'partial'}
-        assert any(r.startswith('Brand compliance is unverified') for r in reasons(db, 'imp-consumable'))
+        # Optional brand: nobody excluded; unknown brand data is never claimed as compliant.
+        assert statuses(db)['no-brand-data'] in {'eligible', 'partial'}
+        assert any(r.startswith('Brand compliance is unverified') for r in reasons(db, 'no-brand-data'))
         assert any(r.startswith('Brand requirement matches') for r in reasons(db, 'abb-dealer'))
 
         db.get(RFQItem, 'i-female').specifications = 'Brand: ABB only'
@@ -227,11 +263,14 @@ def test_optional_and_mandatory_brands(env):
         db.commit()
         found = statuses(db)
         assert found['abb-dealer'] in {'eligible', 'partial'}
-        assert found['imp-consumable'] == 'brand_mismatch'
-        assert 'Mandatory brand not confirmed' in reasons(db, 'imp-consumable')[0]
+        assert found['no-brand-data'] == 'brand_mismatch' and 'no-brand-data' not in invited(db)
+        # Its earlier (optional-brand) invitation was never delivered: superseded, record kept.
+        superseded = db.scalar(select(Invitation).where(Invitation.supplier_org_id == 'no-brand-data'))
+        assert superseded.status == 'cancelled' and superseded.cancellation_reason.startswith('Mandatory brand')
+        assert 'Mandatory brand not confirmed' in reasons(db, 'no-brand-data')[0]
 
 
-@pytest.mark.parametrize('count', [100, 500, 1000])
+@pytest.mark.parametrize('count', [100, 800])
 def test_every_eligible_supplier_is_returned_and_paginated(env, count):
     sessions, client, _ = env
     bulk_suppliers(sessions, count)
@@ -240,16 +279,16 @@ def test_every_eligible_supplier_is_returned_and_paginated(env, count):
         result = match_and_invite(db, db.get(RFQ, 'rfq4'), bounded=True, limit=100)
         elapsed = time.perf_counter() - started
         db.commit()
-        assert result['eligible_suppliers'] == count + 8
+        assert result['eligible_suppliers'] == count + 3
         assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('bulk-%'))) == count
         assert elapsed < 60, elapsed
     first = client.get('/api/v1/matching/rfqs/rfq4/results?limit=25&offset=0').json()
-    assert first['matched_suppliers'] == count + 8 and len(first['matches']) == 25
+    assert first['matched_suppliers'] == count + 3 and len(first['matches']) == 25
     seen = set()
-    for offset in range(0, count + 8, 25):
+    for offset in range(0, count + 3, 25):
         page = client.get(f'/api/v1/matching/rfqs/rfq4/results?limit=25&offset={offset}').json()['matches']
         seen.update(row['supplier_org_id'] for row in page if row['status'] in {'eligible', 'partial'})
-    assert len(seen) == count + 8
+    assert len(seen) == count + 3
 
 
 def test_duplicate_matching_requests_are_idempotent(env):
@@ -293,4 +332,4 @@ def test_interrupted_matching_resumes_from_cursor_without_duplicates(env):
         assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('bulk-%'))) == 120
         assert db.scalar(select(func.count()).select_from(Invitation)) == len(invited(db))
     done = client.get('/api/v1/matching/rfqs/rfq4/results').json()
-    assert done['matching_status'] == 'completed' and done['matched_suppliers'] == 128
+    assert done['matching_status'] == 'completed' and done['matched_suppliers'] == 123

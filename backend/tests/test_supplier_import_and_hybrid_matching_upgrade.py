@@ -288,7 +288,8 @@ def test_contact_specific_routing_by_main_category_and_subcategory(env):
         db.flush()
 
         cap_elec = Capability(org_id=sup_org.id, category_id=ids['sub_2nd'], city='Riyadh', material_ids=[ids['mat_cat6']], confirmed=True, accepts_rfqs=True, eligibility_status='enabled')
-        cap_mech = Capability(org_id=sup_org.id, category_id=ids['mech_main'], city='Riyadh', material_ids=[], confirmed=True, accepts_rfqs=True, eligibility_status='enabled')
+        # The mechanical capability states the product (strict matching needs product evidence).
+        cap_mech = Capability(org_id=sup_org.id, category_id=ids['mech_main'], city='Riyadh', material_ids=[], confirmed=True, accepts_rfqs=True, eligibility_status='enabled', trade_keywords='Plumbing valves')
         db.add_all([cap_elec, cap_mech])
         db.flush()
 

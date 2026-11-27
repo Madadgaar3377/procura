@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from difflib import SequenceMatcher
+from functools import lru_cache
 from hashlib import sha256
 import json
 import logging
@@ -200,6 +201,52 @@ def canonical_tokens(canonical: str) -> set[str]:
     return tokens
 
 
+# Words that change what the product is. A request naming one is only met by supplier
+# product wording naming the same one: "RGB Flood Light" is not a daylight floodlight,
+# "Cat6" cable is not "Cat6a", "PVC" pipe is not "UPVC" or "GI" pipe.
+CRITICAL_QUALIFIERS = frozenset({
+    'rgb', 'rgbw', 'rgbww', 'led', 'dmx', 'dali', 'cat5', 'cat5e', 'cat6', 'cat6a', 'cat7', 'cat8',
+    'pvc', 'upvc', 'cpvc', 'hdpe', 'ldpe', 'ppr', 'pex', 'grp', 'gi', 'xlpe', 'lsoh', 'lszh', 'swa',
+    'copper', 'aluminium', 'brass', 'galvanized', 'stainless', 'ss304', 'ss316',
+    'ip44', 'ip54', 'ip55', 'ip65', 'ip66', 'ip67', 'ip68', 'atex', 'fiber', 'coaxial', 'armored',
+})
+_QUALIFIER_SPELLINGS = {'aluminum': 'aluminium', 'galvanised': 'galvanized', 'fibre': 'fiber',
+                        'armoured': 'armored', 'cat5e': 'cat5e', 'gi': 'gi'}
+_VOLTAGE_RE = re.compile(r'(?<![\w.])(\d+(?:\.\d+)?)\s*(kv|v)(?!\w)', re.I)
+_SIZE_RE = re.compile(r'(?<![\w.])(\d+(?:\.\d+)?)\s*(mm|cm|inch|in|")(?!\w)|(?<!\w)(dn|ø)\s*(\d+)(?!\w)', re.I)
+
+
+@lru_cache(maxsize=65536)
+def technical_identifiers(text: str | None) -> dict[str, frozenset[str]]:
+    """Qualifiers, voltages, sizes and model codes that distinguish otherwise similar products."""
+    raw = strip_item_reference(text or '')
+    norm = re.sub(r'\bcat\s*-?\s*(\d+[a-z]?)\b', r'cat\1', normalize_text(raw))
+    words ={_QUALIFIER_SPELLINGS.get(w, w) for w in re.findall(r'[\w]+', norm)}
+    voltages = {f'{float(v):g}{u.lower()}' for v, u in _VOLTAGE_RE.findall(raw)}
+    sizes = set()
+    for value, unit, prefix, number in _SIZE_RE.findall(raw):
+        sizes.add(f'{prefix.lower()}{number}' if prefix else f'{float(value):g}{"in" if unit in {"inch", chr(34)} else unit.lower()}')
+    return {'qualifiers': frozenset(words & CRITICAL_QUALIFIERS), 'voltage': frozenset(voltages),
+            'size': frozenset(sizes), 'model': frozenset(m.upper() for m in CODE_TOKEN_RE.findall(raw))}
+
+
+def technical_conflict(request: str | None, candidate: str | None) -> str | None:
+    """Why the candidate product is technically different from the request, or None.
+
+    Every critical qualifier of the request must be named by the candidate. Voltages,
+    sizes and model codes conflict only when both name values and none agree; a
+    candidate that does not state a size is not contradicted.
+    """
+    wanted, offered = technical_identifiers(request), technical_identifiers(candidate)
+    missing = wanted['qualifiers'] - offered['qualifiers']
+    if missing:
+        return 'missing ' + ', '.join(sorted(q.upper() for q in missing))
+    for kind in ('voltage', 'size', 'model'):
+        if wanted[kind] and offered[kind] and not wanted[kind] & offered[kind]:
+            return f'different {kind}: {", ".join(sorted(offered[kind]))}'
+    return None
+
+
 def product_search_terms(tokens: set[str]) -> list[str]:
     """Indexed ILIKE/trigram terms: alias variants of product heads, then the longest words."""
     terms: list[str] = []
@@ -223,9 +270,19 @@ def family_similarity(item_tokens: set[str], candidate_tokens: set[str]) -> floa
     fuzzy = set()
     remaining = set(candidate_tokens - overlap)
     for token in sorted(item_tokens - overlap):
-        near = max((word for word in remaining if len(token) >= 5 and len(word) >= 5
-                    and SequenceMatcher(None, token, word).ratio() >= 0.84),
-                   key=lambda word: SequenceMatcher(None, token, word).ratio(), default=None)
+        if len(token) < 5:
+            continue
+        near, best = None, 0.84
+        for word in sorted(remaining):
+            # 2*min/(a+b) bounds the ratio; the quick ratios are cheap upper bounds too.
+            if len(word) < 5 or 2 * min(len(token), len(word)) / (len(token) + len(word)) < best:
+                continue
+            matcher = SequenceMatcher(None, token, word)
+            if matcher.real_quick_ratio() < best or matcher.quick_ratio() < best:
+                continue
+            ratio = matcher.ratio()
+            if ratio > best or (ratio == best and near is None):
+                near, best = word, ratio
         if near:
             fuzzy.add(token)
             remaining.remove(near)

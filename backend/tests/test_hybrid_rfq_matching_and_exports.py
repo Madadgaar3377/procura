@@ -359,8 +359,8 @@ def test_unresolved_matching_does_not_call_ai_or_invent_supplier_evidence():
             mock_settings.return_value.gemini_api_key.get_secret_value.return_value = 'test-key'
             summary_fail = match_and_invite(db, rfq)
             db.commit()
-            # Main-category capabilities remain visible as broad recommendations.
-            assert summary_fail['eligible_suppliers'] == 2
+            # Main-category capability alone is not product evidence: nothing is matched.
+            assert summary_fail['eligible_suppliers'] == 0
             assert summary_fail['new_invitations'] == 0
 
         # Even a configured AI response is not used during deterministic matching.
@@ -379,7 +379,7 @@ def test_unresolved_matching_does_not_call_ai_or_invent_supplier_evidence():
             mock_settings.return_value.gemini_api_key.get_secret_value.return_value = 'test-key'
             summary_ok = match_and_invite(db, rfq)
             db.commit()
-            assert summary_ok['eligible_suppliers'] == 2
+            assert summary_ok['eligible_suppliers'] == 0
             assert summary_ok['new_invitations'] == 0
             assert not ai_call.called
             invs = list(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq.id)).all())

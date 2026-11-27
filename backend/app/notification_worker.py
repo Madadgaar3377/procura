@@ -266,7 +266,12 @@ def process_batch(db,limit=25,now=None,event_ids=None):
     query=select(Outbox.id).where(eligible)
     if event_ids is not None:query=query.where(Outbox.id.in_(event_ids))
     ids=db.scalars(query.order_by(Outbox.created_at,Outbox.id).limit(limit)).all();done=[]
-    for event_id in ids:
+    poll_started=time.monotonic();budget=get_settings().outbox_poll_time_budget_seconds
+    for position,event_id in enumerate(ids):
+        # Unclaimed events stay queued for the next poll; nothing is skipped or lost.
+        if event_ids is None and position and time.monotonic()-poll_started>=budget:break
+        # Eligibility results are reused only within one event (quotation draft + notice).
+        db.info.pop('eligibility_memo',None)
         try:
             event=db.scalar(select(Outbox).where(Outbox.id==event_id,eligible).with_for_update(skip_locked=True))
             if not event:continue
@@ -307,9 +312,10 @@ def process_batch(db,limit=25,now=None,event_ids=None):
             if event.status not in {'failed','uncertain'}:event.last_error=None
             if event.status in {'skipped','uncertain'}:update_delivery_notification(db,event.id,event.status)
             db.commit();done.append(event_id)
-            log.info('Outbox event=%s correlation_id=%s channel=%s status=%s provider_status=%s',
+            log.info('Outbox event=%s correlation_id=%s channel=%s status=%s provider_status=%s%s',
                 event_id,(event.payload.get('context') or {}).get('correlation_id',event_id),
-                event.payload.get('channel','internal'),event.status,event.delivery_status)
+                event.payload.get('channel','internal'),event.status,event.delivery_status,
+                f" reason={event.payload['eligibility_reason']}" if event.payload.get('eligibility_reason') else '')
         except Exception as exc:  # noqa: BLE001 - isolate jobs and keep the worker available
             db.rollback();event=db.get(Outbox,event_id)
             if event:

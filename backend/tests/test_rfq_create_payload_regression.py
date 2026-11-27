@@ -31,8 +31,11 @@ def seed_disciplines(e):
                                 is_buyer=False, is_supplier=True, verified_status='verified'))
             db.flush()
             db.add(Member(user_id=f'sup-{key}', organization_id=f'sup-{key}-org', role='supplier'))
+            # Each supplier carries its discipline's product (strict matching needs product evidence).
             db.add(Capability(org_id=f'sup-{key}-org', category_id=f'{key}-sub', city='Riyadh', confirmed=True,
-                              accepts_rfqs=True, eligibility_status='enabled'))
+                              accepts_rfqs=True, eligibility_status='enabled',
+                              material_ids={'el': ['cable-1'], 'me': ['valve-1']}.get(key, []),
+                              trade_keywords={'cv': 'Ready mix concrete C40'}.get(key, '')))
         db.commit()
 
 

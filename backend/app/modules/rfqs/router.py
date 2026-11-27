@@ -268,11 +268,23 @@ def cancel(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)
 
 @router.post('/{rfq_id}/reminders')
 def remind_pending(rfq_id:str,request:Request,payload:RFQReminderIn|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
-    """Queue pending supplier reminders with a shared rolling 24-hour cooldown."""
-    from datetime import timedelta
+    """Queue reminders for one, selected or all pending suppliers; report every outcome.
 
-    from app.modules.notifications.procurement import pending_orgs
+    Body: ``{}`` or no body = every pending supplier; ``{"invitation_ids": [...]}`` or
+    ``{"supplier_org_ids": [...]}`` = those suppliers. Pending means the persisted
+    matching result (same query as the buyer page): an active invitation of a matched
+    supplier without a submitted quotation. Each supplier invitation has its own
+    cooldown. Suppliers without a usable contact are skipped, never silently counted.
+    Messages are queued durable outbox events; delivery is reported by the provider later.
+    """
+    from datetime import timedelta
+    from uuid import uuid4
+
+    from app.config import get_settings
+    from app.modules.notifications.procurement import pending_invitations
+    from app.modules.notifications.recipients import resolve
     from app.rate_limit import enforce_rate_limit
+    settings=get_settings()
     rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
@@ -281,26 +293,48 @@ def remind_pending(rfq_id:str,request:Request,payload:RFQReminderIn|None=None,us
     if deadline.tzinfo is None:deadline=deadline.replace(tzinfo=UTC)
     if rfq.status not in {'published','collecting_quotes'} or deadline<=now:
         raise HTTPException(409,'RFQ is closed or past its deadline')
-    enforce_rate_limit(request,scope='rfq-reminders',identity=user.id,limit=10,window_seconds=3600)
-    recent=db.scalar(select(Outbox.id).where(Outbox.event=='rfq.deadline.reminder',
-        Outbox.payload['rfq_id'].as_string()==rfq.id,Outbox.created_at>now-timedelta(hours=24)).limit(1))
-    if recent:raise HTTPException(409,'A reminder was already queued within the last 24 hours')
-    pending=set(pending_orgs(db,rfq))
-    selected=None
-    if payload and payload.invitation_ids is not None:
-        selected=set(payload.invitation_ids)
-        invitations=db.scalars(select(Invitation).where(Invitation.rfq_id==rfq.id,Invitation.id.in_(selected))).all()
-        if len(invitations)!=len(selected) or any(inv.supplier_org_id not in pending for inv in invitations):
-            raise HTTPException(422,'Select only eligible pending invitations belonging to this RFQ')
-        pending={inv.supplier_org_id for inv in invitations}
-    count=len(pending)
-    if not count:return {'queued':False,'pending_suppliers':0}
-    context:dict[str,object]={'rfq_id':rfq.id}
-    if selected is not None:context['invitation_ids']=sorted(selected)
-    job=Outbox(event='rfq.deadline.reminder',payload=context)
-    db.add(job);audit(db,user,'rfq.reminder_queued',rfq.buyer_org_id,rfq.id,count=count)
+    enforce_rate_limit(request,scope='rfq-reminders',identity=user.id,limit=settings.rfq_reminder_requests_per_hour,window_seconds=3600)
+    selection=None;requested=0
+    if payload and (payload.invitation_ids is not None or payload.supplier_org_ids is not None):
+        column=Invitation.id if payload.invitation_ids is not None else Invitation.supplier_org_id
+        values=set(payload.invitation_ids or payload.supplier_org_ids or [])
+        known=db.execute(select(Invitation.id,column).where(Invitation.rfq_id==rfq.id,column.in_(values))).all()
+        unknown=values-{value for _,value in known}
+        if unknown:
+            field='invitation_ids' if payload.invitation_ids is not None else 'supplier_org_ids'
+            raise HTTPException(422,[{'loc':['body',field],'type':'value_error',
+                'msg':f'{len(unknown)} selected supplier(s) have no invitation for this RFQ'}])
+        selection={invitation_id for invitation_id,_ in known};requested=len(selection)
+    pending=pending_invitations(db,rfq,selection)
+    if selection is None:requested=len(pending)
+    skipped={'not_pending':requested-len(pending),'cooldown':0,'no_valid_contact':0}
+    cooldown=timedelta(hours=settings.rfq_reminder_cooldown_hours)
+    queued=[];next_available=None
+    for invitation in db.scalars(select(Invitation).where(Invitation.id.in_([i.id for i in pending])).with_for_update()):
+        last=invitation.last_reminded_at
+        if last and (last.replace(tzinfo=UTC) if last.tzinfo is None else last)+cooldown>now:
+            skipped['cooldown']+=1
+            available=(last.replace(tzinfo=UTC) if last.tzinfo is None else last)+cooldown
+            next_available=min(next_available or available,available)
+            continue
+        recipients=resolve(db,invitation.supplier_org_id,rfq.id,'deadline_reminder')
+        if not any(row.get('destination') for rows in recipients.values() for row in rows):
+            skipped['no_valid_contact']+=1
+            continue
+        invitation.last_reminded_at=now;invitation.reminder_count=(invitation.reminder_count or 0)+1
+        queued.append(invitation.id)
+    if queued:
+        db.add(Outbox(event='rfq.deadline.reminder',dedupe_key=f'rfq-reminder-request:{rfq.id}:{uuid4().hex}',
+                      payload={'rfq_id':rfq.id,'invitation_ids':sorted(queued),'requested_by':user.id}))
+    audit(db,user,'rfq.reminder_requested',rfq.buyer_org_id,rfq.id,requested=requested,queued=len(queued),skipped=skipped)
     db.commit()
-    return {'queued':True,'pending_suppliers':count}
+    parts=[f'{len(queued)} reminder(s) queued.' if queued else 'No reminder was queued.']
+    labels={'no_valid_contact':'no valid email or mobile contact exists','cooldown':'a reminder was sent recently',
+            'not_pending':'they already responded, declined or are no longer eligible'}
+    parts+=[f'{count} supplier(s) skipped because {labels[key]}.' for key,count in skipped.items() if count]
+    return {'requested':requested,'queued':len(queued),'skipped':skipped,'failed':0,
+            'queued_invitation_ids':sorted(queued),'pending_suppliers':len(pending),
+            'next_available_at':next_available.isoformat() if next_available else None,'message':' '.join(parts)}
 
 
 @router.post('/{rfq_id}/attachments', status_code=201, response_model=RFQAttachmentOut)

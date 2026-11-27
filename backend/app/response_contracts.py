@@ -274,6 +274,7 @@ class BuyerInvitation(InvitationOut):
     supplier_name: str
     quotation_status: str | None = None
     reminder_eligible: bool = False
+    next_reminder_at: str | None = None
 
 class Comparison(ResponseModel):
     rfq_id: str
@@ -377,6 +378,12 @@ class MatchingDiagnosticOut(ResponseModel):
     excluded_suppliers: list[MatchingSupplierDiagnostic] = Field(default_factory=list)
     job_status: list[OutboxOut]
     supplier_reasons: list[MatchingSupplierDiagnostic]
+    # Candidate funnel from persisted data: initial candidates, discipline/main/sub
+    # capability holders, exact/fuzzy product matches, exclusions, final eligible.
+    funnel: dict[str, int] = Field(default_factory=dict)
+    channel_delivery: dict[str, dict[str, int]] = Field(default_factory=dict)
+    reminders: dict[str, Any] = Field(default_factory=dict)
+    failed_job_reasons: list[str] = Field(default_factory=list)
 
 class MatchingRerunOut(ResponseModel):
     rfq_id: str

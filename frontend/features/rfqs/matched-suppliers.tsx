@@ -95,7 +95,7 @@ function SupplierRow({ match, city, favorite, toggle, tr }: {
             <small>{' \u00b7 '}{[item.match_level && itemLevel[item.match_level], item.discipline, item.main_category !== item.discipline ? item.main_category : null, item.subcategory].filter(Boolean).join(' \u203a ')}</small></li>)}
         </ul> : <span>{relevant || tr('Review capabilities in the supplier profile')}</span>}
         <span>{`${match.matched_item_count || items.length || match.covered_items?.length || 0} ${tr('matched RFQ items')} \u00b7 ${match.saved_price_available ? tr('Saved price available') : tr('Manual pricing required')}`}</span>
-        {evidence === 'category' && <small>{tr('Broad category match: not invited automatically. Confirm the specific product before inviting.')}</small>}
+        {(evidence === 'category' || evidence === 'subcategory') && <small>{tr('Category capability: this RFQ item does not name a specific product.')}</small>}
         {evidence !== 'material' && <small>{tr('Technical compliance is not confirmed by this match; review specifications in the quotation.')}</small>}
       </> : <><strong className={styles.reason}>{reasons[eligibilityReason(match)]}</strong>
         {match.invitation_review_required && <small>{tr('Earlier invitation retained; current eligibility needs review.')}</small>}</>}
@@ -194,12 +194,12 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
     timer = window.setTimeout(poll, 5000);
     return () => window.clearTimeout(timer);
   }, [currentId, busyProgress, state.inconsistent, pollRevision, results.reload, invitationResults.reload, invitationOffset, offset]);
+  const waitingReminder = invitations.some(row => row.next_reminder_at && new Date(row.next_reminder_at).getTime() > Date.now());
   useEffect(() => {
-    const available = data?.reminder_available_at;
-    if (!available || new Date(available).getTime() <= Date.now()) return;
+    if (!waitingReminder) return;
     const timer = window.setInterval(() => setClock(Date.now()), 30_000);
     return () => window.clearInterval(timer);
-  }, [data?.reminder_available_at]);
+  }, [waitingReminder]);
 
   const refresh = () => {
     setStalled(false); setPollRevision(v => v + 1); results.reload(); detail.reload();
@@ -218,7 +218,6 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
   const saved = (supplierId: string) => favoriteOverrides[supplierId] ?? (favoriteIds.has(supplierId) || !!knownFavorites[supplierId]);
   const matches = data?.matches || [];
   const recommended = matches.filter(isRecommended);
-  const other = matches.filter(match => !isRecommended(match));
   const categories = useMemo(() => new Map((taxonomy.data || []).map(c => [c.id, arabic && c.name_ar ? c.name_ar : c.name_en])), [taxonomy.data, arabic]);
   const mainCategories = [...new Set((detail.data?.items || []).map(item => categories.get(item.main_category_id || '')).filter(Boolean))].join(' \u00b7 ');
   const quantities = Object.entries((detail.data?.items || []).reduce<Record<string, number>>((totals, item) => {
@@ -226,19 +225,25 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
   }, {})).map(([unit, quantity]) => `${new Intl.NumberFormat(arabic ? 'ar-SA' : 'en-GB').format(quantity)} ${unit}`).join(' \u00b7 ');
   const received = data?.quotations_received ?? invitations.filter(row => isSubmitted(row.quotation_status)).length;
   const partialQuoteCount = data?.quotations_received == null && (invitationOffset > 0 || (data?.invited_suppliers || 0) > invitations.length);
-  const cooldownActive = !!data?.reminder_available_at && new Date(data.reminder_available_at).getTime() > clock;
-  const eligibleReminderIds = new Set(invitations.filter(row => row.reminder_eligible && !cooldownActive && !isSubmitted(row.quotation_status)).map(row => row.id));
+  // Cooldowns are per supplier: the backend marks each pending invitation it will accept.
+  const eligibleReminderIds = new Set(invitations.filter(row => row.reminder_eligible && !isSubmitted(row.quotation_status)
+    && (!row.next_reminder_at || new Date(row.next_reminder_at).getTime() <= clock)).map(row => row.id));
   const reminders = selectedReminders.filter(value => eligibleReminderIds.has(value));
-  const sendReminders = async () => {
-    if (!reminders.length || reminding || cooldownActive) return;
+  // ids: one supplier, the selected suppliers, or undefined = every pending supplier.
+  const sendReminders = async (ids?: string[]) => {
+    if (reminding || (ids && !ids.length)) return;
     setReminding(true);
     try {
-      await api(`rfqs/${currentId}/reminders`, { method: 'POST', body: json({ invitation_ids: reminders }) });
-      toast.success(tr('Reminder request recorded.'));
+      const outcome = await api<{ queued: number; message: string }>(`rfqs/${currentId}/reminders`,
+        { method: 'POST', body: json(ids ? { invitation_ids: ids } : {}) });
+      if (outcome.queued) toast.success(tr('Reminders queued'), outcome.message);
+      else toast.error(tr('No reminder was queued'), outcome.message);
       setSelectedReminders([]); results.reload(); if (invitationOffset !== offset) invitationResults.reload();
-    } catch { toast.error(t('Action failed'), tr('Could not record reminders. Please refresh and try again.')); }
+      notificationsStatus.reload();
+    } catch (error) { toast.error(t('Action failed'), error instanceof Error ? error.message : tr('Could not record reminders. Please refresh and try again.')); }
     finally { setReminding(false); }
   };
+  const dateTime = (value: string) => new Intl.DateTimeFormat(arabic ? 'ar-SA-u-ca-gregory' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value));
   const stateLabels: Record<string, string> = {
     loading: tr('Matching in progress'), queued: tr('Matching in progress'), processing: tr('Matching in progress'),
     completed: tr('Matching completed'), no_eligible: tr('No eligible suppliers found'),
@@ -246,8 +251,9 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
     draft: tr('Draft RFQ'), closed: tr('RFQ closed'),
   };
   const row = (match: Match) => <SupplierRow key={match.id} match={match} city={rfq?.city} favorite={saved(match.supplier_org_id)} toggle={toggleFavorite} tr={tr}/>;
-  const totalEvaluated = data?.suppliers_evaluated;
-  const nextMatches = totalEvaluated == null ? matches.length === PAGE_SIZE : offset + PAGE_SIZE < totalEvaluated;
+  // Results list final eligible suppliers only, 25 per server page.
+  const totalMatched = data?.matched_suppliers;
+  const nextMatches = totalMatched == null ? matches.length === PAGE_SIZE : offset + PAGE_SIZE < totalMatched;
 
   return <div className={styles.workspace} dir={arabic ? 'rtl' : 'ltr'}>
     {!embedded && <header className={styles.header}><div><h1>{tr('Find the right suppliers.')}</h1>
@@ -290,11 +296,9 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
           {data && <><div className={styles.supplierList}>{recommended.map(row)}</div>
             {!recommended.length && <p className={styles.empty}>{state.busy ? tr('Matching is underway. Recommendations will appear here.')
               : state.label === 'draft' ? tr('Publish this RFQ to start supplier matching.')
-              : totalEvaluated && totalEvaluated > PAGE_SIZE ? tr('No recommendations on this evaluated page. Review the other pages.')
               : data.explanation || tr('No eligible suppliers currently match this RFQ.')}</p>}
-            {!!other.length && <details className={styles.other}><summary>{tr('Other evaluated suppliers')} <span>{other.length} · {tr('on this page')}</span></summary><div className={styles.supplierList}>{other.map(row)}</div></details>}
-            <nav className={styles.pagination} aria-label={tr('Evaluated supplier pages')}>
-              <span>{tr('Evaluated page')} {Math.floor(offset / PAGE_SIZE) + 1}{totalEvaluated != null ? ` · ${totalEvaluated} ${tr('evaluated in total')}` : ''}</span>
+            <nav className={styles.pagination} aria-label={tr('Matched supplier pages')}>
+              <span>{tr('Page')} {Math.floor(offset / PAGE_SIZE) + 1}{totalMatched != null ? ` · ${totalMatched} ${tr('matched suppliers')}` : ''}</span>
               <div><Button variant="outline" size="sm" disabled={!offset || results.fetching} onClick={() => setPage({ rfq: currentId, offset: Math.max(0, offset - PAGE_SIZE) })}>{t('Previous')}</Button>
                 <Button variant="outline" size="sm" disabled={!nextMatches || results.fetching} onClick={() => setPage({ rfq: currentId, offset: offset + PAGE_SIZE })}>{t('Next')}</Button></div>
             </nav></>}
@@ -325,10 +329,13 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
               <span>{invitation.supplier_name}</span></label>
             <span>{invitation.status === 'accepted' ? tr('Accepted') : invitation.status === 'declined' ? tr('Declined') : invitation.status === 'invited' ? tr('Pending response') : t(invitation.status.replaceAll('_', ' '))}</span>
             <span>{isSubmitted(invitation.quotation_status) ? tr('Quotation received') : tr('No quotation submitted')}</span>
+            {eligibleReminderIds.has(invitation.id)
+              ? <Button size="sm" variant="outline" disabled={reminding} onClick={() => void sendReminders([invitation.id])}>{tr('Send reminder')}</Button>
+              : <small>{invitation.next_reminder_at ? `${tr('Next reminder available')}: ${dateTime(invitation.next_reminder_at)}` : ''}</small>}
           </div>)}
-          <div className={styles.reminderActions}><Button size="sm" disabled={!reminders.length || reminding || cooldownActive} onClick={sendReminders}>{reminding ? t('Saving...') : tr('Remind selected suppliers')}</Button>
-            <small>{cooldownActive && data?.reminder_available_at ? `${tr('Next reminder available')}: ${new Intl.DateTimeFormat(arabic ? 'ar-SA-u-ca-gregory' : 'en-GB', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(data.reminder_available_at))}`
-              : tr('Reminders have a 24-hour cooldown.')}</small></div>
+          <div className={styles.reminderActions}><Button size="sm" disabled={!reminders.length || reminding} onClick={() => void sendReminders(reminders)}>{reminding ? t('Saving...') : tr('Remind selected suppliers')}</Button>
+            <Button size="sm" variant="outline" disabled={reminding || !data?.pending_suppliers} onClick={() => void sendReminders()}>{tr('Remind all pending suppliers')}</Button>
+            <small>{tr('Each supplier can be reminded once per cooldown period. Suppliers without a valid contact are reported as skipped.')}</small></div>
         </details>}
         <nav className={styles.pagination} aria-label={tr('Invitation pages')}><span>{tr('Invitation page')} {Math.floor(invitationOffset / PAGE_SIZE) + 1}</span><div>
           <Button size="sm" variant="outline" disabled={!invitationOffset || progressResult.fetching} onClick={() => { setInvPage({ rfq: currentId, offset: Math.max(0, invitationOffset - PAGE_SIZE) }); setSelectedReminders([]); }}>{t('Previous')}</Button>

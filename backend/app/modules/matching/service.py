@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import re
 import time
 from types import SimpleNamespace
+from uuid import uuid4
 
 from sqlalchemy import cast, func, literal, or_, select, text, union
 from sqlalchemy.dialects.postgresql import JSONB, array as pg_array
@@ -39,6 +40,7 @@ from app.modules.rfqs.material_matching import (
     gemini_semantic_supplier_match,
     product_search_terms,
     product_tokens,
+    technical_conflict,
 )
 from app.security import as_utc
 
@@ -50,9 +52,15 @@ LEVEL_MAIN = 'main category'
 LEVEL_AI = 'AI-assisted semantic match'
 LEVEL_ORDER = (LEVEL_EXACT, LEVEL_ALIAS, LEVEL_FAMILY, LEVEL_SUB, LEVEL_MAIN, LEVEL_AI)
 LEVEL_RANK = {level: rank for rank, level in enumerate(LEVEL_ORDER)}
-# Broad, AI-only and unconfirmed-location evidence is displayed for review but
-# never triggers an automatic invitation.
-AUTO_INVITE_LEVELS = frozenset({LEVEL_EXACT, LEVEL_ALIAS, LEVEL_FAMILY, LEVEL_SUB})
+# Supplier product evidence for the requested product. Only these qualify a line when
+# the line describes a specific product; category capability alone qualifies only a
+# line whose description adds nothing beyond its category (see scope['generic']).
+PRODUCT_LEVELS = frozenset({LEVEL_EXACT, LEVEL_ALIAS, LEVEL_FAMILY})
+AUTO_INVITE_LEVELS = PRODUCT_LEVELS  # legacy name
+# Final buyer-facing statuses; every other status is internal (admin diagnostics only).
+MATCHED_STATUSES = ('eligible', 'partial')
+# Candidates retained for admin review only: never shown, counted or invited.
+REVIEW_STATUSES = ('insufficient_evidence', 'location_unconfirmed')
 LEVEL_WEIGHT = {LEVEL_EXACT: 30, LEVEL_ALIAS: 27, LEVEL_FAMILY: 24, LEVEL_SUB: 18, LEVEL_MAIN: 8, LEVEL_AI: 8}
 LEVEL_MARKER = {LEVEL_EXACT: 'exact_material_item:', LEVEL_ALIAS: 'alias_item:', LEVEL_FAMILY: 'family_item:',
                 LEVEL_SUB: 'exact_subcategory_item:', LEVEL_MAIN: 'main_category_item:', LEVEL_AI: 'ai_semantic_item:'}
@@ -63,6 +71,10 @@ LEVEL_LABEL = {LEVEL_EXACT: 'Approved exact material capability', LEVEL_ALIAS: '
 # An admin import that maps a supplier to every subcategory (of a main category with
 # at least this many) is discipline-wide, not subcategory evidence.
 BLANKET_MIN_SUBCATEGORIES = 3
+# A capability linked to at least this many materials covering this share of its
+# category's active materials is a category-wide assignment, not product evidence.
+CATEGORY_WIDE_MIN_LINKS = 20
+CATEGORY_WIDE_SHARE = 0.8
 # Persisted machine markers; never shown to buyers.
 INTERNAL_REASON_PREFIXES = ('item:', 'coverage:', 'exact_materials:', 'taxonomy:', 'broad_only', 'fuzzy_item:',
                             'keyword_item:', *LEVEL_MARKER.values())
@@ -97,7 +109,8 @@ def match_level(reasons: list[str] | None, item_id: str | None = None) -> list[s
 
 
 NATIONWIDE_KEYWORDS = {
-    'all', 'all cities', 'nationwide', 'kingdom-wide', 'ksa', 'saudi arabia',
+    'all', 'all cities', 'nationwide', 'kingdom-wide', 'kingdom wide', 'ksa', 'saudi arabia',
+    'all saudi arabia', 'all ksa', 'all over saudi arabia', 'all over ksa', 'all kingdom', 'whole kingdom',
     'المملكة', 'جميع المدن', 'كل المدن', 'كافة المدن', 'السعودية',
 }
 
@@ -305,8 +318,17 @@ def resolve_item_scopes(db: Session, requested, categories: dict) -> tuple[list[
             info[row.id] = (row.name_en, pair[0], pair[1], product_tokens(row.name_en) | product_tokens(row.name_ar))
 
     for scope in scopes:
+        request = _product_description(scope['item'].description)
+        # A product with a different critical qualifier (RGB, Cat6a, UPVC...), voltage,
+        # size or model is not the requested product, however similar its wording.
         family = {mid: sim for mid, value in info.items()
-                  if (sim := family_similarity(scope['tokens'], value[3]))}
+                  if (sim := family_similarity(scope['tokens'], value[3])) and not technical_conflict(request, value[0])}
+        if len(scope['tokens']) == 1 and scope['sub']:
+            # A one-word product ("Plug Mi" -> plug) is too vague across the catalogue, but
+            # within the line's own subcategory a product naming that word is the product.
+            (word,) = scope['tokens']
+            family.update({mid: 0.5 for mid, value in info.items() if mid not in family and value[2] == scope['sub']
+                           and word in value[3] and not technical_conflict(request, value[0])})
         if scope['material_id'] in info:
             family[scope['material_id']] = 1.0
         if scope['main']:
@@ -324,6 +346,23 @@ def resolve_item_scopes(db: Session, requested, categories: dict) -> tuple[list[
         exact_sub = info[scope['material_id']][2] if scope['material_id'] in info else None
         capability_subs = {cid for cid in (scope['sub'], exact_sub, family_sub) if cid and cid in categories
                            and (not scope['main'] or cid == scope['sub'] or categories[cid].parent_id == scope['main'])}
+        # A description that only restates its category ("Pipe" filed under Pipes) names no
+        # specific product, so the most specific approved category capability is the
+        # evidence. Any other description needs supplier product evidence.
+        # generic_cats: the categories (buyer's or the Material Master's) whose names cover
+        # every product word of the line; only capability in one of them is evidence.
+        exact_sub_id = info[scope['material_id']][2] if scope['material_id'] in info else None
+        generic_cats = set()
+        for cid in {scope['main'], scope['sub'], exact_sub_id, family_sub} - {None}:
+            if cid not in categories:
+                continue
+            words = product_tokens(categories[cid].name_en)
+            if categories[cid].parent_id in categories:
+                words |= product_tokens(categories[categories[cid].parent_id].name_en)
+            if not scope['tokens'] or scope['tokens'] <= words:
+                generic_cats.add(cid)
+        scope['generic_cats'] = generic_cats
+        scope['generic'] = bool(generic_cats)
         scope.update({
             'capability_subs': capability_subs,
             'family': family,
@@ -338,6 +377,38 @@ def resolve_item_scopes(db: Session, requested, categories: dict) -> tuple[list[
             'conflict': bool(family and scope['main'] and (
                 family_main != scope['main'] or (scope['sub'] and scope['sub'] not in family_subs))),
         })
+    return scopes, info
+
+
+_SCOPE_CACHE: dict[tuple, tuple[float, list[dict], dict]] = {}
+_SCOPE_CACHE_TTL = 300.0
+
+
+def cached_item_scopes(db: Session, rfq: RFQ, requested, categories: dict) -> tuple[list[dict], dict]:
+    """resolve_item_scopes, reused for the same RFQ lines within a few minutes.
+
+    Every matching page and every invitation eligibility check needs the same
+    Material Master product family; resolving it per call made each invitation
+    job repeat the most expensive query and fuzzy scoring. The key holds the line
+    values, the material versions and the taxonomy, so an edit is never served
+    stale. Only plain derived values are cached, never ORM rows of another session.
+    """
+    taxonomy = hash(frozenset((cid, c.parent_id, c.name_en, c.normalized_name) for cid, c in categories.items()))
+    # Any Material Master insert, edit, reclassification or deactivation moves this stamp.
+    catalog = db.scalar(select(func.max(Material.updated_at)))
+    key = (id(db.get_bind()), rfq.id, taxonomy, catalog, tuple(
+        (item.id, item.material_id, item.main_category_id, item.subcategory_id, item.description,
+         item.specifications, getattr(material, 'version', None)) for item, material in requested))
+    now = time.monotonic()
+    hit = _SCOPE_CACHE.get(key)
+    if hit and now - hit[0] < _SCOPE_CACHE_TTL:
+        rows = {item.id: (item, material) for item, material in requested}
+        return [{**derived, 'item': rows[derived['id']][0], 'material': rows[derived['id']][1]}
+                for derived in hit[1]], hit[2]
+    scopes, info = resolve_item_scopes(db, requested, categories)
+    if len(_SCOPE_CACHE) >= 64:
+        _SCOPE_CACHE.clear()
+    _SCOPE_CACHE[key] = (now, [{k: v for k, v in scope.items() if k not in {'item', 'material'}} for scope in scopes], info)
     return scopes, info
 
 
@@ -375,14 +446,25 @@ def _match_batch(
 ) -> dict:
     """Find candidates with indexed SQL, grade product evidence, and persist matches/invitations.
 
-    Evidence tiers, strongest first: exact canonical material, exact normalized product
-    or approved alias, Material Master product family, approved subcategory capability,
-    and approved main-category capability. Every level is collected; each supplier and
-    line keeps its strongest reason. A subcategory capability from any source (portal or
-    import) is a subcategory match on the buyer's or the Material Master subcategory. An
-    import mapping a supplier to every subcategory of a main category, and main-category
-    capabilities, are broad matches: shown and counted, never invited automatically.
-    Location: no delivery city means no city filter. Brand: optional unless mandatory.
+    Candidate discovery (indexed SQL over the discipline, categories, material links,
+    price lists and supplier product wording) is separate from final eligibility, which
+    is decided per RFQ line:
+
+    - Product evidence qualifies: exact material (the selected material is technically the
+      requested product and the link is not a category-wide assignment), exact/alias
+      product wording, or a fuzzy product-family match. Critical qualifiers (RGB, Cat6,
+      UPVC...) must match; stated voltage, size and model must not conflict.
+    - Category capability alone qualifies only a line whose words restate that category
+      ("Pipe" under Pipes), and only capability in that category. Otherwise the supplier
+      is ``insufficient_evidence``: kept for admin review, never shown, counted or invited.
+    - Location: the capability service area (multi-city, region, nationwide), or the
+      supplier's office when no area is declared; else ``location_unconfirmed`` or
+      ``location_mismatch``. No delivery city means unspecified (no filter).
+    - Brand: optional brands never restrict and are never claimed; a mandatory brand must
+      be confirmed in supplier data, else ``brand_mismatch``.
+
+    A supplier qualifying for every line is ``eligible``, for some lines ``partial``;
+    only qualifying lines are its invitation scope. No score overrides a failed rule.
     """
     empty = {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
     if rfq.status not in {'published', 'collecting_quotes'} or as_utc(rfq.response_deadline) <= datetime.now(timezone.utc):
@@ -397,8 +479,8 @@ def _match_batch(
         return empty
 
     categories = active_categories(db)
-    scopes, material_info = resolve_item_scopes(db, requested, categories)
-    by_id = {scope['id']: scope for scope in scopes}
+    scopes, material_info = cached_item_scopes(db, rfq, requested, categories)
+    by_id ={scope['id']: scope for scope in scopes}
     postgres = db.bind.dialect.name == 'postgresql'
     batch_size = max(1, min(limit if limit is not None else 50, 100))
 
@@ -496,18 +578,38 @@ def _match_batch(
     for cap in db.scalars(cap_query):
         caps_by_org.setdefault(cap.org_id, []).append(cap)
     evidence_set = set(evidence_ids)
+    link_counts: dict[str, int] = {}
+    category_wide_caps: set[str] = set()
     if postgres:
         cap_links: dict[str, set[str]] = {}
         if evidence_ids:
-            for cap_id, linked in db.execute(text(
+            for cap_id, linked, total in db.execute(text(
                     'SELECT c.id, ARRAY(SELECT v FROM jsonb_array_elements_text(c.material_ids::jsonb) v '
-                    'WHERE v = ANY(:ids)) FROM supplier_capabilities c '
+                    'WHERE v = ANY(:ids)), jsonb_array_length(c.material_ids::jsonb) FROM supplier_capabilities c '
                     'WHERE c.org_id = ANY(:orgs) AND c.material_ids::jsonb ?| :ids'),
                     {'ids': evidence_ids, 'orgs': candidate_ids}):
                 cap_links[cap_id] = set(linked)
+                link_counts[cap_id] = int(total or 0)
     else:
         cap_links = {cap.id: set(cap.material_ids or []) & evidence_set
                      for caps in caps_by_org.values() for cap in caps}
+        link_counts = {cap.id: len(cap.material_ids or []) for caps in caps_by_org.values() for cap in caps}
+    # Provenance: a capability linked to (nearly) every active material of its category
+    # records category membership, not products the supplier offers. Such links are
+    # not product evidence; the capability still counts as category capability.
+    linked_caps = {cap.id: cap.category_id for caps in caps_by_org.values() for cap in caps
+                   if cap_links.get(cap.id) and link_counts.get(cap.id, 0) >= CATEGORY_WIDE_MIN_LINKS}
+    if linked_caps:
+        cats = set(linked_caps.values())
+        per_category = Counter()
+        for column in (Material.category_id, Material.subcategory_id, Material.main_category_id):
+            for cid, count in db.execute(select(column, func.count()).where(
+                    Material.active.is_(True), column.in_(cats)).group_by(column)).all():
+                per_category[cid] = max(per_category[cid], int(count))
+        for cap_id, cid in linked_caps.items():
+            if per_category[cid] and link_counts[cap_id] >= CATEGORY_WIDE_SHARE * per_category[cid]:
+                cap_links[cap_id] = set()
+                category_wide_caps.add(cap_id)
 
     def links(cap: Capability) -> set[str]:
         return cap_links.get(cap.id, set())
@@ -584,6 +686,12 @@ def _match_batch(
         preferred = [c for c in in_scope if c.category_id in scope['scope_subs']] or in_scope
         mid, family = scope['material_id'], scope['family']
         default_tax = (scope['family_main'] or scope['main'], scope['family_sub'] or scope['sub'])
+        request = _product_description(scope['item'].description)
+        # A selected Material Master record that is technically different from the
+        # requested description (e.g. a daylight floodlight for "RGB Flood Light") was
+        # mapped wrongly; its supplier links are not exact evidence for this line.
+        if mid and mid in material_info and technical_conflict(request, material_info[mid][0]):
+            mid = None
         if mid:
             linked = [c for c in in_scope if mid in links(c)]
             if linked or any(pb.material_id == mid for pb in pbs) or (scope['code'] and any(
@@ -617,10 +725,11 @@ def _match_batch(
                 pb_pair = material_info[pb.material_id][1:3]
             if scope['main'] and pb_pair[0] not in scope['scope_mains']:
                 continue
-            if pb.material_id and pb.material_id in family:
+            if pb.material_id and pb.material_id in family and not technical_conflict(request, pb.supplier_description):
                 candidates.append((family[pb.material_id], pb.supplier_description or material_info[pb.material_id][0],
                                    preferred, material_info[pb.material_id][1:3], {pb.material_id}))
-        text_best = max(((family_similarity(scope['tokens'], tokens), text) for text, _, tokens in texts), default=(0.0, ''))
+        text_best = max(((family_similarity(scope['tokens'], tokens), text) for text, _, tokens in texts
+                         if not technical_conflict(request, text)), default=(0.0, ''))
         if text_best[0]:
             candidates.append((text_best[0], text_best[1].strip(), preferred, default_tax, set()))
         if candidates:
@@ -634,8 +743,8 @@ def _match_batch(
         specific = [c for c in sub_caps
                     if not (c.mapping_source == 'admin_import' and categories[c.category_id].parent_id in blanket_mains)]
         if specific:
-            # Prefer the buyer's own subcategory as the recorded taxonomy.
-            specific.sort(key=lambda c: c.category_id != scope['sub'])
+            # Prefer the category the line restates, then the buyer's own subcategory.
+            specific.sort(key=lambda c: (c.category_id not in scope['generic_cats'], c.category_id != scope['sub']))
             sub = specific[0].category_id
             return {'level': LEVEL_SUB, 'caps': specific, 'sim': 0.0, 'detail': categories[sub].name_en,
                     'taxonomy': (categories[sub].parent_id, sub), 'materials': set()}
@@ -679,7 +788,11 @@ def _match_batch(
             continue
         pbs = pricebooks_by_org.get(org_id, [])
         blanket = blanket_imported_mains(approved_caps)
-        covering = [c for c in approved_caps if city_covered_by(rfq.city, c.city)[0]]
+        # A capability without a declared service area is covered when the supplier's own
+        # office is in the delivery city; otherwise its coverage stays unconfirmed.
+        local_office = bool(rfq_city_norm) and normalize_city(org.city) == rfq_city_norm
+        covering = [c for c in approved_caps if city_covered_by(rfq.city, c.city)[0]
+                    or (local_office and not (c.city or '').strip())]
         blank = [c for c in approved_caps if not (c.city or '').strip()]
         items: dict[str, dict] = {}
         mismatched: dict[str, dict] = {}
@@ -734,8 +847,9 @@ def _match_batch(
         coverage_unknown = bool(rfq_city_norm) and not any(e['coverage'] == 'covered' for e in items.values())
         exact_city = any(city_covered_by(rfq.city, c.city)[1] for e in items.values() if e['coverage'] == 'covered' for c in e['caps'])
         eligible[org_id] = {'org': org, 'items': items, 'coverage_unknown': coverage_unknown,
-                            'has_exact_city': exact_city, 'ai_explanations': {},
-                            'office_city': bool(coverage_unknown and normalize_city(org.city) == rfq_city_norm)}
+                            'has_exact_city': exact_city, 'ai_explanations': {}, 'brand_missing': brand_missing,
+                            'office_city': local_office and not any(
+                                city_covered_by(rfq.city, c.city)[0] for e in items.values() for c in e['caps'])}
 
     # Optional AI-assisted matching, only for lines with no taxonomy and no Material Master family.
     unresolved = [s for s in scopes if not s['main'] and not s['family']
@@ -775,11 +889,47 @@ def _match_batch(
                                                'taxonomy': (None, None), 'materials': set(), 'coverage': 'covered'}
                     entry['ai_explanations'][item_id] = f"{hit['explanation']} (confidence {hit['confidence']:.2f})"
 
+    def qualifies(scope: dict, e: dict) -> bool:
+        """Final per-line eligibility: covered delivery and product evidence, or the most
+        specific category capability when the line names no specific product."""
+        if e['coverage'] != 'covered':
+            return False
+        if e['level'] in PRODUCT_LEVELS:
+            return True
+        if e['level'] == LEVEL_SUB:
+            return e['taxonomy'][1] in scope['generic_cats']
+        return e['level'] == LEVEL_MAIN and not scope['sub'] and e['taxonomy'][0] in scope['generic_cats']
+
+    order = {s['id']: n for n, s in enumerate(scopes)}
+    for oid, candidate in list(eligible.items()):
+        found = candidate['items']
+        qualifying = {iid: e for iid, e in found.items() if qualifies(by_id[iid], e)}
+        if qualifying:
+            candidate['items'] = qualifying
+            continue
+        # Candidate only: retained for admin diagnostics, never shown, counted or invited.
+        del eligible[oid]
+        ids = sorted(found, key=order.get)
+        lines = '; '.join(by_id[iid]['item'].description for iid in ids)
+        markers = [f"{LEVEL_MARKER[found[iid]['level']]}{iid}" for iid in ids]
+        if candidate.get('brand_missing'):
+            status, reason = 'brand_mismatch', ('Mandatory brand not confirmed in supplier product data for: '
+                                                + '; '.join(candidate['brand_missing']) + '.')
+        elif any(qualifies(by_id[iid], {**e, 'coverage': 'covered'}) for iid, e in found.items()):
+            status, reason = 'location_unconfirmed', (f'Product evidence found for: {lines}; delivery coverage for '
+                                                      f'{rfq.city} is not declared by the supplier.')
+        elif any(e['level'] == LEVEL_AI for e in found.values()):
+            status, reason = 'insufficient_evidence', f'AI suggestion only; supplier product evidence is required for: {lines}.'
+        else:
+            kind = 'subcategory' if any(e['level'] == LEVEL_SUB for e in found.values()) else 'main category'
+            status, reason = 'insufficient_evidence', (f'Category capability only ({kind}); no supplier product, '
+                                                       f'price-list or material evidence for: {lines}.')
+        ineligible[oid] = {'org': candidate['org'], 'status': status, 'reasons': [reason, *markers]}
+
     total = max(1, len(scopes))
     for candidate in eligible.values():
         items = candidate['items']
-        candidate['auto_invite'] = any(e['level'] in AUTO_INVITE_LEVELS and e['coverage'] == 'covered'
-                                       for e in items.values())
+        candidate['auto_invite'] = True
         candidate['score'] = min(100, 50 + int(sum(LEVEL_WEIGHT[e['level']] + 4 * e['sim'] for e in items.values()) / total)
                                  + (5 if candidate['has_exact_city'] else 0) - (3 if candidate['coverage_unknown'] else 0))
     ranked = sorted(eligible.values(), key=lambda c: (
@@ -792,6 +942,8 @@ def _match_batch(
             'evaluated_suppliers': len(candidate_ids),
             'ineligible_by_status': dict(Counter(e['status'] for e in ineligible.values())),
             'ineligible_reasons': dict(Counter(e['reasons'][0] for e in ineligible.values() if e['reasons']).most_common(10)),
+            'ineligible_detail': {oid: f"{e['status']}: {e['reasons'][0] if e['reasons'] else ''}".strip()
+                                  for oid, e in ineligible.items()},
             # Per RFQ line: suppliers at each (strongest) evidence level.
             'item_levels': {s['id']: dict(Counter(c['items'][s['id']]['level'] for c in ranked if s['id'] in c['items']))
                             for s in scopes},
@@ -814,7 +966,6 @@ def _match_batch(
     for candidate in ranked:
         items = candidate['items']
         best = min(items.values(), key=lambda e: LEVEL_RANK[e['level']])['level']
-        broad_only = not candidate['auto_invite']
         if candidate['coverage_unknown']:
             coverage_reason = 'delivery coverage unconfirmed'
         elif candidate['has_exact_city']:
@@ -831,11 +982,8 @@ def _match_batch(
         for level in LEVEL_ORDER:
             reasons.extend(f'{LEVEL_MARKER[level]}{iid}' for iid in sorted(items) if items[iid]['level'] == level)
         reasons.extend(f'taxonomy:{iid}={e["taxonomy"][0] or ""}/{e["taxonomy"][1] or ""}' for iid, e in sorted(items.items()))
-        if broad_only:
-            reasons.append('broad_only')
-            reasons.append('Broad main-category capability only; not invited automatically. Review the supplier before inviting.')
         if candidate['office_city']:
-            reasons.append(f'Supplier office is in {rfq.city}; service area for this product is not declared.')
+            reasons.append(f'Supplier office is in {rfq.city}; delivery to the office city is accepted as coverage.')
         for iid, e in sorted(items.items()):
             label = taxonomy_label(categories, *e['taxonomy'])
             detail = candidate['ai_explanations'].get(iid) or e['detail']
@@ -851,18 +999,12 @@ def _match_batch(
         else:
             reasons.append('Brand compliance is unverified' + (': ' + ', '.join(brand_requests) if brand_requests else '')
                            + '; requested brands must be confirmed in the supplier quotation.')
-        reasons.append('Category eligibility does not confirm technical compliance')
+        reasons.append('Product evidence does not confirm technical compliance; confirm in the quotation')
 
-        # Full coverage means every line has specific (invitable) evidence, not a broad one.
-        status = 'eligible' if sum(e['level'] in AUTO_INVITE_LEVELS and e['coverage'] == 'covered'
-                                   for e in items.values()) == len(scopes) else 'partial'
+        # Items holds qualifying lines only: full coverage means every RFQ line qualifies.
+        status = 'eligible' if len(items) == len(scopes) else 'partial'
         match = existing.get(candidate['org'].id)
         if match:
-            if broad_only and match.status in {'eligible', 'partial'} and 'broad_only' not in (match.reasons or []):
-                from app.security import audit
-                audit(db, actor, 'rfq.match_eligibility_corrected', rfq.buyer_org_id, match.id,
-                      previous_status=match.status, status='broad_only', supplier_org_id=candidate['org'].id,
-                      historical_invitation_preserved=True)
             match.score, match.reasons, match.status = candidate['score'], reasons, status
         else:
             db.add(RFQMatch(rfq_id=rfq.id, supplier_org_id=candidate['org'].id, score=candidate['score'],
@@ -870,9 +1012,9 @@ def _match_batch(
 
     for org_id, entry in ineligible.items():
         match = existing.get(org_id)
-        reasons = entry['reasons'] + ['Category eligibility does not confirm technical compliance']
+        reasons = list(entry['reasons'])
         if match:
-            if match.status in {'eligible', 'partial'}:
+            if match.status in MATCHED_STATUSES:
                 from app.security import audit
                 audit(db, actor, 'rfq.match_eligibility_corrected', rfq.buyer_org_id, match.id,
                       previous_status=match.status, status=entry['status'], supplier_org_id=org_id,
@@ -882,9 +1024,13 @@ def _match_batch(
             db.add(RFQMatch(rfq_id=rfq.id, supplier_org_id=org_id, score=0, reasons=reasons, status=entry['status']))
 
     def invited_items(candidate: dict) -> list[str]:
-        # Broad (main-category) lines are recommendations, not the supplier's quote scope.
-        return sorted(iid for iid, e in candidate['items'].items()
-                      if e['level'] in AUTO_INVITE_LEVELS and e['coverage'] == 'covered')
+        # Only qualifying lines are the supplier's quotation scope.
+        return sorted(candidate['items'])
+
+    # Suppliers that no longer qualify: unsent invitations are superseded (kept, marked
+    # cancelled, queued messages cancelled); delivered or answered ones are preserved.
+    superseded = supersede_invitations(db, rfq, {oid: entry['reasons'][0] for oid, entry in ineligible.items()
+                                                 if entry['reasons']}, actor)
 
     # One invitation per supplier per RFQ (uq_invitation); reruns only refresh item scope.
     invitable = [c for c in ranked if c['auto_invite']]
@@ -893,11 +1039,17 @@ def _match_batch(
     for obj in db.new:
         if isinstance(obj, Invitation) and obj.rfq_id == rfq.id:
             invited.add(obj.supplier_org_id)
+    reinstated = []
     if invited:
         for old in db.scalars(select(Invitation).where(Invitation.rfq_id == rfq.id, Invitation.supplier_org_id.in_(invited))):
             candidate = eligible.get(old.supplier_org_id)
             if candidate and old.status in {'invited', 'accepted'}:
-                old.matched_item_ids = invited_items(candidate) or sorted(candidate['items'])
+                old.matched_item_ids = invited_items(candidate)
+            elif candidate and old.status == 'cancelled':
+                # Qualifies again after a correction: the never-delivered invitation is reinstated.
+                old.status, old.cancelled_at, old.cancellation_reason = 'invited', None, None
+                old.matched_item_ids = invited_items(candidate)
+                reinstated.append(old)
     invitations = [Invitation(rfq_id=rfq.id, supplier_org_id=c['org'].id, status='invited',
                               matched_item_ids=invited_items(c)) for c in invitable if c['org'].id not in invited]
     db.add_all(invitations)
@@ -906,6 +1058,10 @@ def _match_batch(
         db.add_all([Outbox(event='rfq.invitation', dedupe_key=f'rfq-invitation:{invitation.id}',
                            payload={'rfq_id': rfq.id, 'supplier_org_id': invitation.supplier_org_id,
                                     'invitation_id': invitation.id}) for invitation in invitations])
+    for old in reinstated:
+        db.add(Outbox(event='rfq.invitation', dedupe_key=f'rfq-invitation:{old.id}:reinstated:{uuid4().hex}',
+                      payload={'rfq_id': rfq.id, 'supplier_org_id': old.supplier_org_id, 'invitation_id': old.id}))
+    if invitations:
         # Route in-app alerts through the same responsibility mapping as email/SMS.
         from app.modules.notifications.recipients import queue_invitation_in_app
         db.flush()
@@ -924,7 +1080,78 @@ def _match_batch(
         'invitations': invitations,
         'evaluated_suppliers': len(touched),
         'ineligible_suppliers': len(ineligible),
+        'superseded_invitations': superseded,
     }
+
+
+RECEIVED_DELIVERY_STATUSES = ('processed', 'awaiting_status', 'uncertain')
+
+
+def supersede_plan(db, rfq, org_ids) -> dict:
+    """Read-only: which active invitations of these suppliers would be cancelled or preserved.
+
+    Preserved: delivered (provider accepted/uncertain), answered (non-draft quotation) or
+    already accepted/declined. Cancelled: still 'invited' and never delivered. Also
+    returns the unsent queued invitation/delivery events that cancelling would stop.
+    """
+    from app.models import Quotation
+    empty = {'cancel': [], 'preserve': [], 'deliveries': [], 'unsent_events': 0}
+    if not org_ids:
+        return empty
+    candidates = db.scalars(select(Invitation).where(
+        Invitation.rfq_id == rfq.id, Invitation.status.in_({'invited', 'accepted', 'declined'}),
+        Invitation.supplier_org_id.in_(list(org_ids)))).all()
+    if not candidates:
+        return empty
+    ids = [inv.supplier_org_id for inv in candidates]
+    answered = set(db.scalars(select(Quotation.supplier_org_id).where(
+        Quotation.rfq_id == rfq.id, Quotation.supplier_org_id.in_(ids), Quotation.status != 'draft')))
+    deliveries = db.scalars(select(Outbox).where(
+        Outbox.event == 'notification.delivery', Outbox.payload['context']['rfq_id'].as_string() == rfq.id,
+        Outbox.payload['context']['org_id'].as_string().in_(ids))).all()
+    received = {e.payload['context']['org_id'] for e in deliveries if e.status in RECEIVED_DELIVERY_STATUSES}
+    cancel = [inv for inv in candidates if inv.status == 'invited'
+              and inv.supplier_org_id not in answered and inv.supplier_org_id not in received]
+    cancel_orgs = {inv.supplier_org_id for inv in cancel}
+    unsent = sum(1 for e in deliveries if e.payload['context']['org_id'] in cancel_orgs and e.status in {'pending', 'retry'})
+    if cancel:
+        unsent += int(db.scalar(select(func.count()).select_from(Outbox).where(
+            Outbox.event == 'rfq.invitation', Outbox.status.in_({'pending', 'retry'}),
+            Outbox.payload['invitation_id'].as_string().in_([inv.id for inv in cancel]))) or 0)
+    return {'cancel': cancel, 'preserve': [inv for inv in candidates if inv.supplier_org_id not in cancel_orgs],
+            'deliveries': deliveries, 'unsent_events': unsent}
+
+
+def supersede_invitations(db, rfq, reasons_by_org: dict[str, str], actor=None) -> int:
+    """Cancel never-delivered invitations of suppliers that no longer qualify.
+
+    An invitation is preserved unchanged when the supplier already received it (an
+    accepted/uncertain external delivery), responded (accepted/declined) or has a
+    non-draft quotation. Otherwise it is kept as a 'cancelled' record with the reason,
+    and its queued invitation and delivery events are cancelled before sending.
+    Returns the number of invitations cancelled.
+    """
+    if not reasons_by_org:
+        return 0
+    from app.security import audit
+    plan = supersede_plan(db, rfq, list(reasons_by_org))
+    deliveries = plan['deliveries']
+    now = datetime.now(timezone.utc)
+    cancelled = 0
+    for inv in plan['cancel']:
+        reason = reasons_by_org[inv.supplier_org_id][:200]
+        inv.status, inv.cancelled_at, inv.cancellation_reason = 'cancelled', now, reason
+        for event in db.scalars(select(Outbox).where(
+                Outbox.event == 'rfq.invitation', Outbox.payload['invitation_id'].as_string() == inv.id,
+                Outbox.status.in_({'pending', 'retry'}))):
+            event.status, event.delivery_status, event.next_attempt_at = 'skipped', 'superseded_not_eligible', None
+        for event in deliveries:
+            if event.payload['context']['org_id'] == inv.supplier_org_id and event.status in {'pending', 'retry'}:
+                event.status, event.delivery_status, event.next_attempt_at = 'skipped', 'superseded_not_eligible', None
+        audit(db, actor, 'rfq.invitation_superseded', rfq.buyer_org_id, inv.id, rfq_id=rfq.id,
+              supplier_org_id=inv.supplier_org_id, reason=reason)
+        cancelled += 1
+    return cancelled
 
 
 def eligible_supplier_ids(db, rfq, org_ids):
@@ -933,52 +1160,109 @@ def eligible_supplier_ids(db, rfq, org_ids):
     Only invitable (non-broad) matches qualify: a broad main-category recommendation is
     shown to the buyer but never receives invitation email/SMS or an automatic draft.
     """
-    eligible = set()
-    ids = list(org_ids)
+    return {oid for oid, reason in supplier_eligibility(db, rfq, org_ids).items() if reason is None}
+
+
+BROAD_ONLY_REASON = ('review_required: only main-category, AI-suggested or unconfirmed delivery-city evidence; '
+                     'shown to the buyer for review, never invited automatically')
+NOT_CANDIDATE_REASON = 'not_matched: no capability, product or price-list evidence for any RFQ line'
+
+
+def supplier_eligibility(db, rfq, org_ids) -> dict[str, str | None]:
+    """Each supplier's invitation eligibility under the matching policy: None, or the exact reason.
+
+    Results are kept on the session for the current outbox event only (the worker
+    clears ``db.info['eligibility_memo']`` per event), so the quotation-draft and
+    notification steps of one invitation job evaluate the supplier once.
+    """
+    return {oid: entry['reason'] for oid, entry in supplier_evaluations(db, rfq, org_ids).items()}
+
+
+def supplier_evaluations(db, rfq, org_ids) -> dict[str, dict]:
+    """Per supplier: eligibility ``reason`` (None when invitable), ``covered_items`` and
+    ``item_evidence`` (for recipient routing), evaluated once per outbox event."""
+    memo = db.info.setdefault('eligibility_memo', {})
+    ids = [oid for oid in dict.fromkeys(org_ids) if (rfq.id, oid) not in memo]
     for start in range(0, len(ids), 100):
-        result = _match_batch(db, rfq, evaluate_only=True, supplier_ids=ids[start:start + 100])
-        eligible.update(result.get('auto_invite_ids', []))
-    return eligible
+        page = ids[start:start + 100]
+        result = _match_batch(db, rfq, evaluate_only=True, supplier_ids=page)
+        auto = set(result.get('auto_invite_ids', []))
+        shown = set(result.get('eligible_ids', []))
+        detail = result.get('ineligible_detail', {})
+        for oid in page:
+            memo[(rfq.id, oid)] = {
+                'reason': (None if oid in auto else BROAD_ONLY_REASON if oid in shown
+                           else detail.get(oid, NOT_CANDIDATE_REASON)),
+                'covered_items': result.get('covered_items', {}).get(oid, []),
+                'item_evidence': result.get('item_evidence', {}).get(oid, {}),
+            }
+    return {oid: memo[(rfq.id, oid)] for oid in org_ids}
 
 
-def run_matching_job(bind, job_id: str, *, time_budget: float | None, restart: bool = False) -> dict | None:
-    """Run one durable rfq.published job inline in its own transaction.
+def run_matching_job(bind, job_id: str, *, time_budget: float | None, restart: bool = False,
+                     leased: bool = False) -> dict | None:
+    """Advance one durable rfq.published job: the only way any path runs RFQ matching.
 
-    A job leased by the worker is skipped (row lock with SKIP LOCKED). The remainder
-    of a large RFQ keeps its cursor in the same job, so the worker resumes it later.
-    ``restart`` ignores a saved cursor, which repairs runs paged by an older matcher.
+    Publication (inline, short time budget), the outbox worker (``leased``, longer
+    budget) and the repair script (no budget) all call this, so every path runs the
+    same matcher pages, queries and eligibility rules. Each page of suppliers is
+    matched, persisted and checkpointed (cursor, duration, evaluated count) in its
+    own short transaction, so an interruption never repeats or loses finished pages.
+
+    Not leased: a job the worker holds is skipped (SKIP LOCKED) and None is returned;
+    the worker completes it. Leased: the worker already marked the job 'processing'.
+    ``restart`` ignores a saved cursor once, which repairs runs paged by an older matcher.
+    Returns the summed page results with ``next_cursor`` set while pages remain.
     """
     from sqlalchemy.orm import sessionmaker
     sessions = sessionmaker(bind=bind, autoflush=False, expire_on_commit=False)
-    with sessions() as db:
-        try:
-            job = db.scalar(select(Outbox).where(Outbox.id == job_id, Outbox.status.in_({'pending', 'retry'}))
-                            .with_for_update(skip_locked=True))
-            rfq = db.get(RFQ, job.payload.get('rfq_id')) if job else None
-            if job is None or rfq is None or rfq.status not in {'published', 'collecting_quotes'}:
+    started = time.monotonic()
+    summary: dict | None = None
+    first = True
+    while True:
+        with sessions() as db:
+            try:
+                job = db.scalar(select(Outbox).where(
+                    Outbox.id == job_id, Outbox.status.in_({'processing'} if leased else {'pending', 'retry'}))
+                    .with_for_update(skip_locked=True))
+                rfq = db.get(RFQ, job.payload.get('rfq_id')) if job else None
+                if job is None or rfq is None or rfq.status not in {'published', 'collecting_quotes'}:
+                    db.rollback()
+                    return summary
+                page_started = time.monotonic()
+                fresh = restart and first
+                page = match_and_invite(db, rfq, bounded=True, single_batch=True,
+                                        limit=get_settings().matching_batch_size,
+                                        after_supplier_id=None if fresh else job.payload.get('cursor'))
+                cursor = page.get('next_cursor')
+                payload = {key: value for key, value in job.payload.items() if key != 'cursor'}
+                previous_ms = 0 if fresh else float(job.payload.get('matching_duration_ms') or 0)
+                previous_evaluated = 0 if fresh else int(job.payload.get('evaluated_suppliers') or 0)
+                payload.update(progressed_at=datetime.now(timezone.utc).isoformat(),
+                               matching_duration_ms=round(previous_ms + (time.monotonic() - page_started) * 1000, 1),
+                               evaluated_suppliers=previous_evaluated + page.get('evaluated_suppliers', 0))
+                if cursor:
+                    payload['cursor'] = cursor
+                else:
+                    payload['completed_at'] = payload['progressed_at']
+                job.payload = payload
+                over_budget = time_budget is not None and time.monotonic() - started >= time_budget
+                # A leased job stays 'processing' between its own pages; anything left
+                # when the budget runs out returns to 'pending' for the next worker poll.
+                job.status = 'processed' if not cursor else ('processing' if leased and not over_budget else 'pending')
+                job.next_attempt_at = None
+                job.last_error = None
+                db.commit()
+            except Exception:
                 db.rollback()
-                return None
-            started = time.monotonic()
-            result = match_and_invite(db, rfq, bounded=True,
-                                      single_batch=bind.dialect.name == 'postgresql',
-                                      limit=get_settings().matching_batch_size,
-                                      after_supplier_id=None if restart else job.payload.get('cursor'),
-                                      time_budget=time_budget)
-            cursor = result.get('next_cursor')
-            payload = {key: value for key, value in job.payload.items() if key != 'cursor'}
-            previous_ms = 0 if restart else float(job.payload.get('matching_duration_ms') or 0)
-            previous_evaluated = 0 if restart else int(job.payload.get('evaluated_suppliers') or 0)
-            payload.update(progressed_at=datetime.now(timezone.utc).isoformat(),
-                           matching_duration_ms=round(previous_ms + (time.monotonic() - started) * 1000, 1),
-                           evaluated_suppliers=previous_evaluated + result.get('evaluated_suppliers', 0))
-            if cursor:
-                payload['cursor'] = cursor
-            job.payload = payload
-            job.status = 'pending' if cursor else 'processed'
-            job.next_attempt_at = None
-            job.last_error = None
-            db.commit()
-            return result
-        except Exception:
-            db.rollback()
-            raise
+                raise
+        first = False
+        if summary is None:
+            summary = {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [],
+                       'evaluated_suppliers': 0, 'ineligible_suppliers': 0}
+        for key in ('eligible_suppliers', 'new_invitations', 'evaluated_suppliers', 'ineligible_suppliers'):
+            summary[key] += page.get(key, 0)
+        summary['invitations'].extend(page.get('invitations', []))
+        summary['next_cursor'] = cursor
+        if not cursor or (time_budget is not None and time.monotonic() - started >= time_budget):
+            return summary
