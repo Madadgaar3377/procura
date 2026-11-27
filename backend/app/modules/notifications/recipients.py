@@ -155,8 +155,7 @@ def with_whatsapp(recipients):
     from app.modules.procurement.whatsapp import configured
     mobiles = [dict(r) for r in recipients.get('sms', []) if r.get('destination')]
     if not configured():
-        return {**recipients, 'whatsapp': [{'skip_reason': 'whatsapp_not_configured',
-            'reason_detail': 'Set WHATSAPP_ENABLED, WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID to send WhatsApp quick quotes'}]}
+        return recipients
     return {**recipients, 'whatsapp': mobiles or [{'skip_reason': 'no_contact', 'reason_detail': 'No mobile number for WhatsApp'}]}
 
 

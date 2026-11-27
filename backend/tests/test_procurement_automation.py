@@ -60,7 +60,7 @@ def publish_and_prepare(client,sessions,ids):
         assert process_batch(db,event_ids=jobs)==jobs
 
 
-@pytest.mark.parametrize('case,expected_lines',[('complete',1),('partial',1),('missing',0),('expired',0),('specification',0),('minimum',0),('unit',0)])
+@pytest.mark.parametrize('case,expected_lines',[('complete',1),('partial',1),('missing',0),('expired',0),('specification',0),('minimum',0),('unit',0),('stock',0)])
 def test_publish_prepares_only_eligible_prices_and_is_idempotent(flow,case,expected_lines):
     client,sessions,ids=flow
     with sessions() as db:
@@ -71,6 +71,7 @@ def test_publish_prepares_only_eligible_prices_and_is_idempotent(flow,case,expec
         if case=='specification':item.specifications='Different voltage, 480V'
         if case=='minimum':rate.min_order_quantity=11
         if case=='unit':item.unit='M'
+        if case=='stock':rate.stock_quantity=Decimal('9')
         db.commit()
     publish_and_prepare(client,sessions,ids)
     with sessions() as db:

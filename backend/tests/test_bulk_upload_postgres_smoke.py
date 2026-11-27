@@ -4,6 +4,7 @@ Run only against a non-production PostgreSQL database. The test deletes its
 UUID-tagged records after verifying persistence.
 """
 import json
+import os
 from uuid import uuid4
 
 import pytest
@@ -15,7 +16,8 @@ from app.models import AuditEvent, Capability, Category, Contact, ImportBatch, I
 from app.modules.imports import bulk
 
 
-@pytest.mark.skipif(engine.dialect.name != "postgresql", reason="Configured database is not PostgreSQL")
+@pytest.mark.skipif(engine.dialect.name != "postgresql" or os.environ.get('TEST_ALLOW_LIVE_BULK_SMOKE') != '1',
+                    reason="Opt in explicitly with TEST_ALLOW_LIVE_BULK_SMOKE=1 against an isolated PostgreSQL test database")
 def test_postgresql_persists_and_reuses_records_across_35_row_batches():
     run_id = uuid4().hex[:12]
     main_name, sub_name = f"Bulk QA {run_id}", f"Materials {run_id}"

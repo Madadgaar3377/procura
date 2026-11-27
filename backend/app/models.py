@@ -152,6 +152,35 @@ class Organization(TimeID, Base):
     manual_review_required: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text('false'))
     manual_review_reason: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
+class SupplierProfileDetails(TimeID, Base):
+    """Admin-curated supplier profile facts kept apart from the free-text description.
+
+    ``imported_scope_text`` preserves product/category wording that an import placed in
+    ``organizations.description``; the description repair moves it here instead of deleting it.
+    """
+    __tablename__ = 'supplier_profile_details'
+    org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'), unique=True, index=True)
+    business_types: Mapped[list] = mapped_column(JSON, default=list, server_default='[]')
+    business_services: Mapped[list] = mapped_column(JSON, default=list, server_default='[]')
+    imported_scope_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class OrganizationLocation(TimeID, Base):
+    """A physical company site. Delivery coverage stays on supplier_capabilities.city."""
+    __tablename__ = 'organization_locations'
+    __table_args__ = (
+        CheckConstraint("kind IN ('head_office','office','branch','factory','warehouse','showroom')", name='ck_organization_location_kind'),
+        Index('ix_organization_locations_org_kind', 'org_id', 'kind'),
+    )
+    org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    city: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+
+
 class PublicProfileConsent(Base):
     __tablename__ = 'organization_public_consent'
     org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'), primary_key=True)

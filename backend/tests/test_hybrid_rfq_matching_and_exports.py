@@ -326,7 +326,7 @@ def test_hybrid_classification_auto_ambiguous_arabic_and_gemini_fallback():
         assert data['needs_confirmation'] is True
 
 
-def test_ai_semantic_supplier_match_when_unresolved_and_fallback_when_gemini_fails():
+def test_unresolved_matching_does_not_call_ai_or_invent_supplier_evidence():
     SessionLocal, _client, _active_user, ids = _build_env()
     with SessionLocal() as db:
         # Unresolved custom item with wording that has 0 lexical overlap with supplier keywords
@@ -361,7 +361,7 @@ def test_ai_semantic_supplier_match_when_unresolved_and_fallback_when_gemini_fai
             db.commit()
             assert summary_fail['eligible_suppliers'] == 0
 
-        # Second: Gemini returns valid active eligible supplier + invalid fabricated supplier ID
+        # Even a configured AI response is not used during deterministic matching.
         _LOCAL_CACHE.clear()
         with patch('app.modules.matching.service.get_settings') as mock_settings, \
              patch(
@@ -373,13 +373,14 @@ def test_ai_semantic_supplier_match_when_unresolved_and_fallback_when_gemini_fai
                          {'item_id': item.id, 'supplier_org_id': ids['s_suspended'], 'confidence': 0.95, 'explanation': 'Suspended must be ignored'},
                      ]
                  }, False),
-             ):
+             ) as ai_call:
             mock_settings.return_value.gemini_api_key.get_secret_value.return_value = 'test-key'
             summary_ok = match_and_invite(db, rfq)
             db.commit()
-            assert summary_ok['eligible_suppliers'] == 1
+            assert summary_ok['eligible_suppliers'] == 0
+            assert not ai_call.called
             invs = list(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq.id)).all())
-            assert invs == [ids['s_pump_exact']]
+            assert invs == []
 
 
 def test_excel_bulk_upload_auto_classifies_custom_pumps_and_filters(tmp_path, monkeypatch):

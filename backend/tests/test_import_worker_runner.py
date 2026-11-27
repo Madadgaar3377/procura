@@ -38,8 +38,8 @@ def test_one_queue_failure_does_not_starve_other_queues(monkeypatch):
         return run
 
     monkeypatch.setattr(worker, 'SessionLocal', PollSession)
-    names = ['process_queued_material_imports', 'process_queued_supplier_imports',
-             'process_supplier_jobs', 'process_pricing_jobs', 'process_rfq_import_jobs', 'process_outbox_batch']
+    names = ['process_outbox_batch', 'process_pricing_jobs', 'process_rfq_import_jobs',
+             'process_queued_material_imports', 'process_queued_supplier_imports', 'process_supplier_jobs']
     for i, name in enumerate(names):
         monkeypatch.setattr(worker, name, process(name, fail=i in (0, 4)))
     assert worker.process_once() is False

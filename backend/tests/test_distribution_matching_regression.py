@@ -12,7 +12,7 @@ from app.database import Base, get_db
 from app.models import (AuditEvent, Capability, Category, Invitation, Material, Member,
                         Organization, Outbox, RFQ, RFQItem, RFQMatch, User)
 from app.modules.matching.router import router as matching_router
-from app.modules.matching.service import match_and_invite
+from app.modules.matching.service import _match_batch, match_and_invite
 from app.modules.notifications.procurement import eligible_orgs, prepare
 from app.modules.quotations.router import router as quotation_router
 from app.security import current_user
@@ -114,6 +114,22 @@ def test_strict_matching_all_batches_idempotency_and_historical_audit(incident):
         assert not any(reason.startswith(('main_category_item:', 'exact_materials:', 'item:')) for reason in match['reasons'])
         assert 'unverified' in match['brand_requirement_status']
     assert next(m for m in data['matches'] if m['supplier_org_id'] == 'a-ups')['invitation_review_required']
+
+
+def test_material_family_excludes_conflicting_rfq_subcategory_fallback(incident):
+    sessions, _, _ = incident
+    with sessions() as db:
+        item = db.get(RFQItem, 'item')
+        item.subcategory_id = 'ups'  # Stale buyer snapshot; Material Master says panels.
+        db.add(Organization(id='ups-only', name='UPS only', name_normalized='ups only',
+                            is_supplier=True, is_buyer=False, verified_status='verified'))
+        db.add(Capability(org_id='ups-only', category_id='ups', city='Jeddah',
+                          confirmed=True, accepts_rfqs=True, eligibility_status='enabled'))
+        db.flush()
+        result = _match_batch(db, db.get(RFQ, RFQ_ID), evaluate_only=True)
+        assert 'ups-only' not in result['eligible_ids']
+        assert 'z-sub' in result['eligible_ids']
+        db.rollback()
 
 
 def test_supplier_accept_submit_and_buyer_compare_with_authorization(incident):

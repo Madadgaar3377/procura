@@ -295,7 +295,13 @@ def resolve_item_scopes(db: Session, requested, categories: dict) -> tuple[list[
         family_main, family_sub = pairs.most_common(1)[0][0] if pairs else (None, None)
         family_subs = {sub for _, sub in pairs if sub}
         scope_mains = {cid for cid in {scope['main'], *(main for main, _ in pairs)} if cid}
-        scope_subs = {cid for cid in {scope['sub'], *family_subs} if cid}
+        # A product family in the Material Master is stronger evidence than a
+        # conflicting RFQ subcategory snapshot. Do not fall back to suppliers
+        # of that unrelated snapshot (RGB flood lights filed as Second Fix are
+        # still lighting/Third Fix products). Preserve the RFQ data for review.
+        scope_subs = family_subs if family_subs and scope['sub'] not in family_subs else {
+            cid for cid in {scope['sub'], *family_subs} if cid
+        }
         scope.update({
             'family': family,
             'family_main': family_main,
@@ -837,7 +843,9 @@ def run_matching_job(bind, job_id: str, *, time_budget: float | None, restart: b
                 db.rollback()
                 return None
             started = time.monotonic()
-            result = match_and_invite(db, rfq, bounded=True, limit=get_settings().matching_batch_size,
+            result = match_and_invite(db, rfq, bounded=True,
+                                      single_batch=bind.dialect.name == 'postgresql',
+                                      limit=get_settings().matching_batch_size,
                                       after_supplier_id=None if restart else job.payload.get('cursor'),
                                       time_budget=time_budget)
             cursor = result.get('next_cursor')

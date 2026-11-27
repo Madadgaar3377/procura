@@ -164,7 +164,8 @@ def deliver(db,event,now):
     if channel=='sms':
         result=send_sms(recipient,plain,delivery_id,ttl_seconds=ttl);event.attempts+=1;apply_sms(db,event,result,now)
     else:
-        event.provider_message_id=send_email(recipient,subject,plain,html,delivery_id,attachments=email_attachments);event.attempts+=1
+        event.provider_message_id=(send_email(recipient,subject,plain,html,delivery_id,attachments=email_attachments)
+            if email_attachments else send_email(recipient,subject,plain,html,delivery_id));event.attempts+=1
         event.delivery_status='accepted';event.status='processed';event.next_attempt_at=None
         event.payload={**event.payload,'smtp_accepted':True}
         update_delivery_notification(db,event.id,'accepted')

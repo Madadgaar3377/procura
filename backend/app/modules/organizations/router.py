@@ -18,10 +18,11 @@ from app.config import get_settings
 from app.profile_schema import missing_profile_columns
 from fastapi.responses import FileResponse,RedirectResponse
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 import re
 
 from app.modules.organizations.public_profile import router as public_profile_router
+from app.modules.organizations.supplier_admin import router as supplier_admin_router, detail_extensions, split_discipline
 from app.modules.organizations.contact_import import parse_emails, parse_phones, norm_name, _add_channel, import_contact_row
 from app.modules.organizations.claims import (
     decide_claim,
@@ -44,7 +45,21 @@ class SupplierProfileAdminUpdate(BaseModel):
     contact_name: str | None = Field(default=None, max_length=150)
     designation: str | None = Field(default=None, max_length=100)
     business_email: str | None = Field(default=None, max_length=200)
-    business_phone: str | None = Field(default=None, max_length=80)
+    business_phone: str | None = Field(default=None, max_length=30)
+
+    @field_validator('business_email')
+    @classmethod
+    def _valid_business_email(cls, value):
+        if value and value.strip() and not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', value.strip()):
+            raise ValueError('Enter a valid business email')
+        return value
+
+    @field_validator('website')
+    @classmethod
+    def _valid_website(cls, value):
+        if value and value.strip() and (' ' in value.strip() or '.' not in value):
+            raise ValueError('Enter a valid website address')
+        return value
 
 class SupplierContactAdminInput(BaseModel):
     name: str | None = Field(default=None, max_length=150)
@@ -114,13 +129,20 @@ def _refresh_supplier_profile_status(org,db):
     has_real_name=bool(org.name and not org.name.startswith('[Imported supplier placeholder:'))
     org.profile_status='complete' if all((has_real_name,org.city,org.address,org.cr_number,has_contact,has_email,has_phone)) else 'incomplete'
 
+def _line_type(label,normalized):
+    """Mobile vs landline for display; fax numbers are a separate channel kind and never reach here."""
+    if label in {'mobile','office'}: return 'mobile' if label=='mobile' else 'telephone'
+    digits=re.sub(r'\D','',normalized or '')
+    if digits.startswith('9665') or (digits.startswith('05') and len(digits)==10) or (digits.startswith('5') and len(digits)==9): return 'mobile'
+    return 'telephone'
+
 def _contact_data(contact,db):
     channels=db.scalars(select(ContactChannel).where(ContactChannel.contact_id==contact.id).order_by(ContactChannel.kind,ContactChannel.is_primary.desc(),ContactChannel.created_at)).all()
     emails=[{'id':c.id,'value':c.value,'normalized_value':c.normalized_value,'primary':c.is_primary,'verified':c.is_verified,'needs_review':c.needs_review,'source':c.source_value} for c in channels if c.kind=='email']
-    phones=[{'id':c.id,'value':c.value,'normalized_value':c.normalized_value,'label':c.label,'extension':c.extension,'primary':c.is_primary,'verified':c.is_verified,'needs_review':c.needs_review,'source':c.source_value} for c in channels if c.kind=='phone']
+    phones=[{'id':c.id,'value':c.value,'normalized_value':c.normalized_value,'label':c.label,'line_type':_line_type(c.label,c.normalized_value),'extension':c.extension,'primary':c.is_primary,'verified':c.is_verified,'needs_review':c.needs_review,'source':c.source_value} for c in channels if c.kind=='phone']
     faxes=[{'id':c.id,'value':c.value,'normalized_value':c.normalized_value,'primary':c.is_primary,'source':c.source_value} for c in channels if c.kind=='fax']
     if not emails and contact.email: emails=[{'id':None,'value':contact.email,'normalized_value':contact.email.casefold(),'primary':True,'verified':False,'needs_review':contact.needs_review,'source':contact.raw_email}]
-    if not phones and contact.phone: phones=[{'id':None,'value':contact.phone,'normalized_value':contact.phone_normalized,'label':'other','extension':None,'primary':True,'verified':False,'needs_review':contact.needs_review,'source':contact.raw_phone}]
+    if not phones and contact.phone: phones=[{'id':None,'value':contact.phone,'normalized_value':contact.phone_normalized,'label':'other','line_type':_line_type('other',contact.phone_normalized or contact.phone),'extension':None,'primary':True,'verified':False,'needs_review':contact.needs_review,'source':contact.raw_phone}]
     if not faxes and contact.fax: faxes=[{'id':None,'value':contact.fax,'normalized_value':contact.fax,'primary':True,'source':contact.raw_phone}]
     related_ids=[contact.id,*db.scalars(select(Contact.id).where(Contact.merged_into_contact_id==contact.id))]
     sources=db.scalars(select(ContactImportSource).where(ContactImportSource.contact_id.in_(related_ids)).order_by(ContactImportSource.created_at)).all()
@@ -158,23 +180,36 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
     org=_supplier_org(db,org_id)
     contacts=db.scalars(select(Contact).where(Contact.org_id==org_id,Contact.merged_into_contact_id.is_(None),Contact.deleted_at.is_(None)).order_by(Contact.created_at,Contact.id)).all()
     contact_capabilities={contact.id:[] for contact in contacts}
-    if contacts:
-        contact_links=db.execute(select(ContactCapability,Capability,Category).join(Capability,Capability.id==ContactCapability.capability_id).join(Category,Category.id==Capability.category_id).where(ContactCapability.contact_id.in_([c.id for c in contacts]))).all()
-        for link,cap,category in contact_links:
-            parent=db.get(Category,category.parent_id) if category.parent_id else None
+    caps=db.scalars(select(Capability).where(Capability.org_id==org_id).order_by(Capability.created_at,Capability.id)).all()
+    # Bulk-load the taxonomy and materials once (previously one query per capability and link).
+    category_map={}
+    wanted={cap.category_id for cap in caps}
+    while wanted:
+        rows=db.scalars(select(Category).where(Category.id.in_(sorted(wanted)))).all()
+        category_map.update({row.id:row for row in rows})
+        wanted={row.parent_id for row in rows if row.parent_id and row.parent_id not in category_map}
+    material_ids=sorted({m for cap in caps for m in (cap.material_ids or []) if isinstance(m,str)})
+    material_map={}
+    for start in range(0,len(material_ids),900):
+        material_map.update({m.id:m for m in db.scalars(select(Material).where(Material.id.in_(material_ids[start:start+900])))})
+    cap_map={cap.id:cap for cap in caps}
+    if contacts and caps:
+        for link in db.scalars(select(ContactCapability).where(ContactCapability.contact_id.in_([c.id for c in contacts]),ContactCapability.capability_id.in_(list(cap_map)))):
+            cap=cap_map[link.capability_id];category=category_map.get(cap.category_id)
+            if not category: continue
+            parent=category_map.get(category.parent_id) if category.parent_id else None
             assigned_material_ids = link.material_ids if link.material_ids is not None else cap.material_ids
-            materials=db.scalars(select(Material).where(Material.id.in_(assigned_material_ids or []))).all() if assigned_material_ids else []
+            materials=[material_map[m] for m in (assigned_material_ids or []) if m in material_map]
             contact_capabilities[link.contact_id].append({'capability_id':cap.id,'category_id':category.id,
                 'category':f'{parent.name_en} / {category.name_en}' if parent else category.name_en,
                 'materials':[m.name_en for m in materials],'is_primary':link.is_primary})
     verifications=db.scalars(select(Verification).where(Verification.org_id==org_id).order_by(Verification.created_at.desc())).all()
     latest=verifications[0] if verifications else None
-    caps=db.scalars(select(Capability).where(Capability.org_id==org_id).order_by(Capability.created_at,Capability.id)).all()
     cap_items=[]
     for cap in caps:
-        category=db.get(Category,cap.category_id)
-        parent=db.get(Category,category.parent_id) if category and category.parent_id else None
-        materials=db.scalars(select(Material).where(Material.id.in_(cap.material_ids or []))).all() if cap.material_ids else []
+        category=category_map.get(cap.category_id)
+        parent=category_map.get(category.parent_id) if category and category.parent_id else None
+        materials=[material_map[m] for m in (cap.material_ids or []) if m in material_map]
         cap_items.append({'id':cap.id,'main_category':parent.name_en if parent else (category.name_en if category else None),'subcategory':category.name_en if parent else None,'category_id':cap.category_id,'materials':[{'id':m.id,'name':m.name_en,'unit':m.unit} for m in materials],'brands':cap.brands or [],'units':sorted({m.unit for m in materials if m.unit}),'trade_keywords':cap.trade_keywords,'confirmed':cap.confirmed,'eligibility_status':cap.eligibility_status,'mapping_source':cap.mapping_source,'created_at':cap.created_at,'city':cap.city})
     trades=db.scalars(select(ImportedSupplierTrade).where(ImportedSupplierTrade.org_id==org_id).order_by(ImportedSupplierTrade.created_at)).all()
     trade_contacts={trade.id:[] for trade in trades}
@@ -186,8 +221,12 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
     inspection=[]
     for trade in trades:
         parts=[part.strip() for part in trade.raw_type.split('/') if part.strip()]
-        discipline=parts[0] if parts and parts[0].casefold() in {'civil','electrical','mechanical'} else None
-        hierarchy=parts[1:] if discipline else parts
+        if parts and parts[0].casefold() in {'civil','electrical','mechanical'}:
+            discipline,hierarchy=parts[0].title(),parts[1:]
+        else:
+            # 'Civil - Infrastructure Interfaces / Covers' -> Civil / Infrastructure Interfaces / Covers
+            discipline,root=split_discipline(parts[0] if parts else None)
+            hierarchy=[root,*parts[1:]] if discipline else parts
         inspection.append({'id':trade.id,'discipline':discipline,'main_category':hierarchy[0] if hierarchy else None,
             'subcategory':hierarchy[1] if len(hierarchy)>1 else None,'products':trade.raw_products or trade.raw_trade or None,
             'brands':[item.strip() for item in trade.raw_brands.split(';') if item.strip()],
@@ -207,7 +246,8 @@ def admin_supplier_details(org_id:str, admin:User=Depends(admin_user), db:Sessio
         if not any(x['id']==f.id for x in docs):
             docs.append({'id':f.id,'name':f.safe_filename,'purpose':f.purpose,'status':f.status,'download_url':f'/files/{f.id}/download-url'})
     last_audit=db.scalar(select(func.max(AuditEvent.created_at)).where(AuditEvent.org_id==org_id))
-    return {'company':{key:getattr(org,key) for key in ('id','name','country','city','address','cr_number','vat_number','website','description','source','created_at','contact_name','designation','business_email','business_phone')},
+    extensions=detail_extensions(db,org)
+    return {**extensions,'company':{key:getattr(org,key) for key in ('id','name','trading_name','company_type','country','region','city','address','cr_number','vat_number','website','description','source','created_at','contact_name','designation','business_email','business_phone')},
         'contacts':[{**_contact_data(c,db),'assigned_capabilities':contact_capabilities[c.id]} for c in contacts],
         'status':{'profile_status':org.profile_status,'verification_status':org.verified_status,'onboarding_status':'complete' if db.scalar(select(Member.id).where(Member.organization_id==org_id)) else 'pending_onboarding','source':org.source,'last_updated_at':last_audit or org.created_at,'verified_by':latest.reviewer_id if latest and latest.status=='approved' else None,'verified_at':latest.reviewed_at if latest and latest.status=='approved' else None,'rejected_by':latest.reviewer_id if latest and latest.status=='rejected' else None,'rejected_at':latest.reviewed_at if latest and latest.status=='rejected' else None,'rejection_reason':latest.reviewer_notes if latest and latest.status=='rejected' else None},
         'capabilities':cap_items,'capability_inspection':inspection,'pending_category_mappings':[{'id':x.id,'raw_trade':x.raw_trade,'raw_type':x.raw_type,'raw_location':x.raw_location,'mapping_status':x.mapping_status} for x in trades if x.mapping_status not in {'approved','mapped'}],
@@ -490,6 +530,11 @@ def admin_assign_contact_capability(org_id:str,contact_id:str,payload:SupplierCo
     category,material_ids,city=_admin_capability_values(org_id,SupplierCapabilityAdminInput(category_id=payload.category_id,city=org.city or '',material_ids=payload.material_ids),db)
     capability=db.scalar(select(Capability).where(Capability.org_id==org_id,Capability.category_id==category.id,
         func.lower(func.trim(Capability.city))==city.casefold()).with_for_update())
+    if capability is None:
+        # Delivery coverage may be stored as one row per served city; reuse the category's
+        # existing capability instead of creating a duplicate area from the office city.
+        capability=db.scalar(select(Capability).where(Capability.org_id==org_id,Capability.category_id==category.id)
+            .order_by(Capability.confirmed.desc(),Capability.created_at).limit(1).with_for_update())
     created=capability is None
     if capability is None:
         capability=Capability(org_id=org_id,category_id=category.id,city=city,material_ids=[],trade_keywords='',confirmed=True,
@@ -605,6 +650,7 @@ def admin_reject_supplier(org_id:str,payload:SupplierReviewAction,admin:User=Dep
     return _supplier_review(org_id,admin,db,'rejected',payload.reason)
 # Publication preferences reuse the organization authorization boundary.
 router.include_router(public_profile_router)
+router.include_router(supplier_admin_router)
 
 def business_records(db,organizations):
     """Keep pre-existing administrator/import contacts visible in the profile."""

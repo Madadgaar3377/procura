@@ -40,6 +40,8 @@ def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True)
         if material and not material.active:rate=None
         if not rate:reasons.append(f'Missing active price for item {item.id}: {item.description} (pending supplier input)');continue
         if rate.availability=='unavailable':reasons.append(f'Saved price is unavailable for item {item.id}');continue
+        if rate.stock_quantity is not None and rate.stock_quantity < Decimal(item.quantity):
+            reasons.append(f'Insufficient saved stock for item {item.id} (pending supplier confirmation)');continue
         if normalize_unit(item.unit)!=rate.unit or (material and normalize_unit(material.unit)!=rate.unit):reasons.append(f'Unit mismatch for item {item.id}');continue
         if material and material.version!=rate.material_version:reasons.append(f'Saved price needs review for changed Material Master item {item.id}');continue
         if rate.min_order_quantity and Decimal(item.quantity)<rate.min_order_quantity:reasons.append(f'Quantity below saved minimum for item {item.id}');continue
@@ -120,7 +122,10 @@ def prepare_authorized_quote(db,invitation_id):
     if rfq.city and rfq.city.strip():
         if not any(city_covered_by(rfq.city, c)[0] for c in (policy.get('service_cities') or [])):
             reasons.append('RFQ service city is outside the authorized coverage')
-    items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()
+    from app.modules.procurement.portal import matched_item_ids
+    matched=set(matched_item_ids(db,inv))
+    items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,
+        RFQItem.id.in_(matched))).all() if matched else []
     lines={line.rfq_item_id:line for line in db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()}
     materials={m.id:m for m in db.scalars(select(Material).where(Material.id.in_([i.material_id for i in items if i.material_id]))).all()}
     rates={r.id:r for r in db.scalars(select(PriceBookItem).where(PriceBookItem.id.in_([l.source_rate_id for l in lines.values() if l.source_rate_id]))).all()}
