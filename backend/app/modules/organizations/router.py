@@ -1338,6 +1338,9 @@ def unclaimed_companies(q:str='',admin:User=Depends(admin_user),db:Session=Depen
 class FavoriteSupplierOut(BaseModel):
     supplier_org_id:str
     name:str
+    # Null when the supplier is no longer listed in the public directory (inactive,
+    # unverified, suspended): the public profile would return 404, so no link is shown.
+    profile_url:str|None=None
 
 
 class FavoriteStateOut(BaseModel):
@@ -1349,8 +1352,10 @@ class FavoriteStateOut(BaseModel):
 def favorites(org_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
     from app.models import FavoriteSupplier
     org_member(db,user,org_id,{'owner','manager','buyer'})
-    return [{'supplier_org_id':favorite.supplier_org_id,'name':name} for favorite,name in db.execute(
-        select(FavoriteSupplier,Organization.name).join(Organization,Organization.id==FavoriteSupplier.supplier_org_id)
+    return [{'supplier_org_id':favorite.supplier_org_id,'name':company.name,
+             'profile_url':f'/suppliers/{company.id}' if company.is_supplier and company.is_active and company.verified_status=='verified' else None}
+            for favorite,company in db.execute(
+        select(FavoriteSupplier,Organization).join(Organization,Organization.id==FavoriteSupplier.supplier_org_id)
         .where(FavoriteSupplier.buyer_org_id==org_id).order_by(Organization.name,FavoriteSupplier.id).limit(limit).offset(offset)).all()]
 
 

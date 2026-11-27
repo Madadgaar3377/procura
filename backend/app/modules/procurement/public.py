@@ -211,3 +211,68 @@ async def whatsapp_status(request: Request, db: Session = Depends(get_db)):
                 updated += 1
     db.commit()
     return Response(status_code=200, content=json.dumps({'updated': updated}), media_type='application/json')
+
+
+# ------------------------------------------------------- SMS Gateway for Android
+SMS_GATE_EVENTS = {'sms:sent': 'Sent', 'sms:delivered': 'Delivered', 'sms:failed': 'Failed'}
+SMS_GATE_STATE_RANK = {'Pending': 0, 'Processed': 1, 'Sent': 2, 'Delivered': 3, 'Failed': 3}
+
+
+def verify_sms_gate_signature(raw: bytes, signature: str | None, timestamp: str | None, now: float | None = None) -> bool:
+    """HMAC-SHA256(signing key, raw body + X-Timestamp), hex, within five minutes.
+
+    The signing key is the one configured in the SMS Gateway app/cloud settings and in
+    SMS_GATE_WEBHOOK_SIGNING_KEY. Without a configured key the webhook is disabled.
+    """
+    import hashlib
+    import hmac
+    import time as _time
+    key = get_settings().sms_gate_webhook_signing_key.get_secret_value()
+    if not key or not signature or not timestamp:
+        return False
+    try:
+        if abs((now if now is not None else _time.time()) - int(timestamp)) > 300:
+            return False
+    except ValueError:
+        return False
+    expected = hmac.new(key.encode(), raw + timestamp.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature.strip().lower())
+
+
+@router.post('/webhooks/sms-gate')
+async def sms_gate_status(request: Request, db: Session = Depends(get_db)):
+    """Delivery reports pushed by SMS Gateway for Android (sms:sent / sms:delivered / sms:failed).
+
+    Authenticated by the provider's HMAC signature, not by a user session. It only updates
+    the delivery state of an SMS this platform already submitted (matched by provider
+    message id); it can never create or resubmit a message. Status polling remains the
+    fallback when webhooks are not configured or not delivered.
+    """
+    from datetime import UTC, datetime
+
+    from app.notification_worker import apply_sms
+    if not get_settings().sms_gate_webhook_signing_key.get_secret_value():
+        raise HTTPException(404, 'Not found')
+    raw = await request.body()
+    if not verify_sms_gate_signature(raw, request.headers.get('X-Signature'), request.headers.get('X-Timestamp')):
+        raise HTTPException(403, 'Invalid signature')
+    try:
+        body = json.loads(raw)
+    except ValueError as exc:
+        raise HTTPException(400, 'Invalid JSON') from exc
+    state = SMS_GATE_EVENTS.get(str(body.get('event') or ''))
+    payload = body.get('payload') if isinstance(body.get('payload'), dict) else {}
+    message_id = str(payload.get('messageId') or payload.get('id') or '')
+    if not state or not message_id:
+        return {'updated': 0, 'ignored': True}
+    event = db.scalar(select(Outbox).where(Outbox.provider_message_id == message_id,
+                                           Outbox.event == 'notification.delivery').with_for_update())
+    if not event or event.payload.get('channel') != 'sms':
+        return {'updated': 0}
+    current = event.delivery_status or 'Pending'
+    if SMS_GATE_STATE_RANK.get(current, 0) >= SMS_GATE_STATE_RANK[state] and current != 'Sent':
+        return {'updated': 0}  # Never downgrade a final state; duplicate reports are idempotent.
+    apply_sms(db, event, {'id': message_id, 'state': state, 'reason': payload.get('reason'), 'source': 'webhook'},
+              datetime.now(UTC))
+    db.commit()
+    return {'updated': 1}

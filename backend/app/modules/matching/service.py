@@ -319,16 +319,18 @@ def resolve_item_scopes(db: Session, requested, categories: dict) -> tuple[list[
 
     for scope in scopes:
         request = _product_description(scope['item'].description)
+        specs = _product_description(scope['item'].specifications)
         # A product with a different critical qualifier (RGB, Cat6a, UPVC...), voltage,
-        # size or model is not the requested product, however similar its wording.
+        # size, model or a variant contradicting the buyer's specifications is not the
+        # requested product, however similar its wording.
         family = {mid: sim for mid, value in info.items()
-                  if (sim := family_similarity(scope['tokens'], value[3])) and not technical_conflict(request, value[0])}
+                  if (sim := family_similarity(scope['tokens'], value[3])) and not technical_conflict(request, value[0], specs)}
         if len(scope['tokens']) == 1 and scope['sub']:
             # A one-word product ("Plug Mi" -> plug) is too vague across the catalogue, but
             # within the line's own subcategory a product naming that word is the product.
             (word,) = scope['tokens']
             family.update({mid: 0.5 for mid, value in info.items() if mid not in family and value[2] == scope['sub']
-                           and word in value[3] and not technical_conflict(request, value[0])})
+                           and word in value[3] and not technical_conflict(request, value[0], specs)})
         if scope['material_id'] in info:
             family[scope['material_id']] = 1.0
         if scope['main']:
@@ -687,10 +689,11 @@ def _match_batch(
         mid, family = scope['material_id'], scope['family']
         default_tax = (scope['family_main'] or scope['main'], scope['family_sub'] or scope['sub'])
         request = _product_description(scope['item'].description)
+        specs = _product_description(scope['item'].specifications)
         # A selected Material Master record that is technically different from the
-        # requested description (e.g. a daylight floodlight for "RGB Flood Light") was
-        # mapped wrongly; its supplier links are not exact evidence for this line.
-        if mid and mid in material_info and technical_conflict(request, material_info[mid][0]):
+        # requested description or specifications (e.g. a daylight floodlight for
+        # "RGB Flood Light") was mapped wrongly; its links are not exact evidence.
+        if mid and mid in material_info and technical_conflict(request, material_info[mid][0], specs):
             mid = None
         if mid:
             linked = [c for c in in_scope if mid in links(c)]
@@ -725,11 +728,11 @@ def _match_batch(
                 pb_pair = material_info[pb.material_id][1:3]
             if scope['main'] and pb_pair[0] not in scope['scope_mains']:
                 continue
-            if pb.material_id and pb.material_id in family and not technical_conflict(request, pb.supplier_description):
+            if pb.material_id and pb.material_id in family and not technical_conflict(request, pb.supplier_description, specs):
                 candidates.append((family[pb.material_id], pb.supplier_description or material_info[pb.material_id][0],
                                    preferred, material_info[pb.material_id][1:3], {pb.material_id}))
         text_best = max(((family_similarity(scope['tokens'], tokens), text) for text, _, tokens in texts
-                         if not technical_conflict(request, text)), default=(0.0, ''))
+                         if not technical_conflict(request, text, specs)), default=(0.0, ''))
         if text_best[0]:
             candidates.append((text_best[0], text_best[1].strip(), preferred, default_tax, set()))
         if candidates:

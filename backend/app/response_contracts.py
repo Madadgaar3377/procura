@@ -298,6 +298,9 @@ class MatchResults(ResponseModel):
     explanation: str | None = None
     deliveries: dict[str, int] = Field(default_factory=dict)
     reminder_available_at: str | None = None
+    reminders_enabled: bool | None = None
+    reminders_disabled_code: str | None = None
+    reminders_disabled_reason: str | None = None
     # Database totals across every page (strongest level per supplier).
     exact_material_matches: int = 0
     product_description_matches: int = 0

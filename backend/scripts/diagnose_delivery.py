@@ -89,6 +89,19 @@ def probe(target):
         return name, {"tcp_reachable": False, "error_type": type(exc).__name__}
 
 
+def sender_alignment(settings) -> dict:
+    """Most SMTP providers reject (often 553/554 at MAIL FROM or DATA) a From address the
+    authenticated mailbox does not own. Report whether From matches the login."""
+    from email.utils import parseaddr
+    sender = parseaddr(settings.smtp_from_email or '')[1] or settings.smtp_username
+    login = (settings.smtp_username or '').strip()
+    same_address = bool(sender and login and sender.casefold() == login.casefold())
+    same_domain = bool(sender and login and sender.rpartition('@')[2].casefold() == login.rpartition('@')[2].casefold())
+    return {'from_matches_login': same_address, 'from_domain_matches_login_domain': same_domain,
+            'note': None if same_address else 'From differs from SMTP_USERNAME; it must be the same mailbox or a '
+                                              'verified alias of it, otherwise the provider may reject the message'}
+
+
 def send_test_email(recipient: str, settings) -> dict:
     """Send a single branded test email without exposing credentials or modifying the user database."""
     from uuid import uuid4
@@ -125,9 +138,29 @@ def send_test_email(recipient: str, settings) -> dict:
             'recipient': recipient,
             'error_type': type(exc).__name__,
             'error_message': str(exc),
+            # Complete sanitized provider response: SMTP phase (mail_from / rcpt_to / data),
+            # code, enhanced status code, response text, permanent vs temporary class.
+            'provider_response': getattr(exc, 'provider_response', None),
+            'sender_alignment': sender_alignment(settings),
         }
     finally:
         settings.mock_notifications = prev_mock
+
+
+def recent_email_failures(limit: int) -> list[dict]:
+    """Stored outcomes only (no recipient addresses); nothing is sent or changed."""
+    from sqlalchemy import or_, select
+    from app.database import SessionLocal
+    from app.models import Outbox
+    with SessionLocal() as db:
+        rows = db.scalars(select(Outbox).where(
+            Outbox.status.in_(('failed', 'retry', 'uncertain')),
+            or_(Outbox.payload['channel'].as_string() == 'email', Outbox.event.like('contact.inquiry.%')),
+        ).order_by(Outbox.created_at.desc()).limit(max(1, min(limit, 200)))).all()
+        return [{'id': row.id, 'created_at': row.created_at.isoformat() if row.created_at else None,
+                 'template': row.payload.get('template'), 'status': row.status, 'attempts': row.attempts,
+                 'last_error': row.last_error, 'provider_response': row.payload.get('provider_response')}
+                for row in rows]
 
 
 def main():
@@ -136,6 +169,8 @@ def main():
     parser.add_argument("--check-providers", action="store_true", help="SMTP login and SMS device listing only; no messages")
     parser.add_argument("--check-dns", action="store_true", help="Public SPF, DMARC, and DKIM DNS records")
     parser.add_argument("--send-test-email", type=str, default="", help="Send a branded Procumaterial test email to this recipient")
+    parser.add_argument("--recent-email-failures", type=int, default=0, metavar="N",
+                        help="Read-only: last N failed/retrying email jobs with their stored SMTP provider response")
     args = parser.parse_args()
     settings = get_settings()
     result = {
@@ -152,6 +187,7 @@ def main():
         "smtp_sender_configured": bool(settings.smtp_from_email or settings.smtp_username),
         "smtp_tls": settings.smtp_use_tls,
         "messages_sent": False,
+        "smtp_sender_alignment": sender_alignment(settings),
     }
     if args.check_connections:
         gateway = urlsplit(settings.sms_gate_api_url)
@@ -165,6 +201,8 @@ def main():
         result['providers'] = provider_checks(settings)
     if args.check_dns:
         result['dns'] = dns_checks(settings)
+    if args.recent_email_failures:
+        result['recent_email_failures'] = recent_email_failures(args.recent_email_failures)
     if args.send_test_email:
         test_res = send_test_email(args.send_test_email, settings)
         result['test_email_dispatch'] = test_res

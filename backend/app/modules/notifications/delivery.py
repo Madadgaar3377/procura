@@ -12,11 +12,24 @@ from ssl import create_default_context
 import httpx
 from app.config import get_settings
 from app.modules.notifications.providers import DeliveryError, _mock_idempotency_id, _resolve_sender
+from app.modules.notifications.smtp_diagnostics import describe, describe_recipients, summary
 
 
 def delivery_error(message, *, retryable=True, uncertain=False, status_code=None):
     error=DeliveryError(message,retryable=retryable)
     error.uncertain=uncertain;error.status_code=status_code
+    return error
+
+
+def smtp_rejection(detail):
+    """DeliveryError carrying the sanitized provider response and its classification."""
+    error=delivery_error(summary(detail),retryable=detail['retryable'],status_code=detail.get('code'))
+    error.provider_response=detail
+    error.provider_level=detail['provider_level']
+    error.failure_class=detail['failure_class']
+    log.warning('SMTP rejection stage=%s code=%s enhanced=%s class=%s permanent=%s response=%s',
+                detail['stage'],detail.get('code'),detail.get('enhanced_code'),detail['failure_class'],
+                detail['permanent'],detail['response'])
     return error
 
 
@@ -62,7 +75,12 @@ def sms_request(method, provider_id=None, payload=None, *, transport=None):
 def get_sms_status(provider_message_id, *, transport=None):
     if get_settings().mock_notifications:return {'id':provider_message_id,'state':'Delivered'}
     result,code=sms_request('GET',provider_message_id,transport=transport)
-    return {'id':str(result.get('id') or provider_message_id),'state':str(result.get('state') or 'Unknown'),'http_status':code,'lookup':True}
+    # Per-recipient error text (e.g. "RESULT_ERROR_GENERIC_FAILURE") explains a Failed state.
+    # Phone numbers in the response are never stored.
+    recipients=result.get('recipients') if isinstance(result.get('recipients'),list) else []
+    reason=next((str(r.get('error')) for r in recipients if isinstance(r,dict) and r.get('error')),None)
+    return {'id':str(result.get('id') or provider_message_id),'state':str(result.get('state') or 'Unknown'),
+            'http_status':code,'lookup':True,'reason':reason[:300] if reason else None}
 
 
 def send_sms(phone,text,idempotency_key, *, ttl_seconds=3600,transport=None):
@@ -147,16 +165,18 @@ def send_email(address, subject, plain_text, html_body, idempotency_key, *, atta
             stage = "accepted"
             log.info("Email send done: SMTP accepted message; inbox delivery is not confirmed")
     except SMTPAuthenticationError as exc:
-        raise delivery_error(f"SMTP authentication failed (code {exc.smtp_code})", retryable=False, status_code=exc.smtp_code) from exc
+        raise smtp_rejection(describe(exc, stage)) from exc
     except SMTPRecipientsRefused as exc:
-        codes = [value[0] for value in exc.recipients.values()]
-        error=delivery_error("SMTP recipient refused", retryable=bool(codes) and all(400 <= code < 500 for code in codes))
-        error.permanent_recipient=bool(codes) and all(500 <= code < 600 for code in codes)
+        detail = describe_recipients(exc)
+        error = smtp_rejection(detail)
+        error.permanent_recipient = detail['permanent_recipient']
         raise error from exc
     except SMTPResponseException as exc:
         if stage == "accepted":
             return message_id
-        raise delivery_error(f"SMTP {stage} rejected (code {exc.smtp_code})", retryable=400 <= exc.smtp_code < 500, status_code=exc.smtp_code) from exc
+        # SMTPSenderRefused (MAIL FROM) and SMTPDataError (DATA / end of data) are both
+        # raised inside send_message; describe() records which one it was.
+        raise smtp_rejection(describe(exc, stage)) from exc
     except (TimeoutError, OSError) as exc:
         if stage == "accepted":
             return message_id

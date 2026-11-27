@@ -171,15 +171,11 @@ def send_email(address: str, subject: str, plain_text: str, html_body: str, idem
                 refused = smtp.send_message(message)
                 if refused:
                     raise DeliveryError('SMTP recipient refused', retryable=False)
-    except SMTPAuthenticationError as exc:
-        raise DeliveryError(f'SMTP authentication failed (code {exc.smtp_code})', retryable=False) from exc
-    except SMTPRecipientsRefused as exc:
-        codes = [value[0] for value in exc.recipients.values()]
-        retryable = bool(codes) and all(400 <= code < 500 for code in codes)
-        raise DeliveryError('SMTP recipient refused', retryable=retryable) from exc
-    except SMTPResponseException as exc:
-        retryable = 400 <= exc.smtp_code < 500
-        raise DeliveryError(f'SMTP {stage} rejected (code {exc.smtp_code})', retryable=retryable) from exc
+    except (SMTPAuthenticationError, SMTPRecipientsRefused, SMTPResponseException) as exc:
+        from app.modules.notifications.delivery import smtp_rejection
+        from app.modules.notifications.smtp_diagnostics import describe, describe_recipients
+        detail = describe_recipients(exc) if isinstance(exc, SMTPRecipientsRefused) else describe(exc, stage)
+        raise smtp_rejection(detail) from exc
     except (TimeoutError, OSError) as exc:
         raise DeliveryError(f'SMTP {stage} timed out or connection failed ({type(exc).__name__})', retryable=True) from exc
     except SMTPException as exc:

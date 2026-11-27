@@ -84,6 +84,15 @@ def prepare_line(db, entry, *, unit_cache=None, parents_with_children=None):
         expected_sub=mat.subcategory_id or (leaf.id if leaf and leaf.parent_id else None)
         if (main_id,sub_id)!=(expected_main,expected_sub):raise HTTPException(422,'Selected material does not belong to this category and subcategory')
     if not entry.description.strip():raise HTTPException(422,'Enter a description')
+    if mat:
+        # The buyer's wording is the requirement. A Material Master link that contradicts
+        # it (e.g. "Flood Light LED Type Day Light" for "RGB Flood Light") is rejected,
+        # never silently stored: it would route the RFQ to the wrong suppliers and prices.
+        from .material_matching import technical_conflict
+        conflict=technical_conflict(entry.description,mat.name_en,entry.specifications or '')
+        if conflict:
+            raise HTTPException(422,f"Selected material '{mat.name_en}' is technically different from the description "
+                                    f"({conflict}). Keep your description as a custom item or choose a matching material.")
     ensure_unit(db,entry.unit,create_unknown=False,cache=unit_cache)
     # Existing clients may send legacy unit spelling; retain the RFQ snapshot.
     return {**entry.model_dump(),'main_category_id':main_id,'subcategory_id':sub_id}
@@ -231,8 +240,10 @@ def close(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db))
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status not in {'published','collecting_quotes','review'}:raise HTTPException(409,'Cannot close RFQ')
     rfq.status='closed'
+    from app.modules.notifications.procurement import cancel_unsent_rfq_jobs
+    stopped=cancel_unsent_rfq_jobs(db,rfq,'rfq_closed')
     db.add(Outbox(event='rfq.status_updated',payload={'rfq_id':rfq.id,'status':'closed'},dedupe_key=f'rfq-status:{rfq.id}:closed'))
-    audit(db,user,'rfq.closed',rfq.buyer_org_id,rfq.id);db.commit();return record(rfq)
+    audit(db,user,'rfq.closed',rfq.buyer_org_id,rfq.id,unsent_jobs_cancelled=stopped);db.commit();return record(rfq)
 
 @router.put('/{rfq_id}', response_model=RFQDetail)
 def update_draft(rfq_id:str,payload:RFQIn,user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -261,8 +272,10 @@ def cancel(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status in {'closed','cancelled'}:raise HTTPException(409,'RFQ already finished')
     rfq.status='cancelled'
+    from app.modules.notifications.procurement import cancel_unsent_rfq_jobs
+    stopped=cancel_unsent_rfq_jobs(db,rfq,'rfq_cancelled')
     db.add(Outbox(event='rfq.status_updated',payload={'rfq_id':rfq.id,'status':'cancelled'},dedupe_key=f'rfq-status:{rfq.id}:cancelled'))
-    audit(db,user,'rfq.cancelled',rfq.buyer_org_id,rfq.id);db.commit()
+    audit(db,user,'rfq.cancelled',rfq.buyer_org_id,rfq.id,unsent_jobs_cancelled=stopped);db.commit()
     return record(rfq)
 
 
@@ -289,10 +302,11 @@ def remind_pending(rfq_id:str,request:Request,payload:RFQReminderIn|None=None,us
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     now=datetime.now(UTC)
-    deadline=rfq.response_deadline
-    if deadline.tzinfo is None:deadline=deadline.replace(tzinfo=UTC)
-    if rfq.status not in {'published','collecting_quotes'} or deadline<=now:
-        raise HTTPException(409,'RFQ is closed or past its deadline')
+    from app.modules.notifications.procurement import rfq_solicitation_state
+    is_open,code,message=rfq_solicitation_state(rfq,now)
+    if not is_open:
+        # Structured reason so the buyer page can explain why reminders are unavailable.
+        raise HTTPException(409,{'code':code,'rfq_status':rfq.status,'message':message})
     enforce_rate_limit(request,scope='rfq-reminders',identity=user.id,limit=settings.rfq_reminder_requests_per_hour,window_seconds=3600)
     selection=None;requested=0
     if payload and (payload.invitation_ids is not None or payload.supplier_org_ids is not None):

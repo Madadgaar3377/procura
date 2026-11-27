@@ -27,19 +27,44 @@ PROCUREMENT_EVENTS={'purchase_order.issued','delivery_note.dispatched','goods_re
                     'tax_invoice.reviewed','sla.reminder','document.share'}
 
 
+SMS_FINAL_FAILURE={'Failed','Cancelled','Expired'}
+
+
+def sms_status_delay(checks):
+    """Delayed reconciliation: 30 s, 1, 2, 4, 8, 16 min, then every 30 min.
+
+    A gateway answers HTTP 202 with state Pending until the Android device fetches the
+    message; a phone that is offline or asleep can hold it for minutes or hours. Fixed
+    30-second polling exhausted its 24 lookups in 12 minutes and then declared the
+    message uncertain while it was still queued for the device.
+    """
+    return min(1800,30*2**max(0,min(checks,6)))
+
+
 def apply_sms(db,event,result,now):
     state=str(result.get('state') or 'Unknown');event.delivery_status=state;event.provider_message_id=result['id'];event.last_error=None
+    payload={**event.payload}
     if result.get('http_status') is not None:
         key='provider_status_response_code' if result.get('lookup') else 'provider_response_code'
-        event.payload={**event.payload,key:result['http_status']}
+        payload[key]=result['http_status']
+    payload.setdefault('sms_submitted_at',now.isoformat())
+    if result.get('reason'):payload['provider_reason']=str(result['reason'])[:300]
+    if result.get('source'):payload['provider_status_source']=result['source']
+    event.payload=payload
     if state=='Delivered':event.status='processed';event.next_attempt_at=None;notice='delivered'
-    elif state in {'Failed','Cancelled'}:
-        event.status='failed';event.next_attempt_at=None;event.last_error='Provider reported delivery failure';notice='failed'
+    elif state in SMS_FINAL_FAILURE:
+        event.status='failed';event.next_attempt_at=None
+        event.last_error='Provider reported delivery failure'+(f": {payload['provider_reason']}" if payload.get('provider_reason') else '');notice='failed'
     elif event.status_checks>=get_settings().delivery_status_max_polls:
+        # Bounded: never resubmitted automatically. Sent = handed to the mobile network.
         event.status='processed' if state=='Sent' else 'uncertain';event.next_attempt_at=None
-        event.last_error='Delivery confirmation unavailable; reconcile before resending';notice='sent' if state=='Sent' else 'uncertain'
+        event.last_error=('Provider reported Sent; no delivery report received' if state=='Sent' else
+                          f'Provider still reports {state} after {event.status_checks} status checks; '
+                          'check the gateway device is online, then reconcile before any manual resend')
+        notice='sent' if state=='Sent' else 'uncertain'
     else:
-        event.status='awaiting_status';event.next_attempt_at=now+timedelta(seconds=30);notice='sent' if state=='Sent' else 'accepted'
+        event.status='awaiting_status';event.next_attempt_at=now+timedelta(seconds=sms_status_delay(event.status_checks))
+        notice='sent' if state=='Sent' else 'accepted'
     update_delivery_notification(db,event.id,notice)
 
 
@@ -204,6 +229,19 @@ def deliver_procurement(db, event, now):
         context['org_id'] not in eligible_orgs(db,rfq,[context['org_id']])):
         reason='invitation_no_longer_eligible'
     if not reason and not current_recipient(db,payload):reason='authorization_changed'
+    if not reason and channel in {'sms','whatsapp'} and payload['template']=='rfq_invitation':
+        # One invitation SMS per destination per RFQ and supplier, whatever re-queued it
+        # (rematch, reinstated invitation, recovery job). Reminders have their own cooldown.
+        earlier=db.scalar(select(Outbox.id).where(
+            Outbox.id!=event.id,Outbox.event=='notification.delivery',
+            Outbox.status.in_({'awaiting_status','processed','uncertain'}),Outbox.provider_message_id.is_not(None),
+            Outbox.payload['channel'].as_string()==channel,Outbox.payload['template'].as_string()=='rfq_invitation',
+            Outbox.payload['destination'].as_string()==payload['destination'],
+            Outbox.payload['context']['rfq_id'].as_string()==context['rfq_id'],
+            Outbox.payload['context']['org_id'].as_string()==context['org_id']).limit(1))
+        if earlier:
+            reason='duplicate_suppressed'
+            event.payload={**payload,'duplicate_of':earlier}
     if reason:
         event.status='skipped';event.delivery_status=reason;return
     if channel=='email' and get_settings().is_production and not get_settings().smtp_reply_to:
@@ -249,9 +287,107 @@ def deliver_procurement(db, event, now):
         event.delivery_status='simulated';event.status='processed';event.next_attempt_at=None
 
 
-def process_batch(db,limit=25,now=None,event_ids=None):
+CONTACT_EVENTS=('contact.inquiry.support','contact.inquiry.ack')
+# Worker lanes over the one durable outbox table. Each lane runs as its own process
+# (systemd procura-worker@<lane>), so a slow SMTP server or SMS gateway can only delay
+# its own lane, never RFQ matching or invitation preparation. 'all' is the legacy
+# single-process mode and remains the default.
+LANES=('all','matching','email','sms','quotations','events')
+
+
+def lane_filter(lane):
+    channel=func.coalesce(Outbox.payload['channel'].as_string(),'')
+    delivery=Outbox.event=='notification.delivery'
+    parts={
+        'matching':Outbox.event=='rfq.published',
+        'email':or_(and_(delivery,channel=='email'),Outbox.event.in_(CONTACT_EVENTS)),
+        'sms':and_(delivery,channel.in_(('sms','whatsapp'))),
+        'quotations':Outbox.event=='quotation.auto_prepare',
+    }
+    if lane=='all':return None
+    if lane=='events':
+        return and_(*(~condition for condition in parts.values()))
+    if lane not in parts:raise ValueError(f'Unknown worker lane {lane!r}; use one of {", ".join(LANES)}')
+    return parts[lane]
+
+
+# Email provider circuit breaker (per worker process). A provider-level rejection
+# (authentication, sender address, policy/spam, sending quota) is identical for every
+# queued message, so the lane pauses instead of submitting each one into the same
+# rejection. Paused messages are deferred without consuming delivery attempts, up to
+# delivery_max_deferrals; then they fail with the stored provider reason.
+_EMAIL_PAUSE={'until':None,'reason':None,'data_rejections':0}
+
+
+def email_paused(now):
+    until=_EMAIL_PAUSE['until']
+    return until is not None and now<until
+
+
+def record_email_outcome(exc,now):
+    if exc is None:
+        _EMAIL_PAUSE['data_rejections']=0
+        return
+    detail=getattr(exc,'provider_response',None)
+    if not detail:return
+    if detail.get('stage')=='data' and detail.get('permanent'):
+        _EMAIL_PAUSE['data_rejections']+=1
+    if detail.get('provider_level') or _EMAIL_PAUSE['data_rejections']>=3:
+        _EMAIL_PAUSE['until']=now+timedelta(seconds=get_settings().smtp_failure_pause_seconds)
+        _EMAIL_PAUSE['reason']=str(exc)[:500]
+        log.error('Email lane paused until %s after provider-level SMTP rejection: %s',
+                  _EMAIL_PAUSE['until'].isoformat(),_EMAIL_PAUSE['reason'])
+
+
+def is_email_event(event):
+    return (event.event=='notification.delivery' and event.payload.get('channel')=='email') or event.event in CONTACT_EVENTS
+
+
+def defer_paused_email(event,now):
+    """Hold an unsent email while the provider rejects the account; bounded."""
+    deferrals=int(event.payload.get('provider_pause_deferrals') or 0)+1
+    event.payload={**event.payload,'provider_pause_deferrals':deferrals}
+    event.lock_until=None
+    if deferrals>get_settings().delivery_max_deferrals:
+        event.status='failed';event.next_attempt_at=None
+        event.last_error=('Email provider kept rejecting the sending account; not submitted. '+(_EMAIL_PAUSE['reason'] or ''))[:500]
+    else:
+        event.status='retry';event.next_attempt_at=_EMAIL_PAUSE['until']
+        event.last_error=('Deferred: email provider paused after rejection. '+(_EMAIL_PAUSE['reason'] or ''))[:500]
+
+
+def prepare_invitation_with_isolated_quote(db,event):
+    """Invitation notice first-class; the automatic quotation draft cannot block it.
+
+    The draft is attempted in a savepoint (local database work only). If it fails, the
+    invitation notice still goes out and a separate quotation.auto_prepare job retries the
+    draft in the quotations lane.
+    """
+    from app.modules.notifications.procurement import prepare
+    invitation_id=event.payload.get('invitation_id')
+    if event.event=='rfq.invitation' and invitation_id:
+        from app.modules.quotations.automation import prepare_invitation_quote
+        try:
+            with db.begin_nested():
+                prepare_invitation_quote(db,invitation_id)
+        except Exception as exc:  # noqa: BLE001 - quotation drafting must not block the invitation
+            log.warning('Automatic quotation draft deferred invitation=%s (%s)',invitation_id,type(exc).__name__)
+            key=f'quotation-auto-prepare:{invitation_id}'
+            if not db.scalar(select(Outbox.id).where(Outbox.dedupe_key==key)):
+                db.add(Outbox(event='quotation.auto_prepare',dedupe_key=key,
+                              payload={'invitation_id':invitation_id,'rfq_id':event.payload.get('rfq_id'),
+                                       'first_error':type(exc).__name__}))
+    prepare(db,event)
+
+
+def auto_prepare_quote(db,event):
+    from app.modules.quotations.automation import prepare_invitation_quote
+    prepare_invitation_quote(db,event.payload['invitation_id'])
+
+
+def process_batch(db,limit=25,now=None,event_ids=None,lane='all'):
     now=core._utc(now or datetime.now(UTC))
-    if event_ids is None:
+    if event_ids is None and lane in {'all','events'}:
         from app.modules.notifications.procurement import schedule_reminders
         from app.modules.organizations.auto_approval import run_auto_approval_sweep
         from app.modules.procurement.sla import sweep as sla_sweep
@@ -263,6 +399,8 @@ def process_batch(db,limit=25,now=None,event_ids=None):
                 log.warning('Background sweep=%s failed (%s)', sweep.__name__, type(exc).__name__)
     due=or_(Outbox.next_attempt_at.is_(None),Outbox.next_attempt_at<=now)
     eligible=or_(and_(Outbox.status.in_({'pending','retry','awaiting_status'}),due),and_(Outbox.status=='processing',or_(Outbox.lock_until.is_(None),Outbox.lock_until<=now)))
+    lane_condition=lane_filter(lane)
+    if lane_condition is not None:eligible=and_(eligible,lane_condition)
     query=select(Outbox.id).where(eligible)
     if event_ids is not None:query=query.where(Outbox.id.in_(event_ids))
     ids=db.scalars(query.order_by(Outbox.created_at,Outbox.id).limit(limit)).all();done=[]
@@ -275,6 +413,11 @@ def process_batch(db,limit=25,now=None,event_ids=None):
         try:
             event=db.scalar(select(Outbox).where(Outbox.id==event_id,eligible).with_for_update(skip_locked=True))
             if not event:continue
+            if (is_email_event(event) and email_paused(now) and event.delivery_status!='submitting'
+                    and event.status!='awaiting_status'):
+                defer_paused_email(event,now)
+                if event.status=='failed':update_delivery_notification(db,event.id,'failed')
+                db.commit();continue
             event.status='processing';event.lock_until=now+timedelta(seconds=300);db.commit()
             if event.event=='rfq.published':
                 core._process_event(db,event,now)
@@ -295,11 +438,9 @@ def process_batch(db,limit=25,now=None,event_ids=None):
                 from app.modules.notifications.procurement import quotation_notice
                 quotation_notice(db,event)
             elif event.event in {'rfq.invitation','rfq.deadline.reminder'}:
-                from app.modules.notifications.procurement import prepare
-                if event.event == 'rfq.invitation' and event.payload.get('invitation_id'):
-                    from app.modules.quotations.automation import prepare_invitation_quote
-                    prepare_invitation_quote(db, event.payload['invitation_id'])
-                prepare(db,event)
+                prepare_invitation_with_isolated_quote(db,event)
+            elif event.event=='quotation.auto_prepare':
+                auto_prepare_quote(db,event)
             elif event.event in PROCUREMENT_EVENTS:
                 from app.modules.procurement.notices import handle
                 handle(db,event)
@@ -311,6 +452,7 @@ def process_batch(db,limit=25,now=None,event_ids=None):
             if event.status=='processing':event.status='processed'
             if event.status not in {'failed','uncertain'}:event.last_error=None
             if event.status in {'skipped','uncertain'}:update_delivery_notification(db,event.id,event.status)
+            if is_email_event(event) and event.status=='processed':record_email_outcome(None,now)
             db.commit();done.append(event_id)
             log.info('Outbox event=%s correlation_id=%s channel=%s status=%s provider_status=%s%s',
                 event_id,(event.payload.get('context') or {}).get('correlation_id',event_id),
@@ -322,10 +464,18 @@ def process_batch(db,limit=25,now=None,event_ids=None):
                 event.attempts+=1;event.lock_until=None
                 event.last_error=str(exc)[:500] if isinstance(exc,(DeliveryError,core.PermanentOutboxError)) else type(exc).__name__
                 retryable=not isinstance(exc,core.PermanentOutboxError) and getattr(exc,'retryable',True)
+                detail=getattr(exc,'provider_response',None)
+                if detail:
+                    # Complete sanitized provider response (no addresses, IPs or tokens).
+                    event.payload={**event.payload,'provider_response':detail}
+                    if is_email_event(event):record_email_outcome(exc,now)
                 if event.payload.get('channel')=='email' and (getattr(exc,'uncertain',False) or (event.delivery_status=='submitting' and not isinstance(exc,DeliveryError))):
                     event.status='uncertain';event.next_attempt_at=None
                 elif retryable and event.attempts<get_settings().delivery_max_attempts:
-                    event.status='retry';event.next_attempt_at=now+timedelta(seconds=min(900,15*2**(event.attempts-1)))
+                    delay=min(900,15*2**(event.attempts-1))
+                    if detail and detail.get('failure_class')=='rate_limited':
+                        delay=max(delay,get_settings().smtp_failure_pause_seconds)
+                    event.status='retry';event.next_attempt_at=now+timedelta(seconds=delay)
                     if event.payload.get('channel')=='email':event.delivery_status=None
                 else:event.status='failed';event.next_attempt_at=None
                 if (event.payload.get('procurement_recipient') and getattr(exc,'permanent_recipient',False)):

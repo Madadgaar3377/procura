@@ -20,6 +20,8 @@ function harness(arabic=false){
   '@/features/shared/field-error':{FieldError:empty},
   '@/features/shared/loading':{RetryButton:empty},
   '@/components/ui/button':{Button:'button'},
+  // Pure helper, transpiled for real (not stubbed): buyer wording is preserved on selection.
+  './buyer-description':(()=>{const exports={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.resolve(__dirname,'../features/rfqs/buyer-description.ts'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports});return exports;})(),
  };
  const filename=path.resolve(__dirname,'../features/rfqs/material-row.tsx');const localRequire=createRequire(filename);const exports={};
  const source=ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText;

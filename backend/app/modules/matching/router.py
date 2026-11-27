@@ -432,7 +432,12 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         rows.append({**record(i),'supplier_name':name,'quotation_status':quote,
                      'reminder_eligible':i.supplier_org_id in pending and due is None,
                      'next_reminder_at':due.isoformat() if due else None,'reminder_count':i.reminder_count or 0})
+    from app.modules.notifications.procurement import rfq_solicitation_state
+    reminders_open,reminder_code,reminder_message=rfq_solicitation_state(rfq)
     return {'matches':matches, 'invitations':rows, 'progress':progress,'matching_status':matching_status,
+            # Reminder actions are disabled for closed, cancelled and expired RFQs.
+            'reminders_enabled':reminders_open,'reminders_disabled_code':reminder_code,
+            'reminders_disabled_reason':reminder_message,
             'pending_invitation_ids':[row['id'] for row in rows if row['reminder_eligible']],
             'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':pending_total,'suppliers_evaluated':matched,
             'quotations_received':quotations_received,**level_counts,

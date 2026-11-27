@@ -5,6 +5,7 @@ Run separately from the API: ``python -m app.material_import_worker``.
 import argparse
 import logging
 import time
+from pathlib import Path
 
 from app.database import SessionLocal
 from app.import_worker_lock import import_worker_lock
@@ -16,7 +17,10 @@ from app.modules.rfqs.imports import process_rfq_import_jobs
 from app.notification_worker import process_batch as process_outbox_batch
 
 
-def process_once(*, outbox_only: bool = False) -> bool:
+OUTBOX_LANES = ('matching', 'email', 'sms', 'quotations', 'events')
+
+
+def process_once(*, outbox_only: bool = False, lane: str = 'all') -> bool:
     """An unavailable queue must not starve the other queues.
 
     Every queue executes in its own session that is always rolled back and
@@ -26,10 +30,24 @@ def process_once(*, outbox_only: bool = False) -> bool:
     """
     success = True
     logger = logging.getLogger(__name__)
-    queues = (
-        (process_outbox_batch,)
-        if outbox_only
-        else (
+    if lane in OUTBOX_LANES:
+        # One outbox lane only: see app.notification_worker.LANES.
+        def process_lane(db, _lane=lane):
+            return process_outbox_batch(db, lane=_lane)
+        process_lane.__name__ = f'outbox_{lane}'
+        queues = (process_lane,)
+    elif lane == 'imports':
+        queues = (
+            process_pricing_jobs,
+            process_rfq_import_jobs,
+            process_queued_material_imports,
+            process_queued_supplier_imports,
+            process_supplier_jobs,
+        )
+    elif outbox_only:
+        queues = (process_outbox_batch,)
+    else:
+        queues = (
             process_outbox_batch,
             process_pricing_jobs,
             process_rfq_import_jobs,
@@ -37,7 +55,6 @@ def process_once(*, outbox_only: bool = False) -> bool:
             process_queued_supplier_imports,
             process_supplier_jobs,
         )
-    )
     for process in queues:
         db = SessionLocal()
         try:
@@ -71,17 +88,25 @@ def main() -> None:
     parser.add_argument('--once', action='store_true', help='Process one bounded chunk and exit')
     parser.add_argument('--interval', type=float, default=1.0)
     parser.add_argument('--outbox-only', action='store_true', help='Only process outbox events (matching, invitations, quotations, notifications)')
+    parser.add_argument('--lane', default='all', choices=('all', 'imports', *OUTBOX_LANES),
+                        help='Run one workload lane. all = legacy single process (imports + every outbox event); '
+                             'imports = bulk import queues only; matching/email/sms/quotations/events = one outbox lane')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    with import_worker_lock() as acquired:
+    # 'all' and 'imports' share the original lock file, so the legacy worker and an
+    # imports lane can never both run. Every outbox lane has its own host lock (one
+    # process per lane per host); PostgreSQL SKIP LOCKED leases keep hosts apart.
+    lock_path = None if args.lane in {'all', 'imports'} else         Path(__file__).resolve().parents[1] / 'data' / f'worker-{args.lane}.lock'
+    with import_worker_lock(lock_path) as acquired:
         if not acquired:
-            logger.error('Another import worker owns the local queue lock; exiting')
+            logger.error('Another worker owns the %s lane lock; exiting', args.lane)
             raise SystemExit(75)
-        logger.info('Worker started (outbox_only=%s); queues commit independently with short transactions', args.outbox_only)
+        logger.info('Worker started lane=%s (outbox_only=%s); queues commit independently with short transactions',
+                    args.lane, args.outbox_only)
         last_heartbeat = time.monotonic()
         while True:
-            success = process_once(outbox_only=args.outbox_only)
+            success = process_once(outbox_only=args.outbox_only, lane=args.lane)
             if args.once:
                 if not success:
                     raise SystemExit(1)

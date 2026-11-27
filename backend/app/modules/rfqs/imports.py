@@ -189,6 +189,8 @@ def check_lines(db,values):
             if canonical_unit(m.unit)!=line.unit:raise HTTPException(422,'No approved unit conversion exists for this material')
             text=' '.join([m.name_en,m.name_ar or '',m.description or '',main.name_en,sub.name_en if sub else ''])
             if not compatible(line.description+' '+line.specifications,text):raise HTTPException(422,'The selected material has incompatible or unconfirmed technical attributes; keep this row custom or select another material')
+            from .material_matching import technical_conflict
+            if technical_conflict(line.description,m.name_en,line.specifications):raise HTTPException(422,'The selected material is technically different from the description (for example RGB vs daylight); keep this row custom or select another material')
 
 
 @router.put('/{batch_id}/rows/{row_id}',response_model=RFQImportRow)

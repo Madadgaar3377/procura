@@ -17,7 +17,7 @@ import styles from './matched-suppliers.module.css';
 import { matchingArabic } from './matching-copy';
 import { AdminMatchingDiagnostics } from './admin-matching-diagnostics';
 
-type Favorite = { supplier_org_id: string; name: string };
+type Favorite = { supplier_org_id: string; name: string; profile_url?: string | null };
 type Translate = (english: string) => string;
 type QuotationBrief = {
   id: string;
@@ -226,12 +226,15 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
   const received = data?.quotations_received ?? invitations.filter(row => isSubmitted(row.quotation_status)).length;
   const partialQuoteCount = data?.quotations_received == null && (invitationOffset > 0 || (data?.invited_suppliers || 0) > invitations.length);
   // Cooldowns are per supplier: the backend marks each pending invitation it will accept.
-  const eligibleReminderIds = new Set(invitations.filter(row => row.reminder_eligible && !isSubmitted(row.quotation_status)
+  // Closed, cancelled and expired RFQs never offer reminder actions (the API returns 409).
+  const remindersEnabled = data?.reminders_enabled !== false;
+  const remindersDisabledReason = data?.reminders_disabled_reason || tr('Reminders are not available for this RFQ.');
+  const eligibleReminderIds = new Set(invitations.filter(row => remindersEnabled && row.reminder_eligible && !isSubmitted(row.quotation_status)
     && (!row.next_reminder_at || new Date(row.next_reminder_at).getTime() <= clock)).map(row => row.id));
   const reminders = selectedReminders.filter(value => eligibleReminderIds.has(value));
   // ids: one supplier, the selected suppliers, or undefined = every pending supplier.
   const sendReminders = async (ids?: string[]) => {
-    if (reminding || (ids && !ids.length)) return;
+    if (reminding || !remindersEnabled || (ids && !ids.length)) return;
     setReminding(true);
     try {
       const outcome = await api<{ queued: number; message: string }>(`rfqs/${currentId}/reminders`,
@@ -304,7 +307,7 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
             </nav></>}
         </> : <><p className={styles.muted}>{tr('Saved suppliers. Eligibility for this RFQ is shown in Recommendations.')}</p>
           <State loading={favorites.loading} error={favorites.error} retry={favorites.reload}/>
-          {(favorites.data || []).slice(0, PAGE_SIZE).map(favorite => <div className={styles.savedRow} key={favorite.supplier_org_id}><Link href={`/suppliers/${encodeURIComponent(favorite.supplier_org_id)}`}>{favorite.name}</Link>
+          {(favorites.data || []).slice(0, PAGE_SIZE).map(favorite => <div className={styles.savedRow} key={favorite.supplier_org_id}>{favorite.profile_url ? <Link href={favorite.profile_url}>{favorite.name}</Link> : <span title={tr('This supplier is not currently listed in the public directory.')}>{favorite.name}</span>}
             <Button variant="ghost" size="sm" disabled={favoriteBusy === favorite.supplier_org_id} onClick={async () => { setFavoriteBusy(favorite.supplier_org_id); try { await toggleFavorite(favorite.supplier_org_id, true); } finally { setFavoriteBusy(null); } }}><IconStarFilled size={16}/>{tr('Remove')}</Button></div>)}
           {!favorites.loading && !favorites.error && !favorites.data?.length && <p className={styles.empty}>{tr('No saved suppliers on this page.')}</p>}
           <nav className={styles.pagination} aria-label={tr('Favorite supplier pages')}><span>{t('page')} {Math.floor(favoriteOffset / PAGE_SIZE) + 1}</span><div>
@@ -322,7 +325,8 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
           <span>{tr('Declined')}: <b>{progressResult.data ? invitations.filter(row => row.status === 'declined').length : '—'}</b></span>
           <span>{tr('Pending response')}: <b>{progressResult.data ? invitations.filter(row => row.status === 'invited').length : '—'}</b></span>
           <small>{tr('Response counts are for this invitation page.')}</small></div>
-        {!!invitations.length && <details className={styles.invitationDetails}><summary>{tr('Review responses & send reminders')}</summary>
+        {!!invitations.length && <details className={styles.invitationDetails}><summary>{remindersEnabled ? tr('Review responses & send reminders') : tr('Review responses')}</summary>
+          {!remindersEnabled && <p className={styles.muted} role="status">{remindersDisabledReason}</p>}
           {invitations.map(invitation => <div key={invitation.id} className={styles.invitationRow}>
             <label><input type="checkbox" disabled={!eligibleReminderIds.has(invitation.id) || reminding} checked={reminders.includes(invitation.id)}
               onChange={event => setSelectedReminders(previous => event.target.checked ? [...previous, invitation.id] : previous.filter(value => value !== invitation.id))}/>
@@ -333,9 +337,9 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
               ? <Button size="sm" variant="outline" disabled={reminding} onClick={() => void sendReminders([invitation.id])}>{tr('Send reminder')}</Button>
               : <small>{invitation.next_reminder_at ? `${tr('Next reminder available')}: ${dateTime(invitation.next_reminder_at)}` : ''}</small>}
           </div>)}
-          <div className={styles.reminderActions}><Button size="sm" disabled={!reminders.length || reminding} onClick={() => void sendReminders(reminders)}>{reminding ? t('Saving...') : tr('Remind selected suppliers')}</Button>
+          {remindersEnabled && <div className={styles.reminderActions}><Button size="sm" disabled={!reminders.length || reminding} onClick={() => void sendReminders(reminders)}>{reminding ? t('Saving...') : tr('Remind selected suppliers')}</Button>
             <Button size="sm" variant="outline" disabled={reminding || !data?.pending_suppliers} onClick={() => void sendReminders()}>{tr('Remind all pending suppliers')}</Button>
-            <small>{tr('Each supplier can be reminded once per cooldown period. Suppliers without a valid contact are reported as skipped.')}</small></div>
+            <small>{tr('Each supplier can be reminded once per cooldown period. Suppliers without a valid contact are reported as skipped.')}</small></div>}
         </details>}
         <nav className={styles.pagination} aria-label={tr('Invitation pages')}><span>{tr('Invitation page')} {Math.floor(invitationOffset / PAGE_SIZE) + 1}</span><div>
           <Button size="sm" variant="outline" disabled={!invitationOffset || progressResult.fetching} onClick={() => { setInvPage({ rfq: currentId, offset: Math.max(0, invitationOffset - PAGE_SIZE) }); setSelectedReminders([]); }}>{t('Previous')}</Button>

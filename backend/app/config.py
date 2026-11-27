@@ -152,6 +152,13 @@ class Settings(BaseSettings):
     delivery_timeout_seconds: int = Field(default=10,ge=1,le=30)
     delivery_max_attempts: int = Field(default=5,ge=1,le=10)
     delivery_status_max_polls: int = Field(default=24,ge=1,le=100)
+    # Email lane pause after a provider-level SMTP rejection (sender/policy/quota/auth),
+    # and how many pauses an unsent message may wait through before it fails.
+    smtp_failure_pause_seconds: int = Field(default=900,ge=60,le=86400)
+    delivery_max_deferrals: int = Field(default=48,ge=1,le=500)
+    # Shared secret configured as the SMS Gateway for Android webhook signing key.
+    # Empty disables the webhook endpoint (status polling still reconciles messages).
+    sms_gate_webhook_signing_key: SecretStr = SecretStr('')
     upload_dir: str = './data/private'
     max_upload_bytes: int = 5_000_000
     r2_enabled: bool = False

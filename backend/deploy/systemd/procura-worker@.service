@@ -1,0 +1,31 @@
+# Procumaterial outbox worker lane (one process per lane).
+# Lanes: matching | email | sms | quotations | events
+#   matching    RFQ supplier matching jobs (rfq.published)
+#   email       SMTP deliveries and contact-form emails
+#   sms         SMS Gateway / WhatsApp deliveries and delivery-status reconciliation
+#   quotations  automatic quotation drafts retried outside the invitation job
+#   events      invitation/reminder preparation, status notices, reminder/SLA sweeps
+# Install: copy to /etc/systemd/system/, adjust User/paths to match procura-backend.service,
+# then: systemctl daemon-reload && systemctl enable --now procura-worker@{matching,email,sms,quotations,events}
+[Unit]
+Description=Procumaterial outbox worker lane %i
+After=network-online.target procura-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/procura/backend
+EnvironmentFile=/var/www/procura/backend/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/procura/venv/bin/python3 -m app.material_import_worker --lane %i --interval 1
+Restart=on-failure
+RestartSec=5
+# 75 = another process already owns this lane's lock on this host.
+RestartPreventExitStatus=75
+TimeoutStopSec=120
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

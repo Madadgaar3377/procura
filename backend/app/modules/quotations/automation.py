@@ -38,6 +38,17 @@ def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True)
         rate=by_material.get(item.material_id) if material else custom.get((item.subcategory_id,normalize_text(item.description)))
         if material and not material.active:rate=None
         if not rate:reasons.append(f'Missing active price for item {item.id}: {item.description} (pending supplier input)');continue
+        # A saved rate is only reused for the product the buyer asked for. A line linked to
+        # a technically different Material Master record (e.g. a daylight floodlight for
+        # "RGB Flood Light"), or a rate describing a different variant, is left for the
+        # supplier to price manually.
+        from app.modules.rfqs.material_matching import technical_conflict
+        offered=rate.offered_description or rate.supplier_description or (material.name_en if material else '')
+        # Material link: every critical qualifier of the buyer line must be met. Supplier rate
+        # wording: only a contradiction (different variant, size or voltage) blocks it.
+        conflict=(technical_conflict(item.description,material.name_en,item.specifications) if material else None) \
+            or technical_conflict('',offered,f'{item.description}\n{item.specifications or ""}')
+        if conflict:reasons.append(f'Saved price is for a technically different product for item {item.id}: {item.description} ({conflict}); pending supplier input');continue
         if rate.availability=='unavailable':reasons.append(f'Saved price is unavailable for item {item.id}');continue
         if rate.stock_quantity is not None and rate.stock_quantity < Decimal(item.quantity):
             reasons.append(f'Insufficient saved stock for item {item.id} (pending supplier confirmation)');continue

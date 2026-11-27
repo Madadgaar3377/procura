@@ -230,12 +230,45 @@ def technical_identifiers(text: str | None) -> dict[str, frozenset[str]]:
             'size': frozenset(sizes), 'model': frozenset(m.upper() for m in CODE_TOKEN_RE.findall(raw))}
 
 
-def technical_conflict(request: str | None, candidate: str | None) -> str | None:
+# Mutually exclusive variants of one product attribute. When the buyer (description OR
+# specifications) and the candidate both name a variant of the same group and none
+# agree, the candidate is a different product: a daylight floodlight is not an RGB one.
+VARIANT_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
+    ('light colour', frozenset({'rgb', 'rgbw', 'rgbww', 'daylight', 'warmwhite', 'coolwhite', 'neutralwhite'})),
+    ('cable category', frozenset({'cat5', 'cat5e', 'cat6', 'cat6a', 'cat7', 'cat8'})),
+    ('pipe material', frozenset({'pvc', 'upvc', 'cpvc', 'hdpe', 'ldpe', 'ppr', 'pex', 'grp', 'gi'})),
+    ('conductor', frozenset({'copper', 'aluminium'})),
+)
+_VARIANT_PHRASES = ((re.compile(r'\bday\s*-?\s*light\b'), 'daylight'), (re.compile(r'\bwarm\s*-?\s*white\b'), 'warmwhite'),
+                    (re.compile(r'\bcool\s*-?\s*white\b'), 'coolwhite'), (re.compile(r'\bneutral\s*-?\s*white\b'), 'neutralwhite'))
+
+
+@lru_cache(maxsize=65536)
+def variant_words(text: str | None) -> frozenset[str]:
+    norm = re.sub(r'\bcat\s*-?\s*(\d+[a-z]?)\b', r'cat\1', normalize_text(strip_item_reference(text or '')))
+    for pattern, word in _VARIANT_PHRASES:
+        norm = pattern.sub(word, norm)
+    return frozenset(_QUALIFIER_SPELLINGS.get(w, w) for w in re.findall(r'[\w]+', norm))
+
+
+def variant_conflict(requirement: str | None, candidate: str | None) -> str | None:
+    """A named variant of the requirement contradicted by a different variant in the candidate."""
+    wanted, offered = variant_words(requirement), variant_words(candidate)
+    for label, group in VARIANT_GROUPS:
+        need, have = wanted & group, offered & group
+        if need and have and not need & have:
+            return f'different {label}: {", ".join(sorted(v.upper() for v in have))} (requested {", ".join(sorted(v.upper() for v in need))})'
+    return None
+
+
+def technical_conflict(request: str | None, candidate: str | None, specifications: str | None = None) -> str | None:
     """Why the candidate product is technically different from the request, or None.
 
-    Every critical qualifier of the request must be named by the candidate. Voltages,
-    sizes and model codes conflict only when both name values and none agree; a
-    candidate that does not state a size is not contradicted.
+    Every critical qualifier of the request description must be named by the candidate.
+    Voltages, sizes and model codes conflict only when both name values and none agree; a
+    candidate that does not state a size is not contradicted. The buyer's specifications
+    are checked for contradictions only (a variant the candidate names differently), so a
+    specification the supplier wording simply does not repeat never excludes it.
     """
     wanted, offered = technical_identifiers(request), technical_identifiers(candidate)
     missing = wanted['qualifiers'] - offered['qualifiers']
@@ -244,7 +277,14 @@ def technical_conflict(request: str | None, candidate: str | None) -> str | None
     for kind in ('voltage', 'size', 'model'):
         if wanted[kind] and offered[kind] and not wanted[kind] & offered[kind]:
             return f'different {kind}: {", ".join(sorted(offered[kind]))}'
-    return None
+    conflict = variant_conflict(request, candidate)
+    if conflict or not specifications:
+        return conflict
+    specs = technical_identifiers(specifications)
+    for kind in ('voltage', 'size'):
+        if specs[kind] and offered[kind] and not specs[kind] & offered[kind]:
+            return f'different {kind} from specification: {", ".join(sorted(offered[kind]))}'
+    return variant_conflict(specifications, candidate)
 
 
 def product_search_terms(tokens: set[str]) -> list[str]:
@@ -1076,6 +1116,9 @@ def shortlist(db, rows, categories):
         text = ' '.join([m.name_en, m.name_ar or '', m.description or '', hierarchy])
         original = ' '.join([rows[index]['description'], rows[index].get('specifications', ''), rows[index].get('group', '')])
         if not compatible(original, text):
+            continue
+        # RGB vs daylight, Cat6 vs Cat6a...: never suggest a technically different product.
+        if technical_conflict(rows[index]['description'], m.name_en, rows[index].get('specifications', '')):
             continue
         exact = normalize_text(rows[index]['description']) in {normalize_text(m.name_en), normalize_text(m.name_ar)}
         score = 1.0 if exact else min(.89, SequenceMatcher(None, normalize_text(rows[index]['description']), normalize_text(m.name_en)).ratio())

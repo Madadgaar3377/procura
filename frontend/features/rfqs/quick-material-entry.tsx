@@ -6,6 +6,7 @@ import type { Schemas } from '@/lib/api/generated/schema';
 import { useLocale } from '@/lib/locale';
 import { Button } from '@/components/ui/button';
 import type { MaterialLine } from './material-row';
+import { keepBuyerDescription } from './buyer-description';
 import './grouped-rfq-materials.css';
 
 type ClassificationResult = {
@@ -150,7 +151,7 @@ export function QuickMaterialEntry({
     const resolvedMain = item.main_category_id || (leaf?.parent_id ? leaf.parent_id : leaf?.id) || '';
     const resolvedSub = item.subcategory_id || (leaf?.parent_id ? leaf.id : '') || '';
 
-    setDescription(arabic && item.name_ar ? item.name_ar : item.name_en);
+    setDescription(keepBuyerDescription(description, arabic && item.name_ar ? item.name_ar : item.name_en));
     setMaterialId(item.id);
     setMainCategoryId(resolvedMain);
     setSubcategoryId(resolvedSub);

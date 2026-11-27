@@ -140,6 +140,53 @@ def prepare(db, event):
             )
 
 
+ACTIVE_RFQ_STATUSES = frozenset({"published", "collecting_quotes"})
+# Jobs that would invite, remind or draft quotations for an RFQ.
+RFQ_SOLICITATION_EVENTS = ("rfq.published", "rfq.invitation", "rfq.deadline.reminder", "quotation.auto_prepare")
+RFQ_SOLICITATION_TEMPLATES = ("rfq_invitation", "deadline_reminder")
+
+
+def rfq_solicitation_state(rfq, now=None):
+    """(open, reason_code, message): whether an RFQ may still invite, remind or auto-quote."""
+    now = now or datetime.now(UTC)
+    deadline = rfq.response_deadline
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=UTC)
+    if rfq.status == "cancelled":
+        return False, "rfq_cancelled", "This RFQ was cancelled. Reminders are no longer available."
+    if rfq.status == "closed":
+        return False, "rfq_closed", "This RFQ is closed. Reminders are no longer available."
+    if rfq.status == "expired" or (rfq.status in ACTIVE_RFQ_STATUSES and deadline <= now):
+        return False, "rfq_expired", "The RFQ response deadline has passed. Reminders are no longer available."
+    if rfq.status not in ACTIVE_RFQ_STATUSES:
+        return False, "rfq_not_active", f"Reminders are only available for published RFQs (current status: {rfq.status})."
+    return True, None, None
+
+
+def cancel_unsent_rfq_jobs(db, rfq, reason):
+    """Stop queued, never-submitted invitation/reminder/quotation work for a finished RFQ.
+
+    Rows are kept (status 'skipped' with the reason) so delivery and audit history stay
+    complete. Messages already handed to a provider (delivery_status set, awaiting a
+    report) are left alone: their delivery status must still be reconciled.
+    """
+    cancelled = 0
+    for event in db.scalars(select(Outbox).where(
+            Outbox.event.in_(RFQ_SOLICITATION_EVENTS), Outbox.status.in_({"pending", "retry"}),
+            Outbox.payload["rfq_id"].as_string() == rfq.id).with_for_update(skip_locked=True)):
+        event.status, event.delivery_status, event.next_attempt_at = "skipped", reason, None
+        cancelled += 1
+    for event in db.scalars(select(Outbox).where(
+            Outbox.event == "notification.delivery", Outbox.status.in_({"pending", "retry"}),
+            Outbox.delivery_status.is_(None),
+            Outbox.payload["context"]["rfq_id"].as_string() == rfq.id,
+            Outbox.payload["template"].as_string().in_(RFQ_SOLICITATION_TEMPLATES)).with_for_update(skip_locked=True)):
+        event.status, event.delivery_status, event.next_attempt_at = "skipped", reason, None
+        event.secret_ciphertext = None
+        cancelled += 1
+    return cancelled
+
+
 def schedule_reminders(db, now):
     due = db.scalars(
         select(RFQ)
