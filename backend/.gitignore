@@ -17,6 +17,7 @@ dist/
 *.egg-info/
 .eggs/
 tests/*
+!tests/test_client_named_matching.py
 
 # Test, analysis and coverage output (tests themselves must be committed)
 .pytest_cache/

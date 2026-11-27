@@ -220,8 +220,17 @@ def family_similarity(item_tokens: set[str], candidate_tokens: set[str]) -> floa
     if not item_tokens or not candidate_tokens:
         return 0.0
     overlap = item_tokens & candidate_tokens
-    coverage = len(overlap) / len(item_tokens)
-    if overlap & PRODUCT_HEADS or (len(overlap) >= 2 and coverage >= 0.5):
+    fuzzy = set()
+    remaining = set(candidate_tokens - overlap)
+    for token in sorted(item_tokens - overlap):
+        near = max((word for word in remaining if len(token) >= 5 and len(word) >= 5
+                    and SequenceMatcher(None, token, word).ratio() >= 0.84),
+                   key=lambda word: SequenceMatcher(None, token, word).ratio(), default=None)
+        if near:
+            fuzzy.add(token)
+            remaining.remove(near)
+    coverage = (len(overlap) + len(fuzzy)) / len(item_tokens)
+    if (overlap | fuzzy) & PRODUCT_HEADS or (len(overlap) + len(fuzzy) >= 2 and coverage >= 0.5):
         return round(coverage, 3)
     return 0.0
 

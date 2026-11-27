@@ -1,7 +1,6 @@
 """Rate-prefilled drafts and fail-closed, explicitly authorized submission."""
 from datetime import datetime,timezone
 from decimal import Decimal
-import re
 from sqlalchemy import select,func,or_
 from app.models import Invitation,Quotation,QuoteLine,RFQ,RFQItem,Material,PriceBookItem,Organization,Capability,Category,Member,User,Notification,Outbox
 from app.modules.materials.service import normalize_text,normalize_unit
@@ -45,11 +44,13 @@ def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True)
         if normalize_unit(item.unit)!=rate.unit or (material and normalize_unit(material.unit)!=rate.unit):reasons.append(f'Unit mismatch for item {item.id}');continue
         if material and material.version!=rate.material_version:reasons.append(f'Saved price needs review for changed Material Master item {item.id}');continue
         if rate.min_order_quantity and Decimal(item.quantity)<rate.min_order_quantity:reasons.append(f'Quantity below saved minimum for item {item.id}');continue
-        if item.specifications.strip() and normalize_text(item.specifications)!=normalize_text(rate.offered_specs):reasons.append(f'Specification mismatch for item {item.id}');continue
-        brand_requirement=re.search(r'\bbrands?\s*:\s*([^;\n]+)',f'{item.description}\n{item.specifications}',re.I)
-        if brand_requirement:
-            permitted={normalize_text(value) for value in re.split(r'[,/|]',brand_requirement.group(1)) if value.strip()}
-            if normalize_text(rate.brand) not in permitted:
+        from app.modules.matching.service import requested_brand, _product_description
+        required_specs = _product_description(item.specifications)
+        if required_specs and normalize_text(required_specs)!=normalize_text(_product_description(rate.offered_specs)):
+            reasons.append(f'Specification mismatch for item {item.id}');continue
+        brand_requirement = requested_brand(item)
+        if brand_requirement and brand_requirement[2]:
+            if normalize_text(rate.brand) not in brand_requirement[1]:
                 reasons.append(f'Brand requirement mismatch for item {item.id}');continue
         if rate.unit_price<=0:reasons.append(f'Invalid saved price for item {item.id}');continue
         if currency and rate.currency!=currency:reasons.append(f'Currency mismatch for item {item.id}; no currency conversion authorized');continue

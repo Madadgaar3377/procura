@@ -148,7 +148,7 @@ def test_product_family_beats_misfiled_subcategory_and_blanket_capabilities(inci
         assert 'exact_subcategory_item:rgb' in emergency and 'family_item:rgb' not in emergency
         assert 'exact_subcategory_item:rgb' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'declared-second'))
         invited = set(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == 'granada')))
-        assert invited == eligible - {'blanket-electrical'} and result['new_invitations'] == 7
+        assert invited == eligible - {'blanket-electrical', 'flood-blank'} and result['new_invitations'] == 6
         reasons = db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == 'flood-riyadh'))
         assert 'family_item:rgb' in reasons and 'taxonomy:rgb=elec/third' in reasons
         assert 'Category eligibility does not confirm technical compliance' in reasons
@@ -214,7 +214,7 @@ def test_admin_diagnostics_explain_classification_conflict_and_exclusions(incide
     assert 'Third Fix' in item['classification_note']
     assert set(item['product_candidates']) == {'Flood Light LED Type Day Light', 'LED Flood Light Made In'}
     assert item['level_counts'].get('product family', 0) >= 3
-    assert data['product_matches'] >= 3 and data['invitations_created'] == 7
+    assert data['product_matches'] >= 3 and data['invitations_created'] == 6
     excluded = {row['supplier_org_id']: row for row in data['excluded_suppliers']}
     assert "supplier serves 'Jeddah'" in excluded['flood-jeddah']['reasons'][0]
     assert excluded['suspended-flood']['status'] == 'suspended'
@@ -306,5 +306,5 @@ def test_thousands_of_blanket_imports_are_broad_and_never_invited(incident):
         assert len(bulk) == 3000 and all('broad_only' in reasons for reasons in bulk)
         # Blanket imports are never auto-invited, so no email/SMS goes to them.
         assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('bulk-%'))) == 0
-        assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('flood-%'))) == 203  # flood-jeddah: location mismatch
+        assert db.scalar(select(func.count()).select_from(Invitation).where(Invitation.supplier_org_id.like('flood-%'))) == 202  # Jeddah is outside coverage; blank service city is unconfirmed.
         assert elapsed < 30, elapsed

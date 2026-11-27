@@ -88,21 +88,21 @@ def test_strict_matching_all_batches_idempotency_and_historical_audit(incident):
         db.commit()
         # a-ups / b-generic hold main-category capabilities: broad matches, shown but not invited.
         assert result['eligible_suppliers'] == 6
-        assert result['new_invitations'] == 4
-        assert {inv.supplier_org_id for inv in result['invitations']} == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
+        assert result['new_invitations'] == 3
+        assert {inv.supplier_org_id for inv in result['invitations']} == {'z-exact', 'z-sub', 'z-linked'}
         statuses = dict(db.execute(select(RFQMatch.supplier_org_id, RFQMatch.status)).all())
         assert statuses['a-ups'] == statuses['b-generic'] == 'partial'
         for key in ('a-ups', 'b-generic'):
             assert 'broad_only' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == key))
         assert statuses['c-riyadh'] == 'location_mismatch'
-        assert statuses['d-unknown'] == 'eligible'
+        assert statuses['d-unknown'] == 'partial'
         assert statuses['e-unapproved'] == 'pending_approval'
         assert len(db.scalars(select(AuditEvent).where(AuditEvent.action == 'rfq.match_eligibility_corrected')).all()) == 2
         again = match_and_invite(db, db.get(RFQ, RFQ_ID), limit=2)
         db.commit()
         assert again['new_invitations'] == 0
-        assert len(db.scalars(select(Invitation)).all()) == 6
-        assert eligible_orgs(db, db.get(RFQ, RFQ_ID), list(statuses)) == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
+        assert len(db.scalars(select(Invitation)).all()) == 5
+        assert eligible_orgs(db, db.get(RFQ, RFQ_ID), list(statuses)) == {'z-exact', 'z-sub', 'z-linked'}
         assert 'delivery coverage unconfirmed' in db.scalar(select(RFQMatch).where(RFQMatch.supplier_org_id == 'd-unknown')).reasons
         old = db.scalar(select(Invitation).where(Invitation.supplier_org_id == 'a-ups'))
         event = Outbox(event='rfq.invitation', payload={'rfq_id': RFQ_ID, 'supplier_org_id': 'a-ups', 'invitation_id': old.id})
