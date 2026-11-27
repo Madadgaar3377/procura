@@ -104,7 +104,21 @@ def prepare_lines(db,entries):
     units=list(db.scalars(select(MeasurementUnit).where(MeasurementUnit.code.in_(codes))))
     if any(not unit.active for unit in units):raise HTTPException(422,'Choose an active approved unit')
     cache={unit.code:unit.code for unit in units}
-    return [prepare_line(db,entry,unit_cache=cache,parents_with_children=parents) for entry in entries]
+    lines=[]
+    for index,entry in enumerate(entries):
+        try:lines.append(prepare_line(db,entry,unit_cache=cache,parents_with_children=parents))
+        except HTTPException as exc:
+            if exc.status_code!=422 or not isinstance(exc.detail,str):raise
+            # Same shape as Pydantic errors so the RFQ form marks the exact line field.
+            field=next((name for prefix,name in LINE_ERROR_FIELDS if exc.detail.startswith(prefix)),'description')
+            raise HTTPException(422,[{'loc':['body','items',index,field],'msg':exc.detail,'type':'value_error'}]) from exc
+    return lines
+
+
+LINE_ERROR_FIELDS=(('Unknown material','description'),('Selected material','description'),
+    ('Choose an active main category','main_category_id'),('Choose a subcategory','subcategory_id'),
+    ('Subcategory must belong','subcategory_id'),('Enter a description','description'),
+    ('Unit ','unit'),('Enter a supported unit','unit'))
 
 
 @router.post('',status_code=201,response_model=RFQDetail)

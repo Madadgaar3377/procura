@@ -528,6 +528,19 @@ class RFQLineIn(Model):
     unit:str=Field(min_length=1,max_length=30)
     quantity:Decimal=Field(gt=0,max_digits=14,decimal_places=3)
 
+    @field_validator('material_id','main_category_id','subcategory_id',mode='before')
+    @classmethod
+    def blank_reference_is_unset(cls,value):
+        # HTML selects and cleared Material Master picks submit "" for "none".
+        # A blank reference means a manual line, not an invalid ID.
+        if isinstance(value,str) and not value.strip():return None
+        return value.strip() if isinstance(value,str) else value
+
+    @field_validator('specifications',mode='before')
+    @classmethod
+    def missing_specifications_are_empty(cls,value):
+        return '' if value is None else value
+
 class RFQIn(Model):
     buyer_org_id:str
     client_request_id:str|None=Field(default=None,min_length=16,max_length=64)

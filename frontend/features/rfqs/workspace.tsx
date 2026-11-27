@@ -20,6 +20,17 @@ import { FileUploadStatus } from '@/features/shared/file-upload-status';
 import { Matching } from './matched-suppliers';
 export { Matching };
 type Line=Schemas['RFQLineIn'];
+// Send only the API contract. Restored session drafts and import rows can carry
+// extra UI fields, "" for an unset select, or null specifications.
+const ref=(value:string|null|undefined)=>value&&value.trim()?value.trim():null;
+// The material row renders the Material Master pick and specifications under its
+// description input, so surface those server errors there rather than dropping them.
+function lineFieldErrors(errors:Record<string,string>){
+ return Object.fromEntries(Object.entries(errors).map(([key,message])=>[key.replace(/^(items\.\d+)\.(material_id|specifications)$/,'$1.description'),message]));
+}
+export function toRfqLine(line:MaterialLine):Line{
+ return {material_id:ref(line.material_id),main_category_id:ref(line.main_category_id),subcategory_id:ref(line.subcategory_id),description:(line.description||'').trim(),specifications:(line.specifications??'').trim(),unit:line.unit,quantity:String(line.quantity??'').trim()};
+}
 export function RFQList({role}:{role:string}){
  const {t}=useLocale();
  const {org}=useSession();const [status,setStatus]=useState('');const q=useServerList<Schemas['RFQOut']>(role==='admin'?`rfqs?status=${status}`:org?`rfqs?org_id=${org.id}&status=${status}`:null,'Search RFQs');const rows=q.rows;
@@ -76,7 +87,7 @@ function RFQWizardForm({id}:{id?:string}) {
  useEffect(()=>{if(id||!localRestored)return;try{sessionStorage.setItem(localDraftKey,JSON.stringify({items,title,city,deadline,projectName,deliveryDate,instructions,savedId,requestId,pendingPublication}));}catch{}},[id,localRestored,localDraftKey,items,title,city,deadline,projectName,deliveryDate,instructions,savedId,requestId,pendingPublication]);
  useEffect(()=>{if(draft.data&&initialized.current!==id){initialized.current=id;const d=draft.data;setTitle(d.rfq.title);setProjectName(d.rfq.project_name||'');setDeliveryDate(d.rfq.required_delivery_date||'');setInstructions(d.rfq.additional_instructions||'');setCity(d.rfq.city);setDeadline(new Date(new Date(d.rfq.response_deadline).getTime()-new Date().getTimezoneOffset()*60000).toISOString().slice(0,16));setItems(d.items.map(i=>({key:i.id,material_id:i.material_id,main_category_id:i.main_category_id,subcategory_id:i.subcategory_id,description:i.description,specifications:i.specifications,unit:i.unit,quantity:i.quantity})));}},[draft.data]);
  async function save(publish:boolean){if(submitting.current||!org||(!id&&!localRestored)||draft.loading)return;setRetryPublish(publish);submitting.current=true;setBusy(true);setError('');try{
-  const body:Schemas['RFQIn']={buyer_org_id:org.id,client_request_id:id?undefined:requestId,title,city,project_name:projectName,required_delivery_date:deliveryDate||null,additional_instructions:instructions,response_deadline:new Date(deadline).toISOString(),required_qualifications:draft.data?.rfq.required_qualifications||[],items:items.map(({key,...item})=>item)};
+  const body:Schemas['RFQIn']={buyer_org_id:org.id,client_request_id:id?undefined:requestId,title,city,project_name:projectName,required_delivery_date:deliveryDate||null,additional_instructions:instructions,response_deadline:new Date(deadline).toISOString(),required_qualifications:draft.data?.rfq.required_qualifications||[],items:items.map(toRfqLine)};
   let editableId=savedId;
   if(editableId){
    try{const existing=await api<Schemas['RFQDetail']>(`rfqs/${encodeURIComponent(editableId)}`);
@@ -110,7 +121,7 @@ function RFQWizardForm({id}:{id?:string}) {
     if(['published','collecting_quotes'].includes(current.rfq.status)){sessionStorage.removeItem(localDraftKey);window.location.assign(`/app/buyer/matches?rfq=${encodeURIComponent(savedId)}`);return;}
    }catch{}
   }
-  setError(e instanceof ApiError&&e.status===409?'This RFQ changed. Refresh its status before trying again.':e instanceof Error?e.message:'Could not save RFQ');if(e instanceof ApiError){setFieldErrors(e.fieldErrors);if(Object.keys(e.fieldErrors).length)setStep(Object.keys(e.fieldErrors).some(key=>key.startsWith('items.'))?1:0);}
+  setError(e instanceof ApiError&&e.status===409?'This RFQ changed. Refresh its status before trying again.':e instanceof Error?e.message:'Could not save RFQ');if(e instanceof ApiError){setFieldErrors(lineFieldErrors(e.fieldErrors));if(Object.keys(e.fieldErrors).length)setStep(Object.keys(e.fieldErrors).some(key=>key.startsWith('items.'))?1:0);}
  }finally{submitting.current=false;setBusy(false);setUploadProgress(null);}}
  if(!org)return <State error={new Error('Create a buyer company before creating an RFQ.')}/>;
  if(id&&draft.data&&draft.data.rfq.buyer_org_id!==org.id)return <State error={new Error('Select the buyer organization that owns this RFQ.')}/>;
