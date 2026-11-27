@@ -86,7 +86,7 @@ def test_exact_material_and_incorrect_material_exclusion_and_status_exclusions()
         s_ups = _make_supplier(db, 'UPS Only Co')
         db.add(Capability(org_id=s_ups.id, category_id=ups.id, city='Riyadh', material_ids=[m_ups.id], confirmed=True, accepts_rfqs=True, eligibility_status='enabled'))
 
-        # 3. Broad main-category capability only (must NOT match)
+        # 3. Broad main-category capability only: broad recommendation, never invited
         s_broad = _make_supplier(db, 'Broad Elec Co')
         db.add(Capability(org_id=s_broad.id, category_id=elec.id, city='Riyadh', material_ids=[], confirmed=True, accepts_rfqs=True, eligibility_status='enabled'))
 
@@ -121,7 +121,7 @@ def test_exact_material_and_incorrect_material_exclusion_and_status_exclusions()
         summary = match_and_invite(db, rfq)
         db.commit()
 
-        assert summary['eligible_suppliers'] == 1
+        assert summary['eligible_suppliers'] == 2  # exact + broad recommendation
         assert summary['new_invitations'] == 1
         invs = db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq.id)).all()
         assert invs == [s_exact.id]
@@ -129,7 +129,7 @@ def test_exact_material_and_incorrect_material_exclusion_and_status_exclusions()
         matches = {m.supplier_org_id: m for m in db.scalars(select(RFQMatch).where(RFQMatch.rfq_id == rfq.id)).all()}
         assert matches[s_exact.id].status == 'eligible'
         assert s_ups.id not in matches
-        assert s_broad.id not in matches
+        assert matches[s_broad.id].status == 'partial' and 'broad_only' in matches[s_broad.id].reasons
         assert matches[s_rejected.id].status == 'rejected'
         assert matches[s_suspended.id].status == 'suspended'
         assert matches[s_inactive.id].status == 'inactive'

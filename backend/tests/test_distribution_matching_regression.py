@@ -86,11 +86,14 @@ def test_strict_matching_all_batches_idempotency_and_historical_audit(incident):
     with sessions() as db:
         result = match_and_invite(db, db.get(RFQ, RFQ_ID), limit=2, bounded=True)
         db.commit()
-        assert result['eligible_suppliers'] == 4
+        # a-ups / b-generic hold main-category capabilities: broad matches, shown but not invited.
+        assert result['eligible_suppliers'] == 6
         assert result['new_invitations'] == 4
         assert {inv.supplier_org_id for inv in result['invitations']} == {'z-exact', 'z-sub', 'z-linked', 'd-unknown'}
         statuses = dict(db.execute(select(RFQMatch.supplier_org_id, RFQMatch.status)).all())
-        assert statuses['a-ups'] == statuses['b-generic'] == 'ineligible'
+        assert statuses['a-ups'] == statuses['b-generic'] == 'partial'
+        for key in ('a-ups', 'b-generic'):
+            assert 'broad_only' in db.scalar(select(RFQMatch.reasons).where(RFQMatch.supplier_org_id == key))
         assert statuses['c-riyadh'] == 'location_mismatch'
         assert statuses['d-unknown'] == 'eligible'
         assert statuses['e-unapproved'] == 'pending_approval'
@@ -109,14 +112,14 @@ def test_strict_matching_all_batches_idempotency_and_historical_audit(incident):
     response = client.get(f'/api/v1/matching/rfqs/{RFQ_ID}/results')
     assert response.status_code == 200, response.text
     data = response.json()
-    assert data['matched_suppliers'] == 4
+    assert data['matched_suppliers'] == 6
     for match in data['matches']:
         assert not any(reason.startswith(('main_category_item:', 'exact_materials:', 'item:')) for reason in match['reasons'])
         assert 'unverified' in match['brand_requirement_status']
     assert next(m for m in data['matches'] if m['supplier_org_id'] == 'a-ups')['invitation_review_required']
 
 
-def test_material_family_excludes_conflicting_rfq_subcategory_fallback(incident):
+def test_material_family_and_buyer_subcategory_both_searched(incident):
     sessions, _, _ = incident
     with sessions() as db:
         item = db.get(RFQItem, 'item')
@@ -127,8 +130,9 @@ def test_material_family_excludes_conflicting_rfq_subcategory_fallback(incident)
                           confirmed=True, accepts_rfqs=True, eligibility_status='enabled'))
         db.flush()
         result = _match_batch(db, db.get(RFQ, RFQ_ID), evaluate_only=True)
-        assert 'ups-only' not in result['eligible_ids']
-        assert 'z-sub' in result['eligible_ids']
+        # Buyer's subcategory (UPS) and the Material Master subcategory (panels) are both searched.
+        assert 'ups-only' in result['eligible_ids'] and 'z-sub' in result['eligible_ids']
+        assert 'z-exact' in result['auto_invite_ids']
         db.rollback()
 
 

@@ -297,6 +297,13 @@ class MatchResults(ResponseModel):
     explanation: str | None = None
     deliveries: dict[str, int] = Field(default_factory=dict)
     reminder_available_at: str | None = None
+    # Database totals across every page (strongest level per supplier).
+    exact_material_matches: int = 0
+    product_description_matches: int = 0
+    subcategory_matches: int = 0
+    main_category_matches: int = 0
+    excluded_suppliers: int = 0
+    excluded_by_status: dict[str, int] = Field(default_factory=dict)
     limit: int = 25
     offset: int = 0
 

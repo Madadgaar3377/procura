@@ -59,9 +59,30 @@ LEVEL_LABEL = {LEVEL_EXACT: 'Approved exact material capability', LEVEL_ALIAS: '
                LEVEL_FAMILY: 'Approved product family match', LEVEL_SUB: 'Approved exact subcategory capability',
                LEVEL_MAIN: 'Approved main category capability',
                LEVEL_AI: 'AI-assisted semantic match based on verified supplier profile'}
+# An admin import that maps a supplier to every subcategory (of a main category with
+# at least this many) is discipline-wide, not subcategory evidence.
+BLANKET_MIN_SUBCATEGORIES = 3
 # Persisted machine markers; never shown to buyers.
 INTERNAL_REASON_PREFIXES = ('item:', 'coverage:', 'exact_materials:', 'taxonomy:', 'broad_only', 'fuzzy_item:',
                             'keyword_item:', *LEVEL_MARKER.values())
+
+
+BRAND_CLAUSE = re.compile(r'\bbrands?\s*:\s*([^;\n]+)', re.I)
+# "Brand: ABB only", "Brand: ABB (mandatory)", "no alternative/equivalent" make a brand mandatory.
+MANDATORY_BRAND = re.compile(r'\b(?:only|mandatory|strictly|no\s+(?:alternatives?|equivalents?|substitut\w*))\b|\(\s*must\s*\)', re.I)
+
+
+def requested_brand(item) -> tuple[str, set[str], bool] | None:
+    """(display text, wanted brands, mandatory) from the RFQ line, or None when no brand is requested."""
+    text = f'{item.description}\n{item.specifications or ""}'
+    found = BRAND_CLAUSE.search(text)
+    if not found:
+        return None
+    clause = found.group(1).strip()
+    mandatory = bool(MANDATORY_BRAND.search(clause))
+    names = MANDATORY_BRAND.sub(' ', clause).replace('(', ' ').replace(')', ' ')
+    wanted = {v.strip().casefold() for v in re.split(r'[,/|]|\bor\b', names) if v.strip()}
+    return clause, wanted, mandatory
 
 
 def match_level(reasons: list[str] | None, item_id: str | None = None) -> list[str]:
@@ -295,14 +316,16 @@ def resolve_item_scopes(db: Session, requested, categories: dict) -> tuple[list[
         family_main, family_sub = pairs.most_common(1)[0][0] if pairs else (None, None)
         family_subs = {sub for _, sub in pairs if sub}
         scope_mains = {cid for cid in {scope['main'], *(main for main, _ in pairs)} if cid}
-        # A product family in the Material Master is stronger evidence than a
-        # conflicting RFQ subcategory snapshot. Do not fall back to suppliers
-        # of that unrelated snapshot (RGB flood lights filed as Second Fix are
-        # still lighting/Third Fix products). Preserve the RFQ data for review.
-        scope_subs = family_subs if family_subs and scope['sub'] not in family_subs else {
-            cid for cid in {scope['sub'], *family_subs} if cid
-        }
+        # Product evidence may come from any subcategory holding the product family.
+        scope_subs = {cid for cid in {scope['sub'], *family_subs} if cid}
+        # Capability-only (no product evidence) subcategory matching uses the buyer's
+        # subcategory AND the Material Master subcategory of the requested product,
+        # never every subcategory that happens to contain a similar word.
+        exact_sub = info[scope['material_id']][2] if scope['material_id'] in info else None
+        capability_subs = {cid for cid in (scope['sub'], exact_sub, family_sub) if cid and cid in categories
+                           and (not scope['main'] or cid == scope['sub'] or categories[cid].parent_id == scope['main'])}
         scope.update({
+            'capability_subs': capability_subs,
             'family': family,
             'family_main': family_main,
             'family_sub': family_sub,
@@ -311,7 +334,7 @@ def resolve_item_scopes(db: Session, requested, categories: dict) -> tuple[list[
             'scope_subs': scope_subs,
             'descriptive_subs': {sid for sid in scope_subs if sid in categories
                                  and scope['tokens'] & product_tokens(categories[sid].name_en)},
-            'related': scope_mains | scope_subs | {c for m in scope_mains for c in children.get(m, ())},
+            'related': scope_mains | scope_subs | capability_subs | {c for m in scope_mains for c in children.get(m, ())},
             'conflict': bool(family and scope['main'] and (
                 family_main != scope['main'] or (scope['sub'] and scope['sub'] not in family_subs))),
         })
@@ -357,9 +380,12 @@ def _match_batch(
 
     Evidence tiers, strongest first: exact canonical material, exact normalized product
     or approved alias, Material Master product family, approved subcategory capability,
-    and approved main-category capability. A blanket imported subcategory capability
-    (e.g. every Electrical subcategory) is not product evidence on its own. Main-category
-    matches are shown as broad and are never invited automatically.
+    and approved main-category capability. Every level is collected; each supplier and
+    line keeps its strongest reason. A subcategory capability from any source (portal or
+    import) is a subcategory match on the buyer's or the Material Master subcategory. An
+    import mapping a supplier to every subcategory of a main category, and main-category
+    capabilities, are broad matches: shown and counted, never invited automatically.
+    Location: no delivery city means no city filter. Brand: optional unless mandatory.
     """
     empty = {'eligible_suppliers': 0, 'new_invitations': 0, 'invitations': [], 'evaluated_suppliers': 0}
     if rfq.status not in {'published', 'collecting_quotes'} or as_utc(rfq.response_deadline) <= datetime.now(timezone.utc):
@@ -381,9 +407,7 @@ def _match_batch(
 
     exact_ids = {s['material_id'] for s in scopes if s['material_id']}
     evidence_ids = sorted(exact_ids | {mid for s in scopes for mid in s['family']})
-    sub_scope = {sid for s in scopes for sid in s['scope_subs']}
-    descriptive = {sid for s in scopes for sid in s['descriptive_subs']}
-    root_only_mains = {s['main'] for s in scopes if s['main'] and not s['sub'] and not s['family']}
+    sub_scope = {sid for s in scopes for sid in s['capability_subs'] | s['descriptive_subs']}
     scope_mains = {mid for s in scopes for mid in s['scope_mains']}
     related = {cid for s in scopes for cid in s['related']}
     text_terms: set[str] = set()
@@ -419,16 +443,12 @@ def _match_batch(
             PriceBookItem.active.is_(True), like(PriceBookItem.supplier_description, text_terms)))
         branches.append(select(ImportedSupplierTrade.org_id.label('id')).where(
             or_(like(ImportedSupplierTrade.raw_trade, text_terms), like(ImportedSupplierTrade.raw_products, text_terms))))
-    if descriptive:
-        branches.append(select(Capability.org_id.label('id')).where(Capability.category_id.in_(descriptive)))
+    # Subcategory and main-category capabilities are candidates whatever their source
+    # (portal, admin import, bulk import). Indexed by ix_capabilities_cat_elig_org.
     if sub_scope:
-        branches.append(select(Capability.org_id.label('id')).where(
-            Capability.category_id.in_(sub_scope), func.coalesce(Capability.mapping_source, '') != 'admin_import'))
-    if root_only_mains:
-        branches.append(select(Capability.org_id.label('id')).where(Capability.category_id.in_(root_only_mains)))
+        branches.append(select(Capability.org_id.label('id')).where(Capability.category_id.in_(sub_scope)))
     if scope_mains:
-        branches.append(select(Capability.org_id.label('id')).where(
-            Capability.category_id.in_(scope_mains), func.coalesce(Capability.trade_keywords, '') != ''))
+        branches.append(select(Capability.org_id.label('id')).where(Capability.category_id.in_(scope_mains)))
     if discovery_terms:
         branches.append(select(Capability.org_id.label('id')).where(like(Capability.trade_keywords, discovery_terms)))
         branches.append(select(PriceBookItem.org_id.label('id')).where(
@@ -501,11 +521,47 @@ def _match_batch(
     rfq_city_norm = normalize_city(rfq.city)
     required = {value.strip().casefold() for value in (rfq.required_qualifications or []) if value.strip()}
 
+    template_brands: dict[frozenset, set[str]] = {}
+
+    def brand_confirmed(org_id: str, item, entry: dict, wanted: set[str]) -> bool:
+        """Requested brands appear in this supplier's saved/imported product data."""
+        saved = {b.strip().casefold() for c in entry['caps'] for b in (c.brands or []) if isinstance(b, str) and b.strip()}
+        product_ids = frozenset(mid for c in entry['caps'] for mid in links(c)
+                                if mid == item.material_id or mid in entry['materials'])
+        if product_ids:
+            if product_ids not in template_brands:
+                template_brands[product_ids] = {
+                    str(v).strip().casefold() for template in db.scalars(
+                        select(Material.specs_template).where(Material.id.in_(product_ids)))
+                    for k, v in (template or {}).items()
+                    if str(k).strip().casefold() in {'brand', 'manufacturer'} and isinstance(v, str)}
+            saved |= template_brands[product_ids]
+        saved.update(pb.brand.strip().casefold() for pb in pricebooks_by_org.get(org_id, []) if pb.brand)
+        for trade in trades_by_org.get(org_id, []):
+            saved.update(v.strip().casefold() for v in re.split(r'[,;/|\n]', trade.raw_brands or '') if v.strip())
+        return bool(wanted) and wanted <= saved
+
+    children_by_main: dict[str, set[str]] = {}
+    for cid, category in categories.items():
+        if category.parent_id:
+            children_by_main.setdefault(category.parent_id, set()).add(cid)
+
+    def blanket_imported_mains(caps: list[Capability]) -> frozenset:
+        """Main categories where admin import mapped this supplier to every subcategory."""
+        held: dict[str, set[str]] = {}
+        for cap in caps:
+            parent = categories[cap.category_id].parent_id
+            if parent and cap.mapping_source == 'admin_import':
+                held.setdefault(parent, set()).add(cap.category_id)
+        return frozenset(main for main, subs in held.items()
+                         if len(children_by_main.get(main, ())) >= BLANKET_MIN_SUBCATEGORIES
+                         and children_by_main[main] <= subs)
+
     def approved(cap: Capability) -> bool:
         return bool(cap.confirmed and cap.eligibility_status == 'enabled' and cap.accepts_rfqs
                     and cap.category_id in categories)
 
-    def grade(scope: dict, caps: list[Capability], pbs: list, texts: list[str]) -> dict | None:
+    def grade(scope: dict, caps: list[Capability], pbs: list, texts: list[str], blanket_mains: frozenset = frozenset()) -> dict | None:
         """Best evidence for one RFQ line from the given approved capabilities."""
         if scope['blocked']:
             return None
@@ -554,19 +610,26 @@ def _match_batch(
             sim, detail, support, taxonomy, materials = max(candidates, key=lambda c: c[0])
             return {'level': LEVEL_FAMILY, 'caps': support, 'sim': sim, 'detail': detail,
                     'taxonomy': taxonomy, 'materials': materials}
-        sub_caps = [c for c in in_scope if c.category_id in scope['scope_subs']
-                    and (c.mapping_source != 'admin_import' or c.category_id in scope['descriptive_subs'])]
-        if sub_caps:
-            sub = sub_caps[0].category_id
-            return {'level': LEVEL_SUB, 'caps': sub_caps, 'sim': 0.0, 'detail': categories[sub].name_en,
+        # Subcategory capability without product evidence: a subcategory match. An
+        # imported supplier mapped to EVERY subcategory of the main category is not
+        # subcategory evidence (that is discipline-wide), so it is a broad match only.
+        sub_caps = [c for c in in_scope if c.category_id in scope['capability_subs'] | scope['descriptive_subs']]
+        specific = [c for c in sub_caps
+                    if not (c.mapping_source == 'admin_import' and categories[c.category_id].parent_id in blanket_mains)]
+        if specific:
+            # Prefer the buyer's own subcategory as the recorded taxonomy.
+            specific.sort(key=lambda c: c.category_id != scope['sub'])
+            sub = specific[0].category_id
+            return {'level': LEVEL_SUB, 'caps': specific, 'sim': 0.0, 'detail': categories[sub].name_en,
                     'taxonomy': (categories[sub].parent_id, sub), 'materials': set()}
-        root_caps = [c for c in in_scope if c.category_id in scope['scope_mains']]
+        # Main-category capability (or blanket import): broader recommendation that
+        # requires product confirmation; never auto-invited.
+        root_caps = [c for c in in_scope if c.category_id in scope['scope_mains']] or sub_caps
         if root_caps:
-            evidence = extract_keywords(' '.join([c.trade_keywords or '' for c in root_caps] + [t for t, _, _ in texts]))
-            if not scope['sub'] or scope['keywords'] & evidence:
-                return {'level': LEVEL_MAIN, 'caps': root_caps, 'sim': 0.0,
-                        'detail': categories[root_caps[0].category_id].name_en,
-                        'taxonomy': (root_caps[0].category_id, None), 'materials': set()}
+            main = root_caps[0].category_id if root_caps[0].category_id in scope['scope_mains'] \
+                else categories[root_caps[0].category_id].parent_id
+            return {'level': LEVEL_MAIN, 'caps': root_caps, 'sim': 0.0, 'detail': categories[main].name_en,
+                    'taxonomy': (main, None), 'materials': set()}
         return None
 
     eligible: dict[str, dict] = {}
@@ -597,19 +660,20 @@ def _match_batch(
             continue
         pbs = pricebooks_by_org.get(org_id, [])
         texts = _evidence_texts(trades_by_org.get(org_id, []), pbs, approved_caps, evidence_terms)
+        blanket = blanket_imported_mains(approved_caps)
         covering = [c for c in approved_caps if city_covered_by(rfq.city, c.city)[0]]
         blank = [c for c in approved_caps if not (c.city or '').strip()]
         items: dict[str, dict] = {}
         mismatched: dict[str, dict] = {}
         for scope in scopes:
-            found = grade(scope, covering, pbs, texts) if covering else None
+            found = grade(scope, covering, pbs, texts, blanket) if covering else None
             if found:
                 found['coverage'] = 'covered'
-            elif rfq_city_norm and blank and (found := grade(scope, blank, pbs, texts)):
+            elif rfq_city_norm and blank and (found := grade(scope, blank, pbs, texts, blanket)):
                 found['coverage'] = 'unknown'
             if found:
                 items[scope['id']] = found
-            elif rfq_city_norm and (other := grade(scope, approved_caps, pbs, texts)):
+            elif rfq_city_norm and (other := grade(scope, approved_caps, pbs, texts, blanket)):
                 mismatched[scope['id']] = other
         if not items:
             if mismatched:
@@ -621,10 +685,23 @@ def _match_batch(
                                if categories[c.category_id].parent_id else categories[c.category_id].name_en
                                for c in approved_caps})
                 ineligible[org_id] = {'org': org, 'status': 'ineligible', 'reasons': [
-                    'No approved material, subcategory, or verified keyword capability supports the requested items.',
-                    f"Approved capabilities ({', '.join(held[:4])}{'…' if len(held) > 4 else ''}) have no product "
-                    f"evidence for: {'; '.join(s['item'].description for s in scopes)}. "
-                    'A blanket subcategory capability without matching products is not sufficient.']}
+                    'No approved material, subcategory or main-category capability supports the requested items.',
+                    f"Approved capabilities ({', '.join(held[:4])}{'…' if len(held) > 4 else ''}) are outside the "
+                    f"requested categories for: {'; '.join(s['item'].description for s in scopes)}."]}
+            continue
+        brand_missing = []
+        for iid in list(items):
+            brand = requested_brand(by_id[iid]['item'])
+            if brand is None:
+                continue  # No brand requested: no brand restriction.
+            confirmed = brand_confirmed(org_id, by_id[iid]['item'], items[iid], brand[1])
+            items[iid]['brand'] = (brand[0], confirmed)
+            if brand[2] and not confirmed:
+                brand_missing.append(f"{by_id[iid]['item'].description} (mandatory brand: {brand[0]})")
+                del items[iid]
+        if not items:
+            ineligible[org_id] = {'org': org, 'status': 'brand_mismatch', 'reasons': [
+                'Mandatory brand not confirmed in supplier product data for: ' + '; '.join(brand_missing) + '.']}
             continue
         evidence_caps = {id(c): c for e in items.values() for c in e['caps']}.values()
         supplier_quals = {q.strip().casefold() for c in evidence_caps for q in (c.qualifications or [])}
@@ -680,6 +757,13 @@ def _match_batch(
     if evaluate_only:
         return {
             'eligible_ids': [c['org'].id for c in ranked],
+            'auto_invite_ids': [c['org'].id for c in ranked if c['auto_invite']],
+            'evaluated_suppliers': len(candidate_ids),
+            'ineligible_by_status': dict(Counter(e['status'] for e in ineligible.values())),
+            'ineligible_reasons': dict(Counter(e['reasons'][0] for e in ineligible.values() if e['reasons']).most_common(10)),
+            # Per RFQ line: suppliers at each (strongest) evidence level.
+            'item_levels': {s['id']: dict(Counter(c['items'][s['id']]['level'] for c in ranked if s['id'] in c['items']))
+                            for s in scopes},
             'covered_items': {c['org'].id: sorted(c['items']) for c in ranked},
             'match_levels': {c['org'].id: [level for level in LEVEL_ORDER if any(e['level'] == level for e in c['items'].values())]
                              for c in ranked},
@@ -728,23 +812,8 @@ def _match_batch(
                            + (f' — {detail}' if detail and detail != by_id[iid]['item'].description else '')
                            + (f' ({label})' if label else '') + '.')
 
-        brand_requests, brand_evidence = [], []
-        for iid, e in sorted(items.items()):
-            item = by_id[iid]['item']
-            found = re.search(r'\bbrands?\s*:\s*([^;\n]+)', f'{item.description}\n{item.specifications}', re.I)
-            if not found:
-                continue
-            wanted = {v.strip().casefold() for v in re.split(r'[,/|]', found.group(1)) if v.strip()}
-            saved = {b.strip().casefold() for c in e['caps'] for b in (c.brands or []) if isinstance(b, str) and b.strip()}
-            product_ids = {mid for c in e['caps'] for mid in links(c)
-                           if mid == item.material_id or mid in e['materials']}
-            if product_ids:
-                for template in db.scalars(select(Material.specs_template).where(Material.id.in_(product_ids))):
-                    saved.update(str(v).strip().casefold() for k, v in (template or {}).items()
-                                 if str(k).strip().casefold() in {'brand', 'manufacturer'} and isinstance(v, str))
-            saved.update(pb.brand.strip().casefold() for pb in pricebooks_by_org.get(candidate['org'].id, []) if pb.brand)
-            brand_requests.append(found.group(1).strip())
-            brand_evidence.append(bool(wanted) and wanted.issubset(saved))
+        brand_requests = [e['brand'][0] for _, e in sorted(items.items()) if e.get('brand')]
+        brand_evidence = [e['brand'][1] for _, e in sorted(items.items()) if e.get('brand')]
         if brand_requests and all(brand_evidence):
             reasons.append('Brand requirement matches approved saved product data: ' + ', '.join(brand_requests)
                            + '. Availability and brand authorization require quotation confirmation.')
@@ -753,9 +822,15 @@ def _match_batch(
                            + '; requested brands must be confirmed in the supplier quotation.')
         reasons.append('Category eligibility does not confirm technical compliance')
 
-        status = 'eligible' if len(items) == len(scopes) else 'partial'
+        # Full coverage means every line has specific (invitable) evidence, not a broad one.
+        status = 'eligible' if sum(e['level'] in AUTO_INVITE_LEVELS for e in items.values()) == len(scopes) else 'partial'
         match = existing.get(candidate['org'].id)
         if match:
+            if broad_only and match.status in {'eligible', 'partial'} and 'broad_only' not in (match.reasons or []):
+                from app.security import audit
+                audit(db, actor, 'rfq.match_eligibility_corrected', rfq.buyer_org_id, match.id,
+                      previous_status=match.status, status='broad_only', supplier_org_id=candidate['org'].id,
+                      historical_invitation_preserved=True)
             match.score, match.reasons, match.status = candidate['score'], reasons, status
         else:
             db.add(RFQMatch(rfq_id=rfq.id, supplier_org_id=candidate['org'].id, score=candidate['score'],
@@ -774,6 +849,10 @@ def _match_batch(
         else:
             db.add(RFQMatch(rfq_id=rfq.id, supplier_org_id=org_id, score=0, reasons=reasons, status=entry['status']))
 
+    def invited_items(candidate: dict) -> list[str]:
+        # Broad (main-category) lines are recommendations, not the supplier's quote scope.
+        return sorted(iid for iid, e in candidate['items'].items() if e['level'] in AUTO_INVITE_LEVELS)
+
     # One invitation per supplier per RFQ (uq_invitation); reruns only refresh item scope.
     invitable = [c for c in ranked if c['auto_invite']]
     invited = set(db.scalars(select(Invitation.supplier_org_id).where(
@@ -785,9 +864,9 @@ def _match_batch(
         for old in db.scalars(select(Invitation).where(Invitation.rfq_id == rfq.id, Invitation.supplier_org_id.in_(invited))):
             candidate = eligible.get(old.supplier_org_id)
             if candidate and old.status in {'invited', 'accepted'}:
-                old.matched_item_ids = sorted(candidate['items'])
+                old.matched_item_ids = invited_items(candidate) or sorted(candidate['items'])
     invitations = [Invitation(rfq_id=rfq.id, supplier_org_id=c['org'].id, status='invited',
-                              matched_item_ids=sorted(c['items'])) for c in invitable if c['org'].id not in invited]
+                              matched_item_ids=invited_items(c)) for c in invitable if c['org'].id not in invited]
     db.add_all(invitations)
     if invitations:
         db.flush()
@@ -816,12 +895,16 @@ def _match_batch(
 
 
 def eligible_supplier_ids(db, rfq, org_ids):
-    """Use the matching policy for delivery/reminders without writing or inviting."""
+    """Use the matching policy for delivery/reminders/quotation drafts without writing or inviting.
+
+    Only invitable (non-broad) matches qualify: a broad main-category recommendation is
+    shown to the buyer but never receives invitation email/SMS or an automatic draft.
+    """
     eligible = set()
     ids = list(org_ids)
     for start in range(0, len(ids), 100):
         result = _match_batch(db, rfq, evaluate_only=True, supplier_ids=ids[start:start + 100])
-        eligible.update(result.get('eligible_ids', []))
+        eligible.update(result.get('auto_invite_ids', []))
     return eligible
 
 
@@ -850,7 +933,8 @@ def run_matching_job(bind, job_id: str, *, time_budget: float | None, restart: b
                                       time_budget=time_budget)
             cursor = result.get('next_cursor')
             payload = {key: value for key, value in job.payload.items() if key != 'cursor'}
-            payload.update(matching_duration_ms=round((time.monotonic() - started) * 1000, 1),
+            payload.update(progressed_at=datetime.now(timezone.utc).isoformat(),
+                           matching_duration_ms=round((time.monotonic() - started) * 1000, 1),
                            evaluated_suppliers=result.get('evaluated_suppliers', 0))
             if cursor:
                 payload['cursor'] = cursor

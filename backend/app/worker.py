@@ -264,7 +264,7 @@ def _process_event(db: Session, event: Outbox, now: datetime) -> None:
                 raise
         cursor = result.get('next_cursor')
         # Durations accumulate across continuation pages for admin diagnostics.
-        event.payload = {**event.payload, 'matching_duration_ms': round(
+        event.payload = {**event.payload, 'progressed_at': now.isoformat(), 'matching_duration_ms': round(
             float(event.payload.get('matching_duration_ms') or 0) + (time.monotonic() - started) * 1000, 1)}
         if cursor:
             event.payload = {**event.payload, 'cursor': cursor}

@@ -73,7 +73,10 @@ def taxonomy_corrections(db, rfq, min_confidence):
 
 
 def run(db, rfq_id, *, apply, correct_taxonomy, min_confidence):
-    rfq = db.get(RFQ, rfq_id)
+    # Accept the database ID or the buyer-visible reference (e.g. RFQ-F14D3711EC55).
+    rfq = db.get(RFQ, rfq_id) or db.scalar(select(RFQ).where(RFQ.reference == rfq_id))
+    if rfq:
+        rfq_id = rfq.id
     if not rfq:
         print(f'{rfq_id}: not found')
         return
@@ -95,8 +98,19 @@ def run(db, rfq_id, *, apply, correct_taxonomy, min_confidence):
     if not apply:
         evaluated = _match_batch(db, rfq, evaluate_only=True)
         levels = Counter(level for values in evaluated.get('match_levels', {}).values() for level in values)
-        print(f"  after (dry run): eligible={len(evaluated.get('eligible_ids', []))} levels={dict(levels)} "
-              f'evaluated in {time.monotonic() - started:.1f}s; nothing written')
+        eligible_ids = evaluated.get('eligible_ids', [])
+        auto = set(evaluated.get('auto_invite_ids', []))
+        already = set(db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq.id)))
+        print(f"  after (dry run): evaluated={evaluated.get('evaluated_suppliers', 0)} eligible={len(eligible_ids)} "
+              f"auto_invite={len(auto)} broad_only={len(eligible_ids) - len(auto)} "
+              f"new_invitations_if_applied={len(auto - already)} levels={dict(levels)} "
+              f'in {time.monotonic() - started:.1f}s; nothing written')
+        descriptions = dict(db.execute(select(RFQItem.id, RFQItem.description).where(RFQItem.rfq_id == rfq.id)).all())
+        for item_id, counts in evaluated.get('item_levels', {}).items():
+            print(f"    item '{descriptions.get(item_id, item_id)}': {sum(counts.values())} supplier(s) {counts}")
+        print(f"  excluded by status: {evaluated.get('ineligible_by_status', {})}")
+        for reason, count in evaluated.get('ineligible_reasons', {}).items():
+            print(f'    {count} x {reason[:160]}')
         db.rollback()
         return
 

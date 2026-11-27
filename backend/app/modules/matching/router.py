@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, case, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -168,6 +168,28 @@ def dispatch(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_d
     db.commit()
     return {**results,'invitations':[record(i) for i in results['invitations']], 'reason':'No eligible supplier with the required category capability and service city' if not results['eligible_suppliers'] else None}
 
+def matching_stalled(job):
+    """True when a queued/continuing job has not advanced within the configured window."""
+    from app.config import get_settings
+    if job.status=='processing' and job.lock_until and as_utc(job.lock_until)>datetime.now(UTC):return False
+    raw=(job.payload or {}).get('progressed_at')
+    try:last=datetime.fromisoformat(raw) if raw else job.created_at
+    except ValueError:last=job.created_at
+    if job.next_attempt_at and job.status=='retry':last=max(as_utc(last),as_utc(job.next_attempt_at))
+    return bool(last) and (datetime.now(UTC)-as_utc(last)).total_seconds()>get_settings().matching_stalled_after_seconds
+
+
+def match_level_totals(db,rfq_id):
+    """Strongest evidence level per matched supplier, counted in SQL (no row transfer)."""
+    text_reasons=cast(RFQMatch.reasons,String)
+    def has(*markers):return or_(*[text_reasons.like(f'%"{m}%') for m in markers])
+    level=case((has('exact_material_item:'),'exact'),(has('alias_item:','family_item:','ai_semantic_item:'),'product'),
+               (has('exact_subcategory_item:'),'subcategory'),(has('main_category_item:'),'main'),else_='other')
+    rows=dict(db.execute(select(level,func.count()).where(RFQMatch.rfq_id==rfq_id,RFQMatch.status.in_(('eligible','partial'))).group_by(level)).all())
+    return {'exact_material_matches':rows.get('exact',0),'product_description_matches':rows.get('product',0),
+            'subcategory_matches':rows.get('subcategory',0),'main_category_matches':rows.get('main',0)}
+
+
 @router.get('/rfqs/{rfq_id}/results',response_model=MatchResults)
 def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
     rfq=db.get(RFQ,rfq_id)
@@ -176,7 +198,9 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     rfq_items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()
     items={item.id:item.description for item in rfq_items}
     match_rows=db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id)
-        .where(RFQMatch.rfq_id==rfq.id).order_by(RFQMatch.score.desc(),Organization.name,Organization.id)
+        .where(RFQMatch.rfq_id==rfq.id)
+        # Matched suppliers fill the first pages; excluded ones follow for transparency.
+        .order_by(case((RFQMatch.status.in_(('eligible','partial')),0),else_=1),RFQMatch.score.desc(),Organization.name,Organization.id)
         .limit(limit).offset(offset)).all()
     matches=[]
     supplier_ids=[org.id for match,org in match_rows]
@@ -240,7 +264,7 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
                 'match_level':next(iter(match_level(match.reasons,item_id)),None),
                 'discipline':main_name.split(' - ',1)[0] if main_name else None,
                 'main_category':main_name,'subcategory':taxonomy_names.get(sub)})
-        historical_review=bool(invitation_status and match.status not in {'eligible','partial'})
+        historical_review=bool(invitation_status and (match.status not in {'eligible','partial'} or 'broad_only' in (match.reasons or [])))
         if historical_review:
             display_reasons.append('Historical invitation retained; current eligibility requires administrative review. No invitation was revoked.')
         matches.append({**record(match),'reasons':display_reasons,'supplier_name':org.name,'covered_items':[items[item_id] for item_id in covered if item_id in items],
@@ -266,8 +290,10 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     evaluated=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id)) or 0)
     status_counts={status:count for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
     invited=int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id)) or 0)
+    level_counts=match_level_totals(db,rfq.id)
     if rfq.status=='draft':progress='draft'
     elif rfq.status not in {'published','collecting_quotes'} or as_utc(rfq.response_deadline)<=datetime.now(UTC):progress='closed'
+    elif job_status in {'pending','retry','processing'} and matching_stalled(latest_job):progress='matching_failed'
     elif job_status in {'pending','retry','processing'}:
         progress='matching_in_progress' if matched or job_status=='processing' else 'matching_queued'
     elif job_status in {'failed','uncertain'}:progress='matching_failed'
@@ -315,7 +341,10 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     recent=db.scalar(select(func.max(Outbox.created_at)).where(Outbox.event=='rfq.deadline.reminder',Outbox.payload['rfq_id'].as_string()==rfq.id))
     available=(recent.replace(tzinfo=UTC) if recent and recent.tzinfo is None else recent)+timedelta(hours=24) if recent else None
     explanation=None
-    if progress=='matching_failed':
+    if progress=='matching_failed' and job_status in {'pending','retry','processing'}:
+        explanation=('Supplier matching has not progressed recently; the background worker may be stopped. '
+                     f'{matched} supplier(s) matched so far are retained and matching resumes automatically when the worker runs.')
+    elif progress=='matching_failed':
         explanation='Supplier matching failed. Existing matches and invitations are retained; an administrator can retry the job.'
     elif matched:
         explanation=f'{matched} supplier(s) qualify based on approved product or category capability and configured eligibility; technical compliance remains subject to quotation review.'
@@ -351,7 +380,9 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     return {'matches':matches, 'invitations':[{**record(i),'supplier_name':name,'quotation_status':quote,'reminder_eligible':i.supplier_org_id in pending} for i,name,quote in invitation_rows], 'progress':progress,'matching_status':matching_status,
             'pending_invitation_ids':[i.id for i,_,_ in invitation_rows if i.supplier_org_id in pending],
             'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':len(pending),'suppliers_evaluated':evaluated,
-            'quotations_received':quotations_received,
+            'quotations_received':quotations_received,**level_counts,
+            'excluded_suppliers':evaluated-matched,
+            'excluded_by_status':{k:v for k,v in status_counts.items() if k not in {'eligible','partial'}},
             'explanation':explanation,'deliveries':deliveries,'reminder_available_at':available.isoformat() if available else None,'limit':limit,'offset':offset}
 
 

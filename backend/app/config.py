@@ -172,6 +172,9 @@ class Settings(BaseSettings):
     # Publication evaluates candidate pages synchronously until this budget is spent;
     # any remainder continues in the durable rfq.published job.
     matching_publish_time_budget_seconds: float = Field(default=2.5, ge=0, le=30)
+    # A queued/continuing matching job that has not progressed for this long is reported
+    # as failed (worker stopped). It stays queued and resumes when a worker runs.
+    matching_stalled_after_seconds: int = Field(default=600, ge=60, le=86400)
     gemini_api_key: SecretStr = SecretStr('')
     gemini_model: str = Field(default='gemini-2.5-flash',pattern=r'^[a-zA-Z0-9.-]+$')
     gemini_enabled: bool = Field(default=True, validation_alias=AliasChoices('gemini_enabled', 'GEMINI_ENABLED'))
