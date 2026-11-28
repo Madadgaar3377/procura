@@ -256,7 +256,7 @@ def _qty(value) -> str:
 def rfq_spec(db, rfq, supplier=None) -> dict:
     from app.models import Organization, RFQItem
     buyer = db.get(Organization, rfq.buyer_org_id)
-    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id).order_by(RFQItem.created_at, RFQItem.id)).all()
+    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at, RFQItem.id)).all()
     return {
         'title': 'REQUEST FOR QUOTATION', 'reference': rfq.reference, 'logo_text': buyer.name if buyer else '',
         'parties': [('FROM (BUYER)', _org_lines(buyer)), ('TO (SUPPLIER)', _org_lines(supplier, contact=False) if supplier else ['All invited suppliers'])],

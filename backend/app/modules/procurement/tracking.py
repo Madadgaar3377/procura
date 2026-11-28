@@ -30,7 +30,7 @@ def _invitation_items(db, rfq_id: str, invitations: list[Invitation]) -> dict[st
 
 
 def buyer_tracking(db, rfq: RFQ) -> dict:
-    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id).order_by(RFQItem.created_at, RFQItem.id)).all()
+    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at, RFQItem.id)).all()
     invitations = db.scalars(select(Invitation).where(Invitation.rfq_id == rfq.id)).all()
     covered = _invitation_items(db, rfq.id, invitations)
     quotes = db.scalars(select(Quotation).where(Quotation.rfq_id == rfq.id)).all()
@@ -112,7 +112,7 @@ def supplier_inbox(db, org_id: str, *, limit: int = 50, offset: int = 0) -> list
     if not rows:
         return []
     rfq_ids = [rfq.id for _, rfq in rows]
-    item_counts = dict(db.execute(select(RFQItem.rfq_id, func.count()).where(RFQItem.rfq_id.in_(rfq_ids)).group_by(RFQItem.rfq_id)).all())
+    item_counts = dict(db.execute(select(RFQItem.rfq_id, func.count()).where(RFQItem.rfq_id.in_(rfq_ids),RFQItem.is_active.is_(True)).group_by(RFQItem.rfq_id)).all())
     quotes = {q.invitation_id: q for q in db.scalars(select(Quotation).where(Quotation.invitation_id.in_([inv.id for inv, _ in rows])))}
     line_counts = dict(db.execute(select(QuoteLine.quotation_id, func.count()).where(QuoteLine.quotation_id.in_([q.id for q in quotes.values()]))
                                   .group_by(QuoteLine.quotation_id)).all()) if quotes else {}

@@ -13,7 +13,8 @@ function harness(arabic=false, overrides={}){
  let records=Array.from({length:20},(_,i)=>({id:'mat-'+i,name_en:'Rebar '+i,name_ar:'',code:'CODE-'+i,unit:'M',main_category_id:'main',subcategory_id:'steel'}));
  const empty=()=>null;
  const dependencies={
-  react:{...React,useId:()=> 'combo',useEffect:effect=>effect(),useState:initial=>{const i=slot++;if(!(i in states))states[i]=initial;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];}},
+  react:{...React,useId:()=> 'combo',useEffect:effect=>effect(),useRef:initial=>{const i=slot++;if(!(i in states))states[i]={current:initial};return states[i];},useState:initial=>{const i=slot++;if(!(i in states))states[i]=initial;return [states[i],value=>{states[i]=typeof value==='function'?value(states[i]):value;}];}},
+  '@/lib/api/client':{api:async()=>({main_category_id:'main',subcategory_id:'steel',suggested_unit:'M'}),json:value=>JSON.stringify(value)},
   '@/lib/api/use-api':{useApi:p=>{paths.push(p);return {data:p?.startsWith('taxonomy/materials?')?records:p?.startsWith('taxonomy/materials/')?records[0]:undefined,loading:false,reload:empty};}},
   '@/lib/locale':{useLocale:()=>({t:s=>s,arabic})},
   '@/features/shared/searchable-select':{SearchableSelect:'category-select'},
@@ -33,14 +34,24 @@ function harness(arabic=false, overrides={}){
 }
 
 test('autocomplete searches within the selected canonical category',()=>{
- const h=harness();assert.equal(h.paths[0],null);
- h.find(n=>n.props?.role==='combobox').props.onFocus();h.render();
+ const h=harness(false,{description:'Rebar'});assert.equal(h.paths[0],null);
+ h.find(n=>n.props?.role==='combobox').props.onFocus();h.flush();h.render();
  assert.match(h.paths[0],/subcategory_id=steel/);
  assert.match(h.paths[0],/main_category_id=main/);
 });
 
+test('Create RFQ searches Material Master before any category is selected',()=>{
+ const h=harness(false,{main_category_id:null,subcategory_id:null,description:'Rebar'});
+ h.find(n=>n.props?.role==='combobox').props.onFocus();h.flush();h.render();
+ assert.match(h.paths[0],/q=Rebar/);
+ assert.doesNotMatch(h.paths[0],/main_category_id|subcategory_id/);
+ h.find(n=>n.props?.role==='option').props.onClick();
+ assert.equal(h.line.main_category_id,'main');assert.equal(h.line.subcategory_id,'steel');
+ assert.equal(h.line.material_id,'mat-0');assert.equal(h.line.unit,'M');
+});
+
 test('selection fills ID/unit, custom text unlinks master, category change retains buyer text',()=>{
- const h=harness();h.find(n=>n.props?.role==='combobox').props.onFocus();h.render();
+ const h=harness(false,{description:'Rebar'});h.find(n=>n.props?.role==='combobox').props.onFocus();h.flush();h.render();
  h.find(n=>n.props?.role==='option').props.onClick();assert.equal(h.line.material_id,'mat-0');assert.equal(h.line.unit,'M');h.render();
  h.find(n=>n.props?.role==='combobox').props.onChange({target:{value:'Custom RFQ text'}});h.render();
  assert.equal(h.line.material_id,null);assert.equal(h.paths[0],null,'do not request outdated search while debounce is pending');
@@ -49,11 +60,21 @@ test('selection fills ID/unit, custom text unlinks master, category change retai
  assert.equal(h.line.material_id,null);assert.equal(h.line.subcategory_id,null);assert.equal(h.line.description,'Custom RFQ text');assert.equal(h.line.unit,'M');
 });
 
+test('custom description keeps the existing automatic classification path',async()=>{
+ const h=harness(false,{main_category_id:null,subcategory_id:null});
+ h.find(n=>n.props?.role==='combobox').props.onChange({target:{value:'Custom steel component'}});
+ h.render();h.flush();await new Promise(setImmediate);
+ assert.equal(h.line.material_id,null);
+ assert.equal(h.line.main_category_id,'main');
+ assert.equal(h.line.subcategory_id,'steel');
+ assert.equal(h.line.unit,'M');
+});
+
 
 test('Arabic direction and independent rows retain independent selections',()=>{
  const first=harness(true),second=harness();
  assert.equal(first.find(n=>n.type==='fieldset').props.dir,'rtl');
- first.find(n=>n.props?.role==='combobox').props.onFocus();first.render();
+ first.find(n=>n.props?.role==='combobox').props.onChange({target:{value:'Rebar'}});first.render();first.flush();first.render();
  first.find(n=>n.props?.role==='option').props.onClick();
  assert.equal(first.line.material_id,'mat-0');assert.equal(second.line.material_id,null);
 });
@@ -70,10 +91,16 @@ test('specification and positive decimal quantity remain separate RFQ fields',()
  assert.equal(h.line.quantity,'2.375');
 });
 
-test('saved Material Master category and unit resolve after taxonomy loads',()=>{
+test('Edit RFQ restores a saved Material Master line and keeps its RFQ fields editable',()=>{
  const h=harness(false,{material_id:'mat-0',main_category_id:null,subcategory_id:null,unit:''});
  h.render();
  assert.equal(h.line.main_category_id,'main');
  assert.equal(h.line.subcategory_id,'steel');
  assert.equal(h.line.unit,'M');
+ h.find(n=>n.type==='textarea').props.onChange({target:{value:'Buyer specification'}});
+ h.render();
+ h.find(n=>n.type==='input'&&n.props.name==='items.0.quantity').props.onChange({target:{value:'4.5'}});
+ assert.equal(h.line.material_id,'mat-0');
+ assert.equal(h.line.specifications,'Buyer specification');
+ assert.equal(h.line.quantity,'4.5');
 });

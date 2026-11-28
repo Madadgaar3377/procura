@@ -197,7 +197,7 @@ def _mask(destination: str | None, channel: str) -> str:
 def _view(db, session, inv, rfq, link) -> dict:
     from app.modules.matching.service import requested_brand
     base = portal_payload(db, inv, rfq, link)
-    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id).order_by(RFQItem.created_at, RFQItem.id)).all()
+    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at, RFQItem.id)).all()
     names = _taxonomy(db, items)
     detail = {}
     for item in items:

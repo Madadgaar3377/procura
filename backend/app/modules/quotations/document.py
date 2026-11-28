@@ -109,16 +109,17 @@ def quotation_document(db, quote, lines):
     doc_lines = []
     for line in lines:
         req = requested.get(line.rfq_item_id)
+        original = line.requested_snapshot or {}
         line_total = (Decimal(line.quantity) * Decimal(line.unit_price)).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
         doc_lines.append({
             'rfq_item_id': line.rfq_item_id,
-            'description': req.description if req else line.offered_description,
+            'description': original.get('description') or (req.description if req else line.offered_description),
             'offered_description': line.offered_description,
             'brand': line.brand or '',
             'model': line.model or '',
             'specification': line.offered_specs or '',
             'quantity': str(line.quantity),
-            'unit': req.unit if req else '',
+            'unit': original.get('unit') or (req.unit if req else ''),
             'unit_price': str(Decimal(line.unit_price).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)),
             'line_total': str(line_total),
             'subtotal': str(line_total),

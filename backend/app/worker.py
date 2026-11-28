@@ -306,14 +306,25 @@ def _deliver_contact_inquiry(db: Session, event: Outbox) -> None:
 
 
 def _claim_batch(db: Session, limit: int, now: datetime) -> list[str]:
+    from sqlalchemy import case
     due = or_(Outbox.next_attempt_at.is_(None), Outbox.next_attempt_at <= now)
     eligible = or_(
         and_(Outbox.status.in_({'pending', 'retry'}), due),
         and_(Outbox.status == 'awaiting_status', due),
         and_(Outbox.status == 'processing', or_(Outbox.lock_until.is_(None), Outbox.lock_until <= now)),
     )
+    priority = case(
+        (Outbox.event == 'rfq.published', 0),
+        (Outbox.event == 'quotation.auto_prepare', 1),
+        (Outbox.event == 'rfq.invitation', 2),
+        else_=3,
+    )
     rows = db.scalars(
-        select(Outbox).where(eligible).order_by(Outbox.created_at).limit(limit).with_for_update(skip_locked=True)
+        select(Outbox)
+        .where(eligible)
+        .order_by(priority, Outbox.created_at, Outbox.id)
+        .limit(limit)
+        .with_for_update(skip_locked=True)
     ).all()
     ids = []
     for item in rows:

@@ -543,6 +543,16 @@
     "GET",
     "DELETE"
   ],
+  "rfqs/{rfq_id}/revisions": [
+    "GET",
+    "POST"
+  ],
+  "rfqs/{rfq_id}/revisions/{revision_id}/publish": [
+    "POST"
+  ],
+  "rfqs/{rfq_id}/revisions/{revision_id}": [
+    "DELETE"
+  ],
   "matching/guest-invitations/open": [
     "POST"
   ],
@@ -565,6 +575,9 @@
     "GET"
   ],
   "matching/rfqs/{rfq_id}/notifications-status": [
+    "GET"
+  ],
+  "matching/rfqs/{rfq_id}/notifications": [
     "GET"
   ],
   "matching/invitations": [
@@ -644,6 +657,12 @@
     "GET"
   ],
   "quotations/{quotation_id}/submit": [
+    "POST"
+  ],
+  "quotations/{quotation_id}/revisions": [
+    "GET"
+  ],
+  "quotations/{quotation_id}/revise": [
     "POST"
   ],
   "quotations/rfqs/{rfq_id}/comparison": [

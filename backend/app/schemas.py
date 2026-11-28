@@ -536,6 +536,8 @@ class RFQLineIn(Model):
     specifications:str=Field(default='',max_length=10000)
     unit:str=Field(min_length=1,max_length=30)
     quantity:Decimal=Field(gt=0,max_digits=14,decimal_places=3)
+    discipline:str=Field(default='',max_length=50)
+    required_brand:str=Field(default='',max_length=150)
 
     @field_validator('id','material_id','main_category_id','subcategory_id',mode='before')
     @classmethod
@@ -552,6 +554,7 @@ class RFQLineIn(Model):
 
 class RFQIn(Model):
     buyer_org_id:str
+    expected_revision:int|None=Field(default=None,ge=0)
     client_request_id:str|None=Field(default=None,min_length=16,max_length=64)
     title:str=Field(min_length=3,max_length=250)
     city:str=Field(default='',max_length=120)
@@ -562,6 +565,7 @@ class RFQIn(Model):
     required_delivery_date:date|None=None
     additional_instructions:str=Field(default='',max_length=10000)
     delivery_address:str=Field(default='',max_length=300)
+    delivery_country:str=Field(default='',max_length=100)
 
     @field_validator('city',mode='wrap')
     @classmethod

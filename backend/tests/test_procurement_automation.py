@@ -121,7 +121,72 @@ def test_guest_explicit_submission_reaches_buyer_comparison_and_revokes(flow):
     assert client.post('/api/v1/matching/guest-invitations/open',json={'token':token+'invalid'}).status_code==401
 
 
-def test_quotation_failure_rolls_back_notifications_and_retries(flow,monkeypatch):
+def test_published_quantity_revision_reprices_unsubmitted_automatic_draft(flow):
+    client,sessions,ids=flow
+    publish_and_prepare(client,sessions,ids)
+    with sessions() as db:
+        quote=db.scalar(select(Quotation).where(Quotation.rfq_id==ids['rfq']))
+        assert quote and quote.status=='draft'
+        rate=db.get(PriceBookItem,ids['rate']);rate.unit_price=Decimal('15.00');rate.availability='available'
+        rfq=db.get(RFQ,ids['rfq']);item=db.get(RFQItem,ids['item'])
+        payload={'buyer_org_id':ids['buyer'],'title':rfq.title,'city':rfq.city,
+            'response_deadline':rfq.response_deadline.replace(tzinfo=UTC).isoformat(),
+            'items':[{'id':item.id,'material_id':item.material_id,'main_category_id':item.main_category_id,
+                      'subcategory_id':item.subcategory_id,'description':item.description,
+                      'specifications':item.specifications,'unit':item.unit,'quantity':'20'}]}
+        db.commit()
+    staged=client.post(f"/api/v1/rfqs/{ids['rfq']}/revisions",json={'expected_revision':0,'rfq':payload})
+    assert staged.status_code==201,staged.text
+    assert client.post(f"/api/v1/rfqs/{ids['rfq']}/revisions/{staged.json()['id']}/publish").status_code==200
+    from app.modules.quotations.automation import refresh_automatic_draft
+    with sessions() as db:
+        invitation=db.scalar(select(Invitation).where(Invitation.rfq_id==ids['rfq']))
+        refreshed=refresh_automatic_draft(db,invitation,[ids['item']]);db.commit()
+        assert refreshed and refreshed.status=='draft' and refreshed.rfq_revision==1
+        line=db.scalar(select(QuoteLine).where(QuoteLine.quotation_id==refreshed.id))
+        assert line and line.quantity==Decimal('20') and line.unit_price==Decimal('15.00')
+        assert Decimal(line.requested_snapshot['quantity'])==Decimal('20')
+
+
+def test_submitted_quotation_is_preserved_and_supplier_can_resubmit_revision(flow):
+    client,sessions,ids=flow
+    publish_and_prepare(client,sessions,ids)
+    with sessions() as db:
+        quote=db.scalar(select(Quotation).where(Quotation.rfq_id==ids['rfq']))
+        quote_id=quote.id
+    edited=client.put(f'/api/v1/quotations/{quote_id}/lines',json={'lines':[
+        {'rfq_item_id':ids['item'],'quantity':'10','unit_price':'12.50','lead_days':7,'compliance':'compliant'}]})
+    assert edited.status_code==200,edited.text
+    assert client.post(f'/api/v1/quotations/{quote_id}/submit').status_code==200
+    with sessions() as db:
+        rfq=db.get(RFQ,ids['rfq']);item=db.get(RFQItem,ids['item'])
+        payload={'buyer_org_id':ids['buyer'],'title':rfq.title,'city':rfq.city,
+            'response_deadline':rfq.response_deadline.replace(tzinfo=UTC).isoformat(),
+            'items':[{'id':item.id,'material_id':item.material_id,'main_category_id':item.main_category_id,
+                      'subcategory_id':item.subcategory_id,'description':item.description,
+                      'specifications':item.specifications,'unit':item.unit,'quantity':'20'}]}
+    staged=client.post(f"/api/v1/rfqs/{ids['rfq']}/revisions",json={'expected_revision':0,'rfq':payload})
+    assert staged.status_code==201,staged.text
+    assert client.post(f"/api/v1/rfqs/{ids['rfq']}/revisions/{staged.json()['id']}/publish").status_code==200
+    with sessions() as db:
+        quote=db.get(Quotation,quote_id)
+        assert quote.status=='submitted' and quote.review_required and quote.rfq_revision==0
+        line=db.scalar(select(QuoteLine).where(QuoteLine.quotation_id==quote_id))
+        assert line.quantity==Decimal('10') and line.requested_snapshot['quantity']=='10.000'
+    assert client.post(f'/api/v1/quotations/{quote_id}/decision/awarded').status_code==409
+    revised=client.post(f'/api/v1/quotations/{quote_id}/revise')
+    assert revised.status_code==200,revised.text
+    history=client.get(f'/api/v1/quotations/{quote_id}/revisions')
+    assert history.status_code==200 and history.json()[0]['snapshot']['quotation']['status']=='submitted'
+    resaved=client.put(f'/api/v1/quotations/{quote_id}/lines',json={'lines':[
+        {'rfq_item_id':ids['item'],'quantity':'20','unit_price':'12.50','lead_days':7,'compliance':'compliant'}]})
+    assert resaved.status_code==200,resaved.text
+    assert client.post(f'/api/v1/quotations/{quote_id}/submit').status_code==200
+    with sessions() as db:
+        quote=db.get(Quotation,quote_id);assert quote.revision==2 and quote.rfq_revision==1 and quote.status=='submitted'
+
+
+def test_quotation_failure_isolates_notifications_and_retries_in_quotation_lane(flow,monkeypatch):
     client,sessions,ids=flow
     assert client.post(f"/api/v1/rfqs/{ids['rfq']}/publish").status_code==200
     from app.modules.quotations import automation
@@ -130,12 +195,14 @@ def test_quotation_failure_rolls_back_notifications_and_retries(flow,monkeypatch
     monkeypatch.setattr(automation,'prepare_invitation_quote',fail)
     with sessions() as db:
         job=db.scalar(select(Outbox).where(Outbox.event=='rfq.invitation'));key=job.id
-        assert process_batch(db,event_ids=[key])==[]
-        assert db.get(Outbox,key).status=='retry'
-        assert db.scalar(select(func.count()).select_from(Outbox).where(Outbox.event=='notification.delivery'))==0
+        assert process_batch(db,event_ids=[key])==[key]
+        assert db.get(Outbox,key).status=='processed'
+        assert db.scalar(select(func.count()).select_from(Outbox).where(Outbox.event=='notification.delivery'))>=1
+        q_job=db.scalar(select(Outbox).where(Outbox.event=='quotation.auto_prepare'));q_key=q_job.id
+        assert q_job.status=='pending'
     monkeypatch.setattr(automation,'prepare_invitation_quote',original)
     with sessions() as db:
-        assert process_batch(db,event_ids=[key],now=datetime.now(UTC)+timedelta(minutes=1))==[key]
+        assert process_batch(db,event_ids=[q_key],now=datetime.now(UTC)+timedelta(minutes=1))==[q_key]
         assert db.scalar(select(func.count()).select_from(Quotation))==1
 
 

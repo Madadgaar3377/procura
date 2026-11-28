@@ -20,7 +20,7 @@ def context_for(db, rfq):
         (parsed.scheme != 'https' or parsed.hostname not in {'procumaterial.com', 'www.procumaterial.com'}))):
         raise ValueError("FRONTEND_URL must be an absolute application URL")
     pairs = db.execute(
-        select(RFQItem.main_category_id, RFQItem.subcategory_id).where(RFQItem.rfq_id == rfq.id)
+        select(RFQItem.main_category_id, RFQItem.subcategory_id).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True))
     ).all()
     ids = {value for pair in pairs for value in pair if value}
     names = dict(db.execute(select(Category.id, Category.name_en).where(Category.id.in_(ids))).all())
@@ -126,6 +126,71 @@ def pending_orgs(db, rfq):
     return [invitation.supplier_org_id for invitation in pending_invitations(db, rfq)]
 
 
+def revision_notices(db, event, now):
+    """Page existing invitations after matching; each destination has a revision key."""
+    from app.models import RFQRevision
+    rfq = db.get(RFQ, event.payload.get('rfq_id'))
+    if not rfq or rfq.status not in {'published', 'collecting_quotes'}:
+        event.status, event.delivery_status = 'skipped', 'rfq_closed_or_expired'
+        return
+    number = event.payload['revision']
+    if event.payload.get('matching_changed'):
+        matching = db.scalar(select(Outbox.status).where(
+            Outbox.dedupe_key == f'rfq-revision-match:{rfq.id}:{number}'))
+        if matching in {'failed', 'uncertain', 'skipped'}:
+            event.status, event.delivery_status = 'failed', 'matching_failed'
+            return
+        if matching not in {'processed'}:
+            event.status, event.next_attempt_at = 'pending', now + timedelta(seconds=10)
+            return
+    revision = db.scalar(select(RFQRevision).where(
+        RFQRevision.rfq_id == rfq.id, RFQRevision.number == number))
+    if not revision or revision.status != 'published':
+        event.status, event.delivery_status = 'skipped', 'revision_not_published'
+        return
+    cursor = event.payload.get('cursor')
+    query = select(Invitation).where(Invitation.rfq_id == rfq.id,
+        Invitation.status.in_({'invited', 'accepted'}))
+    if cursor: query = query.where(Invitation.id > cursor)
+    invitations = db.scalars(query.order_by(Invitation.id).limit(101)).all()
+    affected = set(event.payload.get('affected_item_ids') or [])
+    for invitation in invitations[:100]:
+        invited_at = invitation.created_at.replace(tzinfo=UTC) if invitation.created_at and not invitation.created_at.tzinfo else invitation.created_at
+        published_at = revision.published_at.replace(tzinfo=UTC) if revision.published_at and not revision.published_at.tzinfo else revision.published_at
+        if invited_at and published_at and invited_at >= published_at:
+            continue  # newly eligible suppliers receive the standard invitation
+        if not event.payload.get('notify_all') and not affected.intersection(invitation.matched_item_ids or []):
+            continue
+        if affected:
+            db.add(Outbox(event='quotation.auto_prepare',
+                payload={'rfq_id': rfq.id, 'revision': number, 'invitation_id': invitation.id,
+                         'affected_item_ids': sorted(affected)},
+                dedupe_key=f'quotation-auto-revision:{rfq.id}:{number}:{invitation.id}'))
+        db.add(Outbox(event='rfq.revision.notice',
+            payload={'rfq_id': rfq.id, 'revision': number, 'invitation_id': invitation.id,
+                     'supplier_org_id': invitation.supplier_org_id},
+            dedupe_key=f'rfq-revision-notice:{rfq.id}:{number}:{invitation.id}'))
+    if len(invitations) > 100:
+        event.payload = {**event.payload, 'cursor': invitations[99].id}
+        event.status, event.next_attempt_at = 'pending', now
+
+
+def revision_notice(db, event):
+    rfq = db.get(RFQ, event.payload.get('rfq_id'))
+    invitation = db.get(Invitation, event.payload.get('invitation_id'))
+    if not rfq or not invitation or invitation.rfq_id != rfq.id or invitation.status not in {'invited', 'accepted'}:
+        event.status, event.delivery_status = 'skipped', 'invitation_not_active'
+        return
+    if persisted_eligibility(db, rfq, [invitation.supplier_org_id])[invitation.supplier_org_id]:
+        event.status, event.delivery_status = 'skipped', 'supplier_not_eligible'
+        return
+    number = event.payload['revision']
+    enqueue_rfq_notice(db, org_id=invitation.supplier_org_id, template='rfq_revision',
+        context={**context_for(db, rfq), 'org_id': invitation.supplier_org_id,
+                 'notice_key': f'rfq_revision:{rfq.id}:{number}', 'revision': number},
+        source_key=f'rfq-revision:{rfq.id}:{number}:{invitation.id}')
+
+
 def prepare(db, event):
     from app.worker import PermanentOutboxError
 
@@ -157,7 +222,7 @@ def prepare(db, event):
         from app.models import QuoteLine
         quoted=set(db.scalars(select(QuoteLine.rfq_item_id).where(QuoteLine.quotation_id==quote.id))) if quote else set()
         scope=matched_item_ids(db,invitation)
-        missing_query=select(RFQItem.description).where(RFQItem.rfq_id==rfq.id,RFQItem.id.not_in(quoted))
+        missing_query=select(RFQItem.description).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True),RFQItem.id.not_in(quoted))
         missing=db.scalars(missing_query.where(RFQItem.id.in_(scope)) if scope else missing_query).all()
         pricing_message=('Your quotation is prepared from your saved prices. Open the secure link, review and approve it.' if quote and quote.status=='draft' else
             'Your quotation has been submitted.' if quote else 'Open the secure link to enter your prices.')
@@ -200,8 +265,8 @@ def prepare(db, event):
 
 ACTIVE_RFQ_STATUSES = frozenset({"published", "collecting_quotes"})
 # Jobs that would invite, remind or draft quotations for an RFQ.
-RFQ_SOLICITATION_EVENTS = ("rfq.published", "rfq.invitation", "rfq.deadline.reminder", "quotation.auto_prepare")
-RFQ_SOLICITATION_TEMPLATES = ("rfq_invitation", "deadline_reminder")
+RFQ_SOLICITATION_EVENTS = ("rfq.published", "rfq.invitation", "rfq.deadline.reminder", "quotation.auto_prepare", "rfq.revised", "rfq.revision.notice")
+RFQ_SOLICITATION_TEMPLATES = ("rfq_invitation", "deadline_reminder", "rfq_revision")
 
 
 def rfq_solicitation_state(rfq, now=None):
@@ -309,7 +374,7 @@ def quotation_notice(db, event):
                 "rfq_id": rfq.id,
                 "url": base + f"/app/{role}/quote/{quote.id}",
             },
-            source_key=f"quotation-submitted:{quote.id}:{role}",
+            source_key=f"quotation-submitted:{quote.id}:{event.payload.get('quotation_revision', 1)}:{role}",
         )
 
 

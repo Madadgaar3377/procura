@@ -61,7 +61,7 @@ def _warranty_months(line: QuoteLine, terms: dict) -> int | None:
 
 def compare(db, rfq: RFQ, weights: dict | None = None) -> dict:
     weights = normalize_weights(weights if weights is not None else rfq.scoring_weights)
-    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id).order_by(RFQItem.created_at, RFQItem.id)).all()
+    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at, RFQItem.id)).all()
     quotes = db.scalars(select(Quotation).where(Quotation.rfq_id == rfq.id, Quotation.status.in_(RANKABLE | {'rejected'}))).all()
     ids = [q.id for q in quotes]
     lines_by_quote: dict[str, list[QuoteLine]] = {qid: [] for qid in ids}
@@ -73,8 +73,9 @@ def compare(db, rfq: RFQ, weights: dict | None = None) -> dict:
     from app.modules.quotations.router import invoice
 
     ranked_quotes = [q for q in quotes if q.status in RANKABLE]
-    currency = Counter(q.currency for q in ranked_quotes).most_common(1)[0][0] if ranked_quotes else 'SAR'
-    comparable = [q for q in ranked_quotes if q.currency == currency]
+    current_quotes = [q for q in ranked_quotes if q.rfq_revision == rfq.revision]
+    currency = Counter(q.currency for q in current_quotes).most_common(1)[0][0] if current_quotes else 'SAR'
+    comparable = [q for q in ranked_quotes if q.currency == currency and q.rfq_revision == rfq.revision]
     item_by_id = {item.id: item for item in items}
     total_qty_weight = Decimal(len(items)) or ONE
 
@@ -117,7 +118,9 @@ def compare(db, rfq: RFQ, weights: dict | None = None) -> dict:
         }
         if quote not in comparable:
             entry.update(comparable=False, rank=None, final_score=None, complete=False,
-                         note='Rejected quotation' if quote.status == 'rejected' else f'Different currency ({quote.currency}); not ranked against {currency}')
+                         note='Supplier revision required for current RFQ' if quote.rfq_revision != rfq.revision
+                         else 'Rejected quotation' if quote.status == 'rejected'
+                         else f'Different currency ({quote.currency}); not ranked against {currency}')
             results.append(entry)
             continue
         price_points = ZERO

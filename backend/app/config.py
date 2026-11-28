@@ -6,6 +6,10 @@ from pydantic import AliasChoices, Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Matching candidate page size floor (see Settings._floor_matching_batch_size).
+MATCHING_BATCH_SIZE_FLOOR = 500
+
+
 class Settings(BaseSettings):
     app_env: str = 'development'
     embedded_import_worker_enabled: bool = True
@@ -208,13 +212,20 @@ class Settings(BaseSettings):
     r2_max_image_bytes: int = Field(default=10_485_760, ge=1)
     r2_max_document_bytes: int = Field(default=26_214_400, ge=1)
     r2_allowed_origins: str = ''
-    matching_batch_size: int = Field(default=100, ge=1, le=100)
+    matching_batch_size: int = Field(default=2500, ge=MATCHING_BATCH_SIZE_FLOOR, le=20000)
     # Publication evaluates candidate pages synchronously until this budget is spent;
     # any remainder continues in the durable rfq.published job.
-    matching_publish_time_budget_seconds: float = Field(default=2.5, ge=0, le=30)
+    matching_publish_time_budget_seconds: float = Field(default=5.0, ge=0, le=30)
     # Each worker claim of a matching job runs pages until this budget (below the
-    # 90 s outbox lease) is spent, then the job continues on the next poll.
-    matching_worker_time_budget_seconds: float = Field(default=20, ge=1, le=60)
+    # outbox lease) is spent, then the job continues on the next poll.
+    matching_worker_time_budget_seconds: float = Field(default=25, ge=1, le=60)
+    matching_worker_concurrency: int = Field(default=2, ge=1, le=8)
+    # The legacy single-process worker (--lane all) also runs a thread that polls
+    # only RFQ matching jobs, so a long Excel import step cannot delay matching.
+    matching_reserved_worker: bool = True
+    quotation_worker_concurrency: int = Field(default=2, ge=1, le=8)
+    matching_max_attempts: int = Field(default=5, ge=1, le=10)
+    import_max_retries: int = Field(default=3, ge=1, le=10)
     # A worker poll stops claiming further outbox events after this many seconds so
     # one poll cannot run for minutes and starve the other queues.
     outbox_poll_time_budget_seconds: float = Field(default=30, ge=1, le=600)
@@ -224,7 +235,7 @@ class Settings(BaseSettings):
     rfq_reminder_requests_per_hour: int = Field(default=20, ge=1, le=500)
     # A queued/continuing matching job that has not progressed for this long is reported
     # as failed (worker stopped). It stays queued and resumes when a worker runs.
-    matching_stalled_after_seconds: int = Field(default=600, ge=60, le=86400)
+    matching_stalled_after_seconds: int = Field(default=180, ge=60, le=86400)
     gemini_api_key: SecretStr = SecretStr('')
     gemini_model: str = Field(default='gemini-2.5-flash',pattern=r'^[a-zA-Z0-9.-]+$')
     gemini_enabled: bool = Field(default=True, validation_alias=AliasChoices('gemini_enabled', 'GEMINI_ENABLED'))
@@ -246,6 +257,29 @@ class Settings(BaseSettings):
         if numeric > 1000:
             numeric = numeric / 1000.0
         return max(0.1, min(180.0, numeric))
+
+    @field_validator('matching_batch_size', mode='before')
+    @classmethod
+    def _floor_matching_batch_size(cls, value: object) -> int:
+        """Candidate page size, not a supplier cap: tiny pages multiply round trips.
+
+        Each page re-runs the candidate CTE plus ~17 statements and one commit.
+        A deployed value of 5 turned a 10,000-supplier RFQ into ~800 pages; on a
+        remote PostgreSQL every page pays network latency per statement. Values
+        below the floor are raised (with a warning) instead of failing startup.
+        """
+        try:
+            numeric = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return 2500
+        if numeric < MATCHING_BATCH_SIZE_FLOOR:
+            import logging
+            logging.getLogger(__name__).warning(
+                'MATCHING_BATCH_SIZE=%s is below the safe floor; using %s',
+                numeric, MATCHING_BATCH_SIZE_FLOOR,
+            )
+            return MATCHING_BATCH_SIZE_FLOOR
+        return numeric
     model_config = SettingsConfigDict(env_file=Path(__file__).resolve().parents[1] / '.env', extra='ignore')
 
     @property

@@ -58,12 +58,31 @@ if settings.is_production:
     # scanning, admin MFA, legal controls, and multi-worker failure behavior.
     raise RuntimeError('Production readiness gate: private R2 storage, malware scanning, admin MFA, legal review and production concurrency testing remain incomplete')
 
+def _process_outbox_queue_once() -> None:
+    from pathlib import Path
+    from app.import_worker_lock import import_worker_lock
+    from app.material_import_worker import process_once
+    lock_file = Path(__file__).resolve().parents[1] / 'data' / 'worker-outbox.lock'
+    with import_worker_lock(lock_file) as acquired:
+        if acquired:
+            process_once(outbox_only=True)
+
+
 def _process_import_queue_once() -> None:
     from app.import_worker_lock import import_worker_lock
     from app.material_import_worker import process_once
     with import_worker_lock() as acquired:
         if acquired:
-            process_once()
+            process_once(lane='imports')
+
+
+async def _development_outbox_worker() -> None:
+    while True:
+        try:
+            await asyncio.to_thread(_process_outbox_queue_once)
+        except Exception:
+            logger.exception('Development outbox worker poll failed')
+        await asyncio.sleep(0.8)
 
 
 async def _development_import_worker() -> None:
@@ -81,15 +100,17 @@ async def lifespan(_: FastAPI):
     # Handlers and rate limiting use synchronous SQLAlchemy/Redis in worker
     # threads; keep pool lifecycle operations off the event loop too.
     await asyncio.to_thread(get_redis)
-    worker = None
+    workers: list[asyncio.Task] = []
     if settings.app_env.casefold() == 'development' and settings.embedded_import_worker_enabled:
-        worker = asyncio.create_task(_development_import_worker(), name='development-import-worker')
-        logger.info('Development material and supplier import worker started with the API')
+        workers.append(asyncio.create_task(_development_outbox_worker(), name='development-outbox-worker'))
+        workers.append(asyncio.create_task(_development_import_worker(), name='development-import-worker'))
+        logger.info('Development isolated outbox and import workers started with the API')
     try:
         yield
     finally:
-        if worker:
+        for worker in workers:
             worker.cancel()
+        for worker in workers:
             with suppress(asyncio.CancelledError):
                 await worker
         await asyncio.to_thread(close_redis)
