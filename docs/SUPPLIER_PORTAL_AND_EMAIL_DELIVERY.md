@@ -85,7 +85,8 @@ cd /var/www/procura && git pull
 # 2. Maintenance window: identify and stop the API and every database worker
 # before DDL. Remove unit names below that are not installed on this VPS.
 systemctl list-units --all --type=service 'procura*'
-sudo systemctl stop procura-backend.service procura-import-worker.service \
+sudo systemctl stop procura-backend.service procura-material-import-worker.service \
+  procura-import-worker.service \
   procura-worker@matching.service procura-worker@email.service \
   procura-worker@sms.service procura-worker@quotations.service \
   procura-worker@events.service procura-bounce-worker.service
