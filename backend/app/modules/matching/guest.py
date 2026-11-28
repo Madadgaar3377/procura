@@ -104,7 +104,7 @@ def open_invitation(payload:GuestAccess,request:Request,response:Response,db:Ses
     return {'invitation_id':inv.id,'supplier_name':db.get(Organization,inv.supplier_org_id).name,
         'currency':quote.currency if quote else 'SAR',
         'reference':rfq.reference,'title':rfq.title,'city':rfq.city,'response_deadline':rfq.response_deadline,
-        'items':[record(i) for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id))],
+        'items':[record(i) for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True)))],
         'quotation_id':quote.id if quote else None,'quotation_status':quote.status if quote else None,
         'lines':[{'rfq_item_id':l.rfq_item_id,'unit_price':str(l.unit_price),'quantity':str(l.quantity),
             'brand':l.brand,'model':l.model,'offered_specs':l.offered_specs,'lead_days':l.lead_days,
@@ -118,7 +118,7 @@ def save_quotation(payload:GuestQuote,request:Request,response:Response,db:Sessi
     quote=db.scalar(select(Quotation).where(Quotation.invitation_id==inv.id).with_for_update())
     if quote and quote.status!='draft':
         raise HTTPException(409,'Quotation already submitted')
-    valid=set(db.scalars(select(RFQItem.id).where(RFQItem.rfq_id==rfq.id)));used=set()
+    valid=set(db.scalars(select(RFQItem.id).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True))));used=set()
     for line in payload.quotation.lines:
         if line.rfq_item_id not in valid or line.rfq_item_id in used:raise HTTPException(422,'Invalid or duplicate quoted item')
         used.add(line.rfq_item_id)

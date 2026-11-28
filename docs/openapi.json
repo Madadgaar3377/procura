@@ -10604,6 +10604,22 @@
               "type": "string",
               "title": "Rfq Id"
             }
+          },
+          {
+            "name": "revision_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Revision Id"
+            }
           }
         ],
         "requestBody": {
@@ -10737,6 +10753,22 @@
               "type": "string",
               "title": "Attachment Id"
             }
+          },
+          {
+            "name": "revision_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Revision Id"
+            }
           }
         ],
         "responses": {
@@ -10746,6 +10778,224 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RFQAttachmentRemovalOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/{rfq_id}/revisions": {
+      "get": {
+        "tags": [
+          "Buyer RFQs"
+        ],
+        "summary": "History",
+        "operationId": "history_api_v1_rfqs__rfq_id__revisions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/RevisionOut"
+                  },
+                  "title": "Response History Api V1 Rfqs  Rfq Id  Revisions Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Buyer RFQs"
+        ],
+        "summary": "Stage",
+        "operationId": "stage_api_v1_rfqs__rfq_id__revisions_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StageRevisionIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevisionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/{rfq_id}/revisions/{revision_id}/publish": {
+      "post": {
+        "tags": [
+          "Buyer RFQs"
+        ],
+        "summary": "Publish Revision",
+        "operationId": "publish_revision_api_v1_rfqs__rfq_id__revisions__revision_id__publish_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "revision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Revision Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublishedRevisionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/rfqs/{rfq_id}/revisions/{revision_id}": {
+      "delete": {
+        "tags": [
+          "Buyer RFQs"
+        ],
+        "summary": "Discard Revision",
+        "operationId": "discard_revision_api_v1_rfqs__rfq_id__revisions__revision_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "revision_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Revision Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscardedRevisionOut"
                 }
               }
             }
@@ -11044,6 +11294,199 @@
               "default": 0,
               "title": "Offset"
             }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(filtered|total)$",
+              "default": "filtered",
+              "title": "View"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "match_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(exact|product|capability|broad)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Match Type"
+            }
+          },
+          {
+            "name": "discipline",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 120
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Discipline"
+            }
+          },
+          {
+            "name": "main_category_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Main Category Id"
+            }
+          },
+          {
+            "name": "subcategory_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 64
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Subcategory Id"
+            }
+          },
+          {
+            "name": "location",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Location"
+            }
+          },
+          {
+            "name": "brand",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Brand"
+            }
+          },
+          {
+            "name": "quotation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(received|saved_price|manual)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Quotation"
+            }
+          },
+          {
+            "name": "sort",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(relevance|name|name_desc|score)$",
+              "default": "relevance",
+              "title": "Sort"
+            }
+          },
+          {
+            "name": "invitation_limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "maximum": 100,
+                  "minimum": 1
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation Limit"
+            }
+          },
+          {
+            "name": "invitation_offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation Offset"
+            }
           }
         ],
         "responses": {
@@ -11137,6 +11580,109 @@
             "schema": {
               "type": "string",
               "title": "Rfq Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/matching/rfqs/{rfq_id}/notifications": {
+      "get": {
+        "tags": [
+          "Supplier Matching"
+        ],
+        "summary": "Rfq Notification Records",
+        "description": "Paginated email/SMS delivery records for this RFQ's supplier notices (read-only).\n\nDestinations are masked and only reason codes are returned; provider responses and\nsecrets stay in the admin delivery console.",
+        "operationId": "rfq_notification_records_api_v1_matching_rfqs__rfq_id__notifications_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 10,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(email|sms)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "name": "group",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^(queued|accepted|delivered|failed|bounced|skipped)$"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group"
             }
           }
         ],
@@ -12864,6 +13410,96 @@
         ],
         "summary": "Submit",
         "operationId": "submit_api_v1_quotations__quotation_id__submit_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "quotation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quotation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/quotations/{quotation_id}/revisions": {
+      "get": {
+        "tags": [
+          "Supplier Quotations & Buyer Comparison"
+        ],
+        "summary": "Quotation Revisions",
+        "operationId": "quotation_revisions_api_v1_quotations__quotation_id__revisions_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "quotation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Quotation Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/quotations/{quotation_id}/revise": {
+      "post": {
+        "tags": [
+          "Supplier Quotations & Buyer Comparison"
+        ],
+        "summary": "Revise Quotation",
+        "operationId": "revise_quotation_api_v1_quotations__quotation_id__revise_post",
         "security": [
           {
             "HTTPBearer": []
@@ -25872,6 +26508,19 @@
         ],
         "title": "DestinationRestriction"
       },
+      "DiscardedRevisionOut": {
+        "properties": {
+          "discarded": {
+            "type": "boolean",
+            "title": "Discarded"
+          }
+        },
+        "type": "object",
+        "required": [
+          "discarded"
+        ],
+        "title": "DiscardedRevisionOut"
+      },
       "DraftIn": {
         "properties": {
           "quotation": {
@@ -27761,6 +28410,33 @@
         ],
         "title": "Login"
       },
+      "MatchFilterOptions": {
+        "properties": {
+          "disciplines": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Disciplines"
+          },
+          "main_categories": {
+            "items": {
+              "$ref": "#/components/schemas/TaxonomyOption"
+            },
+            "type": "array",
+            "title": "Main Categories"
+          },
+          "subcategories": {
+            "items": {
+              "$ref": "#/components/schemas/TaxonomyOption"
+            },
+            "type": "array",
+            "title": "Subcategories"
+          }
+        },
+        "type": "object",
+        "title": "MatchFilterOptions"
+      },
       "MatchResults": {
         "properties": {
           "matches": {
@@ -27803,6 +28479,61 @@
             ],
             "title": "Matching Status"
           },
+          "matching_failure_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "no_matching_job",
+                  "matching_stalled",
+                  "matching_error"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matching Failure Code"
+          },
+          "matching_failure_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Matching Failure Reason"
+          },
+          "page_total": {
+            "type": "integer",
+            "title": "Page Total",
+            "default": 0
+          },
+          "invitation_total": {
+            "type": "integer",
+            "title": "Invitation Total",
+            "default": 0
+          },
+          "invitation_limit": {
+            "type": "integer",
+            "title": "Invitation Limit",
+            "default": 25
+          },
+          "invitation_offset": {
+            "type": "integer",
+            "title": "Invitation Offset",
+            "default": 0
+          },
+          "sort": {
+            "type": "string",
+            "title": "Sort",
+            "default": "relevance"
+          },
+          "filter_options": {
+            "$ref": "#/components/schemas/MatchFilterOptions"
+          },
           "pending_invitation_ids": {
             "items": {
               "type": "string"
@@ -27813,6 +28544,11 @@
           "matched_suppliers": {
             "type": "integer",
             "title": "Matched Suppliers",
+            "default": 0
+          },
+          "total_candidates": {
+            "type": "integer",
+            "title": "Total Candidates",
             "default": 0
           },
           "invited_suppliers": {
@@ -33007,6 +33743,22 @@
         "type": "object",
         "title": "PublicationPreferences"
       },
+      "PublishedRevisionOut": {
+        "properties": {
+          "revision": {
+            "$ref": "#/components/schemas/RevisionOut"
+          },
+          "detail": {
+            "$ref": "#/components/schemas/RFQDetail"
+          }
+        },
+        "type": "object",
+        "required": [
+          "revision",
+          "detail"
+        ],
+        "title": "PublishedRevisionOut"
+      },
       "QuotationOut": {
         "properties": {
           "invitation_id": {
@@ -33052,6 +33804,10 @@
           "revision": {
             "type": "integer",
             "title": "Revision"
+          },
+          "rfq_revision": {
+            "type": "integer",
+            "title": "Rfq Revision"
           },
           "submission_source": {
             "type": "string",
@@ -33103,6 +33859,7 @@
           "vat_rate",
           "submitted_at",
           "revision",
+          "rfq_revision",
           "submission_source",
           "review_required",
           "review_reasons",
@@ -33158,6 +33915,10 @@
           "revision": {
             "type": "integer",
             "title": "Revision"
+          },
+          "rfq_revision": {
+            "type": "integer",
+            "title": "Rfq Revision"
           },
           "submission_source": {
             "type": "string",
@@ -33224,6 +33985,7 @@
           "vat_rate",
           "submitted_at",
           "revision",
+          "rfq_revision",
           "submission_source",
           "review_required",
           "review_reasons",
@@ -33705,6 +34467,18 @@
             "type": "string",
             "title": "Rfq Item Id"
           },
+          "requested_snapshot": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Requested Snapshot"
+          },
           "brand": {
             "type": "string",
             "title": "Brand"
@@ -33807,6 +34581,7 @@
         "required": [
           "quotation_id",
           "rfq_item_id",
+          "requested_snapshot",
           "brand",
           "model",
           "offered_specs",
@@ -34032,6 +34807,18 @@
           "quantity": {
             "type": "string",
             "title": "Quantity"
+          },
+          "discipline": {
+            "type": "string",
+            "maxLength": 50,
+            "title": "Discipline",
+            "default": ""
+          },
+          "required_brand": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Required Brand",
+            "default": ""
           },
           "key": {
             "type": "string",
@@ -34414,6 +35201,18 @@
             "type": "string",
             "title": "Buyer Org Id"
           },
+          "expected_revision": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
           "client_request_id": {
             "anyOf": [
               {
@@ -34490,6 +35289,12 @@
             "maxLength": 300,
             "title": "Delivery Address",
             "default": ""
+          },
+          "delivery_country": {
+            "type": "string",
+            "maxLength": 100,
+            "title": "Delivery Country",
+            "default": ""
           }
         },
         "type": "object",
@@ -34556,6 +35361,30 @@
             "type": "string",
             "title": "Quantity"
           },
+          "discipline": {
+            "type": "string",
+            "title": "Discipline"
+          },
+          "required_brand": {
+            "type": "string",
+            "title": "Required Brand"
+          },
+          "is_active": {
+            "type": "boolean",
+            "title": "Is Active"
+          },
+          "removed_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Removed At"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -34576,6 +35405,10 @@
           "specifications",
           "unit",
           "quantity",
+          "discipline",
+          "required_brand",
+          "is_active",
+          "removed_at",
           "id",
           "created_at"
         ],
@@ -34656,6 +35489,18 @@
               }
             ],
             "title": "Quantity"
+          },
+          "discipline": {
+            "type": "string",
+            "maxLength": 50,
+            "title": "Discipline",
+            "default": ""
+          },
+          "required_brand": {
+            "type": "string",
+            "maxLength": 150,
+            "title": "Required Brand",
+            "default": ""
           }
         },
         "type": "object",
@@ -34752,6 +35597,30 @@
             "type": "string",
             "title": "Delivery Address"
           },
+          "delivery_country": {
+            "type": "string",
+            "title": "Delivery Country"
+          },
+          "revision": {
+            "type": "integer",
+            "title": "Revision"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          },
+          "updated_by_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By User Id"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -34778,6 +35647,10 @@
           "additional_instructions",
           "scoring_weights",
           "delivery_address",
+          "delivery_country",
+          "revision",
+          "updated_at",
+          "updated_by_user_id",
           "id",
           "created_at"
         ],
@@ -35680,6 +36553,100 @@
         ],
         "title": "ReviewQueue"
       },
+      "RevisionOut": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "rfq_id": {
+            "type": "string",
+            "title": "Rfq Id"
+          },
+          "number": {
+            "type": "integer",
+            "title": "Number"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "created_by_user_id": {
+            "type": "string",
+            "title": "Created By User Id"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "published_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Published At"
+          },
+          "before_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Before Snapshot"
+          },
+          "after_snapshot": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "After Snapshot"
+          },
+          "changes": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Changes"
+          },
+          "matching_summary": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Matching Summary"
+          },
+          "notification_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Notification Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "rfq_id",
+          "number",
+          "status",
+          "created_by_user_id",
+          "created_at",
+          "published_at",
+          "before_snapshot",
+          "after_snapshot",
+          "changes",
+          "matching_summary"
+        ],
+        "title": "RevisionOut"
+      },
       "SessionIn": {
         "properties": {
           "token": {
@@ -35890,6 +36857,29 @@
           "reason"
         ],
         "title": "SourceIssue"
+      },
+      "StageRevisionIn": {
+        "properties": {
+          "expected_revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Expected Revision"
+          },
+          "rfq": {
+            "$ref": "#/components/schemas/RFQIn"
+          },
+          "attachment_changes": {
+            "type": "boolean",
+            "title": "Attachment Changes",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "expected_revision",
+          "rfq"
+        ],
+        "title": "StageRevisionIn"
       },
       "SubcategoryMaterialIn": {
         "properties": {
@@ -36953,6 +37943,35 @@
           "category_id"
         ],
         "title": "SupplierTradeMappingIn"
+      },
+      "TaxonomyOption": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "parent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parent Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "TaxonomyOption"
       },
       "TokenPair": {
         "properties": {

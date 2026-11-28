@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError, OperationalError
 import time
 
 from app.database import get_db
-from app.models import RFQ, Category, Invitation, Material, MeasurementUnit, Member, Organization, Outbox, RFQItem, User
+from app.models import RFQ, RFQRevision, Category, Invitation, Material, MeasurementUnit, Member, Organization, Outbox, RFQItem, User
 from app.response_contracts import RFQAttachmentOut, RFQAttachmentRemovalOut, RFQDetail, RFQOut
 from app.schemas import RFQIn, RFQReminderIn
 from app.search import ListSearch
@@ -61,7 +61,7 @@ def contents(db,rfq):
     attachments += [{'id':f.id,'filename':f.safe_filename,'content_type':f.content_type,'size':f.size_bytes}
         for f in db.scalars(select(StoredFile).where(StoredFile.entity_type=='rfq',StoredFile.entity_id==rfq.id,
             StoredFile.status=='available',StoredFile.deleted_at.is_(None))).all()]
-    return {'rfq':data,'items':[record(i) for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id).order_by(RFQItem.created_at,RFQItem.id)).all()],
+    return {'rfq':data,'items':[record(i) for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at,RFQItem.id)).all()],
             'attachments':[{key:entry[key] for key in ('id','filename','content_type','size')} for entry in attachments]}
 
 def prepare_line(db, entry, *, unit_cache=None, parents_with_children=None):
@@ -83,6 +83,15 @@ def prepare_line(db, entry, *, unit_cache=None, parents_with_children=None):
         expected_main=mat.main_category_id or (leaf.parent_id if leaf else None) or mat.category_id
         expected_sub=mat.subcategory_id or (leaf.id if leaf and leaf.parent_id else None)
         if (main_id,sub_id)!=(expected_main,expected_sub):raise HTTPException(422,'Selected material does not belong to this category and subcategory')
+    if entry.discipline:
+        from app.modules.imports.bulk import normalize_discipline
+        requested_discipline=normalize_discipline(entry.discipline)
+        if not requested_discipline:raise HTTPException(422,'Choose an approved discipline')
+        main_discipline=normalize_discipline(main.name_en)
+        if main_discipline and main_discipline!=requested_discipline:
+            raise HTTPException(422,'Discipline does not match the main category')
+        if mat and mat.discipline and normalize_discipline(mat.discipline) and normalize_discipline(mat.discipline)!=requested_discipline:
+            raise HTTPException(422,'Discipline does not match the selected material')
     if not entry.description.strip():raise HTTPException(422,'Enter a description')
     if mat:
         # The buyer's wording is the requirement. A Material Master link that contradicts
@@ -125,6 +134,7 @@ def prepare_lines(db,entries):
 
 
 LINE_ERROR_FIELDS=(('Unknown material','description'),('Selected material','description'),
+    ('Choose an approved discipline','discipline'),('Discipline does not match','discipline'),
     ('Choose an active main category','main_category_id'),('Choose a subcategory','subcategory_id'),
     ('Subcategory must belong','subcategory_id'),('Enter a description','description'),
     ('Unit ','unit'),('Enter a supported unit','unit'))
@@ -140,7 +150,7 @@ def create(payload:RFQIn,user:User=Depends(current_user),db:Session=Depends(get_
         if existing:return contents(db,existing)
     if payload.response_deadline.astimezone(UTC)<datetime.now(UTC):raise HTTPException(422,'Deadline must be in the future')
     lines=prepare_lines(db,payload.items)
-    rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,client_request_id=payload.client_request_id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions,delivery_address=payload.delivery_address)
+    rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,client_request_id=payload.client_request_id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions,delivery_address=payload.delivery_address,delivery_country=payload.delivery_country,updated_by_user_id=user.id)
     try:
         db.add(rfq);db.flush()
         for entry in lines:db.add(RFQItem(rfq_id=rfq.id,**{key:value for key,value in entry.items() if key!='id'}))
@@ -190,7 +200,7 @@ def publish(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db
     if as_utc(rfq.response_deadline)<=datetime.now(UTC):raise HTTPException(422,'Deadline passed')
     # Drafts can outlive reference-data changes. Recheck their classification at
     # publication without rewriting the buyer's immutable material snapshots.
-    items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()
+    items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True))).all()
     if not items:raise HTTPException(422,'Add RFQ items before publishing')
     category_ids={value for item in items for value in (item.main_category_id,item.subcategory_id) if value}
     categories={category.id:category for category in db.scalars(select(Category).where(Category.id.in_(category_ids))).all()}
@@ -202,7 +212,9 @@ def publish(rfq_id:str,user:User=Depends(current_user),db:Session=Depends(get_db
         if not main or not main.active or main.parent_id or (item.subcategory_id and (not sub or not sub.active or sub.parent_id!=main.id)):
             raise HTTPException(422,'An RFQ category is inactive or changed. Review the draft before publishing.')
     rfq.status='published';rfq.published_at=datetime.now(UTC)
-    db.add(Outbox(event='rfq.published',payload={'rfq_id':rfq.id},dedupe_key=f'rfq-published:{rfq.id}'))
+    existing_pub=db.scalar(select(Outbox).where(Outbox.dedupe_key==f'rfq-published:{rfq.id}'))
+    if not existing_pub:
+        db.add(Outbox(event='rfq.published',payload={'rfq_id':rfq.id,'revision':int(rfq.revision or 0)},dedupe_key=f'rfq-published:{rfq.id}'))
     audit(db,user,'rfq.published',rfq.buyer_org_id,rfq.id)
     db.commit()
 
@@ -251,10 +263,12 @@ def update_draft(rfq_id:str,payload:RFQIn,user:User=Depends(current_user),db:Ses
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
     if rfq.status!='draft':raise HTTPException(409,'Only drafts may be edited')
+    if payload.expected_revision is not None and payload.expected_revision!=rfq.revision:
+        raise HTTPException(409,{'code':'stale_revision','message':'This RFQ changed. Reload it before saving.','current_revision':rfq.revision})
     if payload.buyer_org_id!=rfq.buyer_org_id:raise HTTPException(422,'Cannot change RFQ organization')
     if payload.response_deadline.astimezone(UTC)<=datetime.now(UTC):raise HTTPException(422,'Deadline must be in the future')
     lines=prepare_lines(db,payload.items)
-    existing={item.id:item for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()}
+    existing={item.id:item for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True))).all()}
     submitted=[line['id'] for line in lines if line.get('id')]
     if len(submitted)!=len(set(submitted)) or any(item_id not in existing for item_id in submitted):
         raise HTTPException(422,'An RFQ material ID does not belong to this draft')
@@ -269,7 +283,8 @@ def update_draft(rfq_id:str,payload:RFQIn,user:User=Depends(current_user),db:Ses
     rfq.required_qualifications=payload.required_qualifications
     rfq.project_name=payload.project_name;rfq.required_delivery_date=payload.required_delivery_date
     rfq.additional_instructions=payload.additional_instructions
-    rfq.delivery_address=payload.delivery_address
+    rfq.delivery_address=payload.delivery_address;rfq.delivery_country=payload.delivery_country
+    rfq.revision=(rfq.revision or 0)+1;rfq.updated_by_user_id=user.id;rfq.updated_at=datetime.now(UTC)
     audit(db,user,'rfq.draft_updated',rfq.buyer_org_id,rfq.id);db.commit()
     return contents(db,rfq)
 
@@ -303,7 +318,7 @@ def remind_pending(rfq_id:str,request:Request,payload:RFQReminderIn|None=None,us
 
     from app.config import get_settings
     from app.modules.notifications.procurement import pending_invitations
-    from app.modules.notifications.recipients import resolve
+    from app.modules.notifications.recipients import resolve_batch
     from app.rate_limit import enforce_rate_limit
     settings=get_settings()
     rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
@@ -332,14 +347,19 @@ def remind_pending(rfq_id:str,request:Request,payload:RFQReminderIn|None=None,us
     skipped={'not_pending':requested-len(pending),'cooldown':0,'no_valid_contact':0}
     cooldown=timedelta(hours=settings.rfq_reminder_cooldown_hours)
     queued=[];next_available=None
-    for invitation in db.scalars(select(Invitation).where(Invitation.id.in_([i.id for i in pending])).with_for_update()):
+    locked_invitations=list(db.scalars(select(Invitation).where(Invitation.id.in_([i.id for i in pending])).with_for_update())) if pending else []
+    ready_invitations=[]
+    for invitation in locked_invitations:
         last=invitation.last_reminded_at
         if last and (last.replace(tzinfo=UTC) if last.tzinfo is None else last)+cooldown>now:
             skipped['cooldown']+=1
             available=(last.replace(tzinfo=UTC) if last.tzinfo is None else last)+cooldown
             next_available=min(next_available or available,available)
             continue
-        recipients=resolve(db,invitation.supplier_org_id,rfq.id,'deadline_reminder')
+        ready_invitations.append(invitation)
+    recipients_by_org=resolve_batch(db,[inv.supplier_org_id for inv in ready_invitations],rfq.id,'deadline_reminder') if ready_invitations else {}
+    for invitation in ready_invitations:
+        recipients=recipients_by_org.get(invitation.supplier_org_id,{})
         if not any(row.get('destination') for rows in recipients.values() for row in rows):
             skipped['no_valid_contact']+=1
             continue
@@ -360,7 +380,7 @@ def remind_pending(rfq_id:str,request:Request,payload:RFQReminderIn|None=None,us
 
 
 @router.post('/{rfq_id}/attachments', status_code=201, response_model=RFQAttachmentOut)
-def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), user:User=Depends(current_user), db:Session=Depends(get_db)):
+def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), revision_id:str|None=None, user:User=Depends(current_user), db:Session=Depends(get_db)):
     """Private development attachments; production waits for storage/scanning integration."""
     import io
     from pathlib import Path
@@ -372,7 +392,10 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
     rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
-    if rfq.status!='draft':raise HTTPException(409,'Only draft attachments may be changed')
+    revision=db.get(RFQRevision,revision_id) if revision_id else None
+    if revision_id and (not revision or revision.rfq_id!=rfq.id or revision.status!='pending' or revision.number!=rfq.revision+1 or revision.created_by_user_id!=user.id):
+        raise HTTPException(409,'RFQ revision is no longer available for attachments')
+    if rfq.status!='draft' and not revision:raise HTTPException(409,'Only draft or staged revision attachments may be changed')
     settings=get_settings()
     if settings.is_production and not settings.r2_enabled:raise HTTPException(503,'Private attachment storage is not configured')
     from app.models import StoredFile
@@ -380,7 +403,9 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
         cleanup_object_best_effort, safe_filename, upload_file as r2_upload, validate_file_content)
     stored_count=db.scalar(select(func.count(StoredFile.id)).where(StoredFile.entity_type=='rfq',
         StoredFile.entity_id==rfq.id,StoredFile.status.in_(['pending_upload','available']),StoredFile.deleted_at.is_(None))) or 0
-    if len(rfq.attachment_records or [])+stored_count>=10:raise HTTPException(422,'At most 10 RFQ attachments are allowed')
+    staged_count=len(revision.after_snapshot.get('attachment_additions') or []) if revision else 0
+    staged_removals=len(revision.after_snapshot.get('attachment_removals') or []) if revision else 0
+    if len(rfq.attachment_records or [])+stored_count+staged_count-staged_removals>=10:raise HTTPException(422,'At most 10 RFQ attachments are allowed')
     max_bytes=min(settings.max_upload_bytes,settings.r2_max_document_bytes)
     content=file.file.read(max_bytes+1)
     try:
@@ -403,16 +428,29 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
             raise HTTPException(503,'File storage is temporarily unavailable') from exc
         try:
             locked_rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
-            if not locked_rfq or locked_rfq.status!='draft':
-                raise HTTPException(409,'Only draft attachments may be changed')
+            locked_revision=db.scalar(select(RFQRevision).where(RFQRevision.id==revision_id).with_for_update()) if revision_id else None
+            if not locked_rfq or (locked_rfq.status!='draft' and not locked_revision) or (revision_id and (not locked_revision or locked_revision.status!='pending' or locked_revision.number!=locked_rfq.revision+1 or locked_revision.created_by_user_id!=user.id)):
+                raise HTTPException(409,'RFQ attachments can no longer be changed')
+            org_member(db,user,locked_rfq.buyer_org_id,{'owner','manager','buyer'})
+            current_stored=db.scalar(select(func.count(StoredFile.id)).where(StoredFile.entity_type=='rfq',
+                StoredFile.entity_id==locked_rfq.id,StoredFile.status=='available',StoredFile.deleted_at.is_(None))) or 0
+            current_staged=len(locked_revision.after_snapshot.get('attachment_additions',[])) if locked_revision else 0
+            current_removed=len(locked_revision.after_snapshot.get('attachment_removals',[])) if locked_revision else 0
+            if len(locked_rfq.attachment_records or [])+current_stored+current_staged-current_removed>=10:
+                raise HTTPException(422,'At most 10 RFQ attachments are allowed')
             stored=StoredFile(bucket_type='private',object_key=object_key,
                 original_filename=filename,safe_filename=filename,content_type=ct,file_extension=suffix,
                 size_bytes=result['size_bytes'],etag=result['etag'],checksum_sha256=result['checksum_sha256'],
                 visibility='private',purpose='rfq_attachment',status='available',
                 owner_user_id=user.id,uploaded_by_user_id=user.id,organization_id=buyer_org_id,
-                entity_type='rfq',entity_id=locked_rfq.id)
+                entity_type='rfq_revision' if locked_revision else 'rfq',entity_id=locked_revision.id if locked_revision else locked_rfq.id)
             db.add(stored)
             db.flush()
+            if locked_revision:
+                locked_revision.after_snapshot={**locked_revision.after_snapshot,'attachment_additions':[
+                    *(locked_revision.after_snapshot.get('attachment_additions') or []),stored.id]}
+                locked_revision.changes={**locked_revision.changes,'added_attachments':[
+                    *locked_revision.changes.get('added_attachments',[]),{'id':stored.id,'filename':filename}]}
             audit(db,user,'rfq.attachment_uploaded',buyer_org_id,locked_rfq.id,file_id=stored.id)
             db.commit()
         except Exception:
@@ -427,9 +465,23 @@ def upload_attachment(rfq_id:str, request:Request, file:UploadFile=File(...), us
     storage.write(key,io.BytesIO(content),settings.max_upload_bytes)
     try:
         locked_rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
-        if not locked_rfq or locked_rfq.status!='draft':
-            raise HTTPException(409,'Only draft attachments may be changed')
-        locked_rfq.attachment_records=[*(locked_rfq.attachment_records or []),entry]
+        locked_revision=db.scalar(select(RFQRevision).where(RFQRevision.id==revision_id).with_for_update()) if revision_id else None
+        if not locked_rfq or (locked_rfq.status!='draft' and not locked_revision) or (revision_id and (not locked_revision or locked_revision.status!='pending' or locked_revision.number!=locked_rfq.revision+1 or locked_revision.created_by_user_id!=user.id)):
+            raise HTTPException(409,'RFQ attachments can no longer be changed')
+        org_member(db,user,locked_rfq.buyer_org_id,{'owner','manager','buyer'})
+        current_stored=db.scalar(select(func.count(StoredFile.id)).where(StoredFile.entity_type=='rfq',
+            StoredFile.entity_id==locked_rfq.id,StoredFile.status=='available',StoredFile.deleted_at.is_(None))) or 0
+        current_staged=len(locked_revision.after_snapshot.get('attachment_additions',[])) if locked_revision else 0
+        current_removed=len(locked_revision.after_snapshot.get('attachment_removals',[])) if locked_revision else 0
+        if len(locked_rfq.attachment_records or [])+current_stored+current_staged-current_removed>=10:
+            raise HTTPException(422,'At most 10 RFQ attachments are allowed')
+        if locked_revision:
+            locked_revision.after_snapshot={**locked_revision.after_snapshot,
+                'attachment_additions':[*locked_revision.after_snapshot.get('attachment_additions',[]),attachment_id],
+                'local_attachment_additions':[*locked_revision.after_snapshot.get('local_attachment_additions',[]),entry]}
+            locked_revision.changes={**locked_revision.changes,'added_attachments':[
+                *locked_revision.changes.get('added_attachments',[]),{'id':attachment_id,'filename':filename}]}
+        else:locked_rfq.attachment_records=[*(locked_rfq.attachment_records or []),entry]
         audit(db,user,'rfq.attachment_uploaded',locked_rfq.buyer_org_id,locked_rfq.id,attachment_id=attachment_id)
         db.commit()
     except Exception:
@@ -471,7 +523,7 @@ def download_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_u
 
 
 @router.delete('/{rfq_id}/attachments/{attachment_id}', response_model=RFQAttachmentRemovalOut)
-def remove_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+def remove_attachment(rfq_id:str,attachment_id:str,revision_id:str|None=None,user:User=Depends(current_user),db:Session=Depends(get_db)):
     from pathlib import Path
 
     from app.config import get_settings
@@ -480,8 +532,19 @@ def remove_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_use
     rfq=db.scalar(select(RFQ).where(RFQ.id==rfq_id).with_for_update())
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
-    if rfq.status!='draft':raise HTTPException(409,'Only draft attachments may be changed')
     from app.models import StoredFile
+    if revision_id:
+        revision=db.scalar(select(RFQRevision).where(RFQRevision.id==revision_id).with_for_update())
+        if not revision or revision.rfq_id!=rfq.id or revision.status!='pending' or revision.number!=rfq.revision+1 or revision.created_by_user_id!=user.id:
+            raise HTTPException(409,'RFQ revision is no longer available for attachments')
+        exists=attachment_id in {entry['id'] for entry in (rfq.attachment_records or [])}
+        if not exists:exists=bool(db.scalar(select(StoredFile.id).where(StoredFile.id==attachment_id,StoredFile.entity_type=='rfq',StoredFile.entity_id==rfq.id,StoredFile.status=='available',StoredFile.deleted_at.is_(None))))
+        if not exists:raise HTTPException(404,'Attachment not found')
+        revision.after_snapshot={**revision.after_snapshot,'attachment_removals':sorted(set(revision.after_snapshot.get('attachment_removals') or [])|{attachment_id})}
+        revision.changes={**revision.changes,'removed_attachments':sorted(set(revision.changes.get('removed_attachments') or [])|{attachment_id})}
+        audit(db,user,'rfq.attachment_removal_staged',rfq.buyer_org_id,rfq.id,attachment_id=attachment_id,revision=revision.number)
+        db.commit();return {'removed':True}
+    if rfq.status!='draft':raise HTTPException(409,'Only draft attachments may be changed')
     stored=db.scalar(select(StoredFile).where(StoredFile.id==attachment_id,StoredFile.entity_type=='rfq',StoredFile.entity_id==rfq.id))
     if stored and stored.deleted_at is None:
         from datetime import UTC,datetime
@@ -498,3 +561,6 @@ def remove_attachment(rfq_id:str,attachment_id:str,user:User=Depends(current_use
     db.commit()
     LocalImportStorage(str(Path(get_settings().upload_dir)/'rfq-attachments')).delete(entry['storage_key'])
     return {'removed':True}
+
+from .revisions import router as revisions_router
+router.include_router(revisions_router)

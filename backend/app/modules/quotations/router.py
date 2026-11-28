@@ -6,7 +6,7 @@ from fastapi import APIRouter,Depends,File,HTTPException,Query,Request,UploadFil
 from sqlalchemy.orm import Session
 from sqlalchemy import func,select
 from app.database import get_db
-from app.models import Invitation,Quotation,QuoteLine,RFQ,RFQItem,PriceBookItem,StoredFile,User,Member,Notification,Outbox,Organization
+from app.models import Invitation,Quotation,QuotationRevision,QuoteLine,RFQ,RFQItem,PriceBookItem,StoredFile,User,Member,Notification,Outbox,Organization
 from app.schemas import QuoteIn
 from app.security import current_user,org_member,audit
 from app.serializers import record
@@ -88,7 +88,8 @@ def edit(quotation_id:str,payload:QuoteIn,user:User=Depends(current_user),db:Ses
     quote.review_reasons=['Review quotation before submitting']
     deadline=rfq.response_deadline.replace(tzinfo=timezone.utc) if rfq.response_deadline.tzinfo is None else rfq.response_deadline
     if rfq.status not in {'published','collecting_quotes'} or deadline<=datetime.now(timezone.utc):raise HTTPException(409,'RFQ is closed')
-    valid={i.id for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()}
+    active_items={i.id:i for i in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True))).all()}
+    valid=set(active_items)
     used=set()
     for line in payload.lines:
         if line.rfq_item_id not in valid or line.rfq_item_id in used:raise HTTPException(422,'Invalid or duplicate quoted item')
@@ -100,11 +101,12 @@ def edit(quotation_id:str,payload:QuoteIn,user:User=Depends(current_user),db:Ses
     for line in payload.lines:
         original=originals.get(line.rfq_item_id)
         provenance={key:getattr(original,key) for key in ('source_rate_id','source_rate_version','source_rate_snapshot')} if original else {}
-        db.add(QuoteLine(quotation_id=quote.id,**line.model_dump(),**provenance))
+        db.add(QuoteLine(quotation_id=quote.id,requested_snapshot=record(active_items[line.rfq_item_id]),**line.model_dump(),**provenance))
     if payload.price_basis not in {'supply','supply_install'}:raise HTTPException(422,'Invalid price basis')
     quote.price_basis=payload.price_basis;quote.vat_rate=payload.vat_rate
     quote.currency=payload.currency
     quote.commercial_terms=payload.commercial_terms.model_dump(mode='json')
+    quote.rfq_revision=rfq.revision
     audit(db,user,'quotation.draft_updated',quote.supplier_org_id,quote.id);db.commit()
     return snapshot(db,quote)
 
@@ -172,12 +174,54 @@ def submit(quotation_id:str,user:User=Depends(current_user),db:Session=Depends(g
     deadline=rfq.response_deadline.replace(tzinfo=timezone.utc) if rfq.response_deadline.tzinfo is None else rfq.response_deadline.astimezone(timezone.utc)
     if quote.status!='draft' or rfq.status not in {'published','collecting_quotes'} or deadline<=datetime.now(timezone.utc):
         raise HTTPException(409,'Quotation cannot be submitted')
+    if quote.rfq_revision != rfq.revision:
+        raise HTTPException(409,{'code':'rfq_revised','message':'The RFQ changed. Review current materials before submitting.'})
+    current_ids=set(db.scalars(select(RFQItem.id).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True))))
+    if any(item_id not in current_ids for item_id in db.scalars(select(QuoteLine.rfq_item_id).where(QuoteLine.quotation_id==quote.id))):
+        raise HTTPException(409,{'code':'removed_material','message':'Remove quotation lines for materials no longer requested.'})
     if not db.scalar(select(QuoteLine.id).where(QuoteLine.quotation_id==quote.id)):
         raise HTTPException(422,'Add quote lines first')
     from app.modules.quotations.automation import submit_record
     submit_record(db,quote,user)
     db.commit()
     return {'quotation':record(quote),'totals':invoice(db,quote)}
+
+
+@router.get('/{quotation_id}/revisions')
+def quotation_revisions(quotation_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    quote=db.get(Quotation,quotation_id)
+    if not quote:raise HTTPException(404,'Quotation not found')
+    rfq=db.get(RFQ,quote.rfq_id)
+    own=db.scalar(select(Member.id).where(Member.user_id==user.id,Member.organization_id==quote.supplier_org_id,
+        Member.role.in_({'owner','manager','supplier'})))
+    buyer=db.scalar(select(Member.id).where(Member.user_id==user.id,Member.organization_id==rfq.buyer_org_id,
+        Member.role.in_({'owner','manager','buyer'})))
+    if not (own or buyer or user.is_admin):raise HTTPException(404,'Quotation not found')
+    return [record(row) for row in db.scalars(select(QuotationRevision).where(
+        QuotationRevision.quotation_id==quote.id).order_by(QuotationRevision.number.desc())).all()]
+
+
+@router.post('/{quotation_id}/revise')
+def revise_quotation(quotation_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+    quote=db.get(Quotation,quotation_id)
+    if not quote:raise HTTPException(404,'Quotation not found')
+    org_member(db,user,quote.supplier_org_id,{'owner','manager','supplier'})
+    rfq=db.scalar(select(RFQ).where(RFQ.id==quote.rfq_id).with_for_update())
+    db.refresh(quote,with_for_update=True)
+    if rfq.status not in {'published','collecting_quotes'} or quote.status not in {'submitted','shortlisted'} or not quote.review_required:
+        raise HTTPException(409,{'code':'revision_unavailable','message':'This quotation is not awaiting an RFQ revision.'})
+    if db.scalar(select(QuotationRevision.id).where(QuotationRevision.quotation_id==quote.id,
+        QuotationRevision.number==quote.revision)):
+        raise HTTPException(409,'Quotation revision already started')
+    old_lines=[record(line) for line in db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id))]
+    db.add(QuotationRevision(quotation_id=quote.id,number=quote.revision,rfq_revision=quote.rfq_revision,
+        status=quote.status,snapshot={'quotation':record(quote),'lines':old_lines},created_by_user_id=user.id))
+    quote.revision+=1;quote.status='draft';quote.submitted_at=None;quote.rfq_revision=rfq.revision
+    quote.review_required=True
+    quote.review_reasons=['Review updated RFQ materials and resubmit your quotation']
+    audit(db,user,'quotation.revision_started',quote.supplier_org_id,quote.id,revision=quote.revision,rfq_revision=rfq.revision)
+    db.commit()
+    return snapshot(db,quote)
 
 @router.get('/rfqs/{rfq_id}/comparison',response_model=Comparison)
 def comparison(rfq_id:str,price_weight:int|None=Query(None,ge=0,le=100),delivery_weight:int|None=Query(None,ge=0,le=100),terms_weight:int|None=Query(None,ge=0,le=100),user:User=Depends(current_user),db:Session=Depends(get_db)):
@@ -219,6 +263,8 @@ def decide(quotation_id:str,decision:str,user:User=Depends(current_user),db:Sess
     if quote.status==decision:return snapshot(db,quote)
     if quote.status not in {'submitted','shortlisted'} or (quote.status=='shortlisted' and decision=='shortlisted'):
         raise HTTPException(409,'Quotation cannot receive this decision')
+    if decision=='awarded' and (quote.review_required or quote.rfq_revision!=rfq.revision):
+        raise HTTPException(409,'Supplier must revise this quotation for the current RFQ before award')
     if decision=='awarded':
         # Split awards are allowed for partial quotations, but never for the same RFQ line twice.
         mine=set(db.scalars(select(QuoteLine.rfq_item_id).where(QuoteLine.quotation_id==quote.id)))

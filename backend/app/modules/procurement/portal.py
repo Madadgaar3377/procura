@@ -110,7 +110,7 @@ def portal_payload(db, inv: Invitation, rfq: RFQ, row: SupplierAccessToken) -> d
     from app.modules.quotations.router import invoice
     supplier = db.get(Organization, inv.supplier_org_id)
     buyer = db.get(Organization, rfq.buyer_org_id)
-    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id).order_by(RFQItem.created_at, RFQItem.id)).all()
+    items = db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at, RFQItem.id)).all()
     matched = set(matched_item_ids(db, inv))
     quote = db.scalar(select(Quotation).where(Quotation.invitation_id == inv.id))
     lines = db.scalars(select(QuoteLine).where(QuoteLine.quotation_id == quote.id)).all() if quote else []
@@ -147,7 +147,7 @@ def apply_quote(db, quote: Quotation | None, inv: Invitation, rfq: RFQ, payload:
     """Replace a draft's lines with the supplier's edits, keeping price-book provenance."""
     if quote and quote.status != 'draft':
         raise HTTPException(409, 'This quotation was already submitted')
-    valid = set(db.scalars(select(RFQItem.id).where(RFQItem.rfq_id == rfq.id)))
+    valid = set(db.scalars(select(RFQItem.id).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True))))
     used = set()
     for line in payload.lines:
         if line.rfq_item_id not in valid or line.rfq_item_id in used:

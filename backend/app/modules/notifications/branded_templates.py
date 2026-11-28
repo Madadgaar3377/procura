@@ -133,6 +133,12 @@ def render_message(template: str, context: dict, secret: str | None = None) -> t
                 f"RFQ {ref}: {title} is now {context.get('status', 'updated')}. Open your dashboard for details.",
                 f"تم تحديث حالة طلب عرض السعر {ref}: {title} إلى {context.get('status', 'محدث')}. افتح لوحة التحكم للتفاصيل.",
             ),
+            "rfq_revision": (
+                "RFQ revised — review your quotation",
+                "تم تعديل طلب عرض السعر — يرجى مراجعة عرضك",
+                f"RFQ {ref}: {title} has been revised (revision {context.get('revision')}). Review the current materials and update your quotation if needed.",
+                f"تم تعديل طلب عرض السعر {ref}: {title} (المراجعة {context.get('revision')}). راجع المواد الحالية وحدّث عرضك إذا لزم الأمر.",
+            ),
         }
         lifecycle = {
             'purchase_order_issued': ('Purchase order issued', 'تم إصدار أمر شراء'),

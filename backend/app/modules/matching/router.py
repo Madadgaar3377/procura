@@ -29,7 +29,7 @@ def admin_diagnostics(rfq_id:str,user:User=Depends(current_user),db:Session=Depe
     if not rfq:raise HTTPException(404,'RFQ not found')
     from app.modules.matching.service import active_categories, resolve_item_scopes, taxonomy_label
     from app.modules.rfqs.material_matching import classify_material_description
-    items=db.execute(select(RFQItem,Material).outerjoin(Material,Material.id==RFQItem.material_id).where(RFQItem.rfq_id==rfq.id).order_by(RFQItem.created_at,RFQItem.id)).all()
+    items=db.execute(select(RFQItem,Material).outerjoin(Material,Material.id==RFQItem.material_id).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at,RFQItem.id)).all()
     categories=active_categories(db)
     scopes,material_info=resolve_item_scopes(db,items,categories)
     names={cid:c.name_en for cid,c in categories.items()}
@@ -244,19 +244,113 @@ def match_level_totals(db,rfq_id):
             'subcategory_matches':rows.get('subcategory',0),'main_category_matches':rows.get('main',0)}
 
 
+def _like(value:str)->str:
+    return '%'+value.strip().replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%'
+
+
+def _strength_sql():
+    """Same evidence markers as match_level/match_level_totals; display only, not eligibility."""
+    text_reasons=cast(RFQMatch.reasons,String)
+    def has(*markers):return or_(*[text_reasons.like(f'%"{m}%') for m in markers])
+    return case((has('exact_material_item:'),'exact'),(has('alias_item:','family_item:','ai_semantic_item:'),'product'),
+                (text_reasons.like('%"broad_only"%'),'broad'),else_='capability')
+
+
+def _supplier_filters(db,rfq,rfq_items,*,q,match_type,discipline,main_category_id,subcategory_id,location,brand,quotation):
+    """Server-side display filters over persisted RFQMatch rows. Matching itself is untouched."""
+    from sqlalchemy import and_, exists
+    from app.models import ImportedSupplierTrade
+    conditions=[]
+    supplier=RFQMatch.supplier_org_id
+    if q and q.strip():
+        conditions.append(Organization.name.ilike(_like(q),escape='\\'))
+    if match_type:
+        conditions.append(and_(RFQMatch.status.in_(MATCHED_STATUSES),_strength_sql()==match_type))
+    text_reasons=cast(RFQMatch.reasons,String)
+    def taxonomy(main_ids:set[str],sub_ids:set[str]):
+        # A line counts when this supplier covers it ("item:<id>") and the line, or the
+        # product-family taxonomy recorded for it, belongs to the requested category.
+        parts=[text_reasons.like(f'%={mid}/%') for mid in main_ids]+[text_reasons.like(f'%/{sid}"%') for sid in sub_ids]
+        parts+=[text_reasons.like(f'%"item:{item.id}"%') for item in rfq_items
+                if (main_ids and item.main_category_id in main_ids) or (sub_ids and item.subcategory_id in sub_ids)]
+        return or_(*parts) if parts else RFQMatch.id.is_(None)
+    if discipline and discipline.strip():
+        key=discipline.strip().casefold()
+        mains={cid for cid,name in db.execute(select(Category.id,Category.name_en).where(Category.parent_id.is_(None))).all()
+               if (name or '').split(' - ',1)[0].strip().casefold()==key}
+        conditions.append(taxonomy(mains,set()))
+    if main_category_id:conditions.append(taxonomy({main_category_id},set()))
+    if subcategory_id:conditions.append(taxonomy(set(),{subcategory_id}))
+    if location and location.strip():
+        pattern=_like(location)
+        conditions.append(or_(Organization.city.ilike(pattern,escape='\\'),exists().where(
+            Capability.org_id==supplier,Capability.confirmed.is_(True),Capability.eligibility_status=='enabled',
+            Capability.city.ilike(pattern,escape='\\'))))
+    if brand and brand.strip():
+        pattern=_like(brand)
+        conditions.append(or_(
+            exists().where(Capability.org_id==supplier,cast(Capability.brands,String).ilike(pattern,escape='\\')),
+            exists().where(PriceBookItem.org_id==supplier,PriceBookItem.active.is_(True),PriceBookItem.brand.ilike(pattern,escape='\\')),
+            exists().where(ImportedSupplierTrade.org_id==supplier,ImportedSupplierTrade.raw_brands.ilike(pattern,escape='\\'))))
+    if quotation=='received':
+        conditions.append(exists().where(Quotation.rfq_id==rfq.id,Quotation.supplier_org_id==supplier,
+                                         Quotation.status.in_(('submitted','shortlisted','awarded','rejected'))))
+    elif quotation in {'saved_price','manual'}:
+        materials={item.material_id for item in rfq_items if item.material_id}
+        subs={item.subcategory_id for item in rfq_items if item.subcategory_id}
+        scope=[PriceBookItem.material_id.in_(materials)] if materials else []
+        if subs:scope.append(PriceBookItem.subcategory_id.in_(subs))
+        priced=exists().where(PriceBookItem.org_id==supplier,PriceBookItem.active.is_(True),or_(*scope)) if scope else None
+        if quotation=='saved_price':conditions.append(priced if priced is not None else RFQMatch.id.is_(None))
+        elif priced is not None:conditions.append(~priced)
+    return conditions
+
+
+def _filter_options(rfq_items,taxonomy_names)->dict:
+    """Taxonomy choices for the supplier toolbar, taken from this RFQ's own lines."""
+    mains={item.main_category_id for item in rfq_items if item.main_category_id}
+    subs={(item.subcategory_id,item.main_category_id) for item in rfq_items if item.subcategory_id}
+    name=lambda cid:taxonomy_names.get(cid) or cid  # noqa: E731
+    disciplines=sorted({name(mid).split(' - ',1)[0].strip() for mid in mains if taxonomy_names.get(mid)})
+    return {'disciplines':disciplines,
+            'main_categories':sorted(({'id':mid,'name':name(mid)} for mid in mains),key=lambda row:row['name']),
+            'subcategories':sorted(({'id':sid,'name':name(sid),'parent_id':parent} for sid,parent in subs),key=lambda row:row['name'])}
+
+
 @router.get('/rfqs/{rfq_id}/results',response_model=MatchResults)
-def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),user:User=Depends(current_user),db:Session=Depends(get_db)):
+def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),view:str=Query('filtered',pattern='^(filtered|total)$'),
+            q:str|None=Query(None,max_length=120),match_type:str|None=Query(None,pattern='^(exact|product|capability|broad)$'),
+            discipline:str|None=Query(None,max_length=120),main_category_id:str|None=Query(None,max_length=64),
+            subcategory_id:str|None=Query(None,max_length=64),location:str|None=Query(None,max_length=100),
+            brand:str|None=Query(None,max_length=100),quotation:str|None=Query(None,pattern='^(received|saved_price|manual)$'),
+            sort:str=Query('relevance',pattern='^(relevance|name|name_desc|score)$'),
+            invitation_limit:int|None=Query(None,ge=1,le=100),invitation_offset:int|None=Query(None,ge=0),
+            user:User=Depends(current_user),db:Session=Depends(get_db)):
     rfq=db.get(RFQ,rfq_id)
     if not rfq:raise HTTPException(404,'RFQ not found')
     org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
-    rfq_items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()
+    rfq_items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True))).all()
     items={item.id:item.description for item in rfq_items}
-    # Buyers see final eligible supplier organizations only. Candidates, exclusions and
-    # review-only results stay in the admin diagnostics.
+    # Filtered view shows final eligible supplier organizations; Total view includes
+    # broad category, location, and brand candidates evaluated for this RFQ.
+    candidate_statuses=(*MATCHED_STATUSES,'insufficient_evidence','location_mismatch','location_unconfirmed','coverage_unknown','brand_mismatch')
+    org_filter=(Organization.is_supplier.is_(True),Organization.is_active.is_(True),Organization.verified_status.not_in({'rejected','suspended'}))
+    visible=RFQMatch.status.in_(candidate_statuses if view=='total' else MATCHED_STATUSES)
+    display_filters=_supplier_filters(db,rfq,rfq_items,q=q,match_type=match_type,discipline=discipline,
+        main_category_id=main_category_id,subcategory_id=subcategory_id,location=location,brand=brand,quotation=quotation)
+    ordering={
+        'name':(Organization.name,Organization.id),
+        'name_desc':(Organization.name.desc(),Organization.id),
+        'score':(RFQMatch.score.desc(),Organization.name,Organization.id),
+    }.get(sort,(case((RFQMatch.status=='eligible',0),(RFQMatch.status=='partial',1),else_=2),RFQMatch.score.desc(),Organization.name,Organization.id))
+    page_where=(RFQMatch.rfq_id==rfq.id,visible,*org_filter,*display_filters)
     match_rows=db.execute(select(RFQMatch,Organization).join(Organization,Organization.id==RFQMatch.supplier_org_id)
-        .where(RFQMatch.rfq_id==rfq.id,RFQMatch.status.in_(MATCHED_STATUSES))
-        .order_by(case((RFQMatch.status=='eligible',0),else_=1),RFQMatch.score.desc(),Organization.name,Organization.id)
-        .limit(limit).offset(offset)).all()
+        .where(*page_where).order_by(*ordering).limit(limit).offset(offset)).all()
+    # Rows matching the current view and filters across every page (pagination text).
+    page_total=int(db.scalar(select(func.count()).select_from(RFQMatch).join(Organization,Organization.id==RFQMatch.supplier_org_id)
+        .where(*page_where)) or 0)
+    inv_limit=invitation_limit or limit
+    inv_offset=offset if invitation_offset is None else invitation_offset
     matches=[]
     supplier_ids=[org.id for match,org in match_rows]
     orgs_by_id={org.id:org for _,org in match_rows}
@@ -296,7 +390,7 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
             priced=set(db.scalars(select(PriceBookItem.org_id).where(PriceBookItem.org_id.in_(supplier_ids),
                 PriceBookItem.active.is_(True),or_(*conditions)).distinct()).all())
     items_by_id={item.id:item for item in rfq_items}
-    invitation_rows=db.execute(select(Invitation,Organization.name,Quotation.status).join(Organization,Organization.id==Invitation.supplier_org_id).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id,Invitation.status!='cancelled').order_by(Invitation.id).limit(limit).offset(offset)).all()
+    invitation_rows=db.execute(select(Invitation,Organization.name,Quotation.status).join(Organization,Organization.id==Invitation.supplier_org_id).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id,Invitation.status!='cancelled').order_by(Invitation.created_at.desc(),Invitation.id).limit(inv_limit).offset(inv_offset)).all()
     channel_status=invitation_channel_status(db,rfq.id,set(supplier_ids)|{i.supplier_org_id for i,_,_ in invitation_rows})
     for match,org in match_rows:
         covered=[reason[5:] for reason in (match.reasons or []) if reason.startswith('item:')]
@@ -342,12 +436,12 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
             'email_status':channel_status.get((org.id,'email'),{}).get('status') if invitation_status else None,
             'sms_status':channel_status.get((org.id,'sms'),{}).get('status') if invitation_status else None,
             'profile_url':f'/suppliers/{org.id}' if directory_visible else None})
-    jobs={status:count for status,count in db.execute(select(Outbox.status,func.count()).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).group_by(Outbox.status)).all()}
     latest_job=db.scalar(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc(),Outbox.id.desc()).limit(1))
     job_status=latest_job.status if latest_job else None
-    matched=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id,RFQMatch.status.in_({'eligible','partial'}))) or 0)
-    evaluated=int(db.scalar(select(func.count()).select_from(RFQMatch).where(RFQMatch.rfq_id==rfq.id)) or 0)
-    status_counts={status:count for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
+    status_counts={status:int(count) for status,count in db.execute(select(RFQMatch.status,func.count()).where(RFQMatch.rfq_id==rfq.id).group_by(RFQMatch.status)).all()}
+    matched=status_counts.get('eligible',0)+status_counts.get('partial',0)
+    evaluated=sum(status_counts.values())
+    total_candidates=int(db.scalar(select(func.count()).select_from(RFQMatch).join(Organization,Organization.id==RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id,RFQMatch.status.in_(candidate_statuses),*org_filter)) or 0)
     invited=int(db.scalar(select(func.count()).select_from(Invitation).where(Invitation.rfq_id==rfq.id,Invitation.status!='cancelled')) or 0)
     level_counts=match_level_totals(db,rfq.id)
     if rfq.status=='draft':progress='draft'
@@ -357,9 +451,9 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         progress='matching_in_progress' if matched or job_status=='processing' else 'matching_queued'
     elif job_status in {'failed','uncertain'}:progress='matching_failed'
     elif invited:progress='invitations_available'
-    elif matched and job_status=='processed':progress='matches_available'
-    elif job_status=='processed':progress='no_eligible_suppliers'
-    else:progress='matching_queued'
+    elif matched and job_status in {'processed','skipped'}:progress='matches_available'
+    elif job_status in {'processed','skipped'}:progress='no_eligible_suppliers'
+    else:progress='matching_failed'  # An open RFQ without a durable job cannot make progress.
     from datetime import timedelta
     from app.modules.notifications.router import display_delivery_status
     # Fast indexed SQL pending check using persisted RFQMatch + Invitation + Quotation
@@ -377,7 +471,14 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     page_ids=[invitation.id for invitation,_,_ in invitation_rows]
     pending_rows=pending_invitations(db,rfq,page_ids) if progress not in {'draft','closed'} and page_ids else []
     pending={invitation.supplier_org_id for invitation in pending_rows}
-    pending_total=len(pending_invitations(db,rfq)) if progress not in {'draft','closed'} else 0
+    if progress not in {'draft','closed'} and invited:
+        responded_sub=select(Quotation.supplier_org_id).where(Quotation.rfq_id==rfq.id,Quotation.status!='draft')
+        matched_sub=select(RFQMatch.supplier_org_id).where(RFQMatch.rfq_id==rfq.id,RFQMatch.status.in_(MATCHED_STATUSES))
+        pending_total=int(db.scalar(select(func.count(Invitation.id)).join(Organization,Organization.id==Invitation.supplier_org_id).where(
+            Invitation.rfq_id==rfq.id,Invitation.status.in_({'invited','accepted'}),
+            Invitation.supplier_org_id.not_in(responded_sub),Invitation.supplier_org_id.in_(matched_sub),*org_filter)) or 0)
+    else:
+        pending_total=0
     cooldown=timedelta(hours=get_settings().rfq_reminder_cooldown_hours)
     def next_reminder(invitation):
         last=invitation.last_reminded_at
@@ -394,11 +495,14 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     # Cooldowns are per supplier invitation (next_reminder_at); no RFQ-wide lock.
     available=None
     explanation=None
-    if progress=='matching_failed' and job_status in {'pending','retry','processing'}:
+    if progress=='matching_failed' and latest_job is None:
+        explanation='Supplier matching was not queued for this RFQ. An administrator can safely recover its matching job.'
+    elif progress=='matching_failed' and job_status in {'pending','retry','processing'}:
         explanation=('Supplier matching has not progressed recently; the background worker may be stopped. '
                      f'{matched} supplier(s) matched so far are retained and matching resumes automatically when the worker runs.')
     elif progress=='matching_failed':
-        explanation='Supplier matching failed. Existing matches and invitations are retained; an administrator can retry the job.'
+        failure_detail=f' ({latest_job.last_error[:160]})' if latest_job and latest_job.last_error else ''
+        explanation=f'Supplier matching failed{failure_detail}. Existing matches and invitations are retained; an administrator can retry the job.'
     elif matched:
         explanation=f'{matched} supplier(s) have product evidence for at least one RFQ item and meet the delivery and brand requirements; technical compliance is confirmed in their quotations.'
     elif status_counts.get('location_mismatch'):
@@ -430,6 +534,10 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
         explanation=' '.join(filter(None,(explanation,f'RFQ lines: {lines}.' if lines else None,
                                           f'Most common exclusion: {common[0][0]}' if common else None)))
     matching_status=('failed' if progress=='matching_failed' else 'completed' if progress in {'invitations_available','matches_available','no_eligible_suppliers','closed'} else 'processing' if progress=='matching_in_progress' else 'queued')
+    # Structured cause for clients; the text is the buyer explanation chosen above.
+    failure_code=(None if progress!='matching_failed' else 'no_matching_job' if latest_job is None
+                  else 'matching_stalled' if job_status in {'pending','retry','processing'} else 'matching_error')
+    failure_reason=explanation if failure_code else None
     rows=[]
     for i,name,quote in invitation_rows:
         due=next_reminder(i)
@@ -443,11 +551,16 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     from app.modules.notifications.procurement import rfq_solicitation_state
     reminders_open,reminder_code,reminder_message=rfq_solicitation_state(rfq)
     return {'matches':matches, 'invitations':rows, 'progress':progress,'matching_status':matching_status,
+            'matching_failure_code':failure_code,'matching_failure_reason':failure_reason,
+            'page_total':page_total,'invitation_total':invited,'invitation_limit':inv_limit,'invitation_offset':inv_offset,
+            'sort':sort,'filter_options':_filter_options(rfq_items,taxonomy_names),
             # Reminder actions are disabled for closed, cancelled and expired RFQs.
             'reminders_enabled':reminders_open,'reminders_disabled_code':reminder_code,
             'reminders_disabled_reason':reminder_message,
             'pending_invitation_ids':[row['id'] for row in rows if row['reminder_eligible']],
-            'matched_suppliers':matched,'invited_suppliers':invited,'pending_suppliers':pending_total,'suppliers_evaluated':matched,
+            'matched_suppliers':matched,'total_candidates':total_candidates,'invited_suppliers':invited,'pending_suppliers':pending_total,
+            'suppliers_evaluated':(int((latest_job.payload or {}).get('evaluated_suppliers') or 0)
+                                   if latest_job and job_status in {'pending','retry','processing'} else evaluated),
             'quotations_received':quotations_received,**level_counts,
             # Candidate and exclusion counts are admin diagnostics, not buyer results.
             'excluded_suppliers':0,'excluded_by_status':{},
@@ -505,7 +618,7 @@ def rfq_quotations_summary(rfq_id:str,user:User=Depends(current_user),db:Session
         .where(Quotation.rfq_id == rfq.id)
         .order_by(Quotation.submitted_at.desc().nullslast(), Quotation.created_at.desc())
     ).all()
-    total_items = int(db.scalar(select(func.count()).select_from(RFQItem).where(RFQItem.rfq_id == rfq.id)) or 0)
+    total_items = int(db.scalar(select(func.count()).select_from(RFQItem).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True))) or 0)
     submitted_ids = [q.id for q, _ in all_quotes if q.status in submitted_statuses]
     lines_by_quote: dict[str, list] = {qid: [] for qid in submitted_ids}
     if submitted_ids:
@@ -526,6 +639,8 @@ def rfq_quotations_summary(rfq_id:str,user:User=Depends(current_user),db:Session
         totals = invoice(db, q, q_lines)
         entry = {
             'id': q.id,
+            # Same reference the quotation PDF prints.
+            'reference': (q.commercial_terms or {}).get('quotation_reference') or f'QT-{q.id[:8].upper()}',
             'supplier_org_id': q.supplier_org_id,
             'supplier_name': supplier_name,
             'status': q.status,
@@ -541,12 +656,21 @@ def rfq_quotations_summary(rfq_id:str,user:User=Depends(current_user),db:Session
             automatic_submitted.append(entry)
         else:
             manual_submitted.append(entry)
+    active_invitations_count = int(db.scalar(
+        select(func.count()).select_from(Invitation).where(
+            Invitation.rfq_id == rfq.id,
+            Invitation.status.in_({'invited', 'accepted'}),
+        )
+    ) or 0)
+    quoted_invitation_ids = {q.invitation_id for q, _ in all_quotes}
+    manual_pricing_required_count = max(0, active_invitations_count - len(quoted_invitation_ids))
     return {
         'rfq_id': rfq.id,
         'automatic_quotations': automatic_submitted,
         'manual_quotations': manual_submitted,
         'preparing_automatic_count': preparing_auto_count,
         'preparing_manual_count': preparing_manual_count,
+        'manual_pricing_required_count': manual_pricing_required_count,
         'total_submitted': len(automatic_submitted) + len(manual_submitted),
     }
 
@@ -591,6 +715,71 @@ def rfq_notifications_status(rfq_id:str,user:User=Depends(current_user),db:Sessi
         'by_channel': by_channel,
     }
 
+
+# Buyer-facing delivery groups. An invitation record is never shown as delivery.
+DELIVERY_GROUPS={'queued':{'queued','sending','retry_scheduled'},'accepted':{'accepted','sent','simulated'},
+                 'delivered':{'delivered'},'failed':{'failed','uncertain'},'bounced':{'hard_bounced','soft_bounced'},
+                 'skipped':{'skipped','suppressed'}}
+
+
+def _mask_destination(channel:str,value:str|None)->str|None:
+    if not value:return None
+    if '@' in value:
+        local,_,domain=value.partition('@')
+        return f'{local[:1]}***@{domain}'
+    digits=value.strip()
+    return f'{digits[:4]}•••{digits[-3:]}' if len(digits)>7 else '•••'
+
+
+@router.get('/rfqs/{rfq_id}/notifications')
+def rfq_notification_records(rfq_id:str,limit:int=Query(10,ge=1,le=100),offset:int=Query(0,ge=0),
+                             channel:str|None=Query(None,pattern='^(email|sms)$'),
+                             group:str|None=Query(None,pattern='^(queued|accepted|delivered|failed|bounced|skipped)$'),
+                             user:User=Depends(current_user),db:Session=Depends(get_db)):
+    """Paginated email/SMS delivery records for this RFQ's supplier notices (read-only).
+
+    Destinations are masked and only reason codes are returned; provider responses and
+    secrets stay in the admin delivery console.
+    """
+    rfq=db.get(RFQ,rfq_id)
+    if not rfq:raise HTTPException(404,'RFQ not found')
+    org_member(db,user,rfq.buyer_org_id,{'owner','manager','buyer'})
+    from types import SimpleNamespace
+    from app.modules.notifications.router import display_delivery_status
+    context=Outbox.payload['context']
+    org_ref=context['org_id'].as_string()
+    rows=db.execute(select(
+        Outbox.id,Outbox.created_at,Outbox.submitted_at,Outbox.status,Outbox.delivery_status,
+        Outbox.payload['channel'].as_string(),Outbox.payload['template'].as_string(),
+        Outbox.payload['contact_name'].as_string(),Outbox.payload['destination'].as_string(),
+        org_ref,context['invitation_id'].as_string(),
+    ).where(Outbox.event=='notification.delivery',context['rfq_id'].as_string()==rfq.id,
+            Outbox.payload['template'].as_string().in_(('rfq_invitation','deadline_reminder','rfq_revision')))
+     .order_by(Outbox.created_at.desc(),Outbox.id)).all()
+    org_ids={row[9] for row in rows if row[9]}
+    names=dict(db.execute(select(Organization.id,Organization.name).where(Organization.id.in_(org_ids))).all()) if org_ids else {}
+    invitation_by_org=dict(db.execute(select(Invitation.supplier_org_id,Invitation.id).where(
+        Invitation.rfq_id==rfq.id,Invitation.supplier_org_id.in_(org_ids))).all()) if org_ids else {}
+    records=[];counts={key:0 for key in DELIVERY_GROUPS}
+    for event_id,created,submitted,status,provider,ch,template,contact,destination,org_id,invitation_id in rows:
+        ch='sms' if ch=='whatsapp' else (ch or 'email')
+        label=display_delivery_status(SimpleNamespace(status=status,delivery_status=provider))
+        bucket=next((key for key,labels in DELIVERY_GROUPS.items() if label in labels),'queued')
+        if channel and ch!=channel:continue
+        counts[bucket]+=1
+        if group and bucket!=group:continue
+        reason=(provider if provider in SAFE_SKIP_REASONS or label in DELIVERY_GROUPS['bounced'] else
+                'provider_error' if bucket=='failed' else None)
+        records.append({'id':event_id,'supplier_org_id':org_id,'supplier_name':names.get(org_id) or '',
+            'contact_name':contact or None,'destination':_mask_destination(ch,destination),'channel':ch,
+            'template':template,'status':label,'status_group':bucket,'failure_reason':reason,
+            'created_at':as_utc(created).isoformat() if created else None,
+            'sent_at':as_utc(submitted).isoformat() if submitted else None,
+            'invitation_id':invitation_id or invitation_by_org.get(org_id),
+            'retryable':bucket in {'failed','bounced'} or label=='uncertain'})
+    return {'rfq_id':rfq.id,'total':len(records),'limit':limit,'offset':offset,'counts':counts,
+            'records':records[offset:offset+limit]}
+
 @router.get('/invitations',response_model=list[InvitationSummary])
 def my_invitations(search:ListSearch=Depends(),user:User=Depends(current_user),db:Session=Depends(get_db)):
     q=select(Invitation).join(Member,Invitation.supplier_org_id==Member.organization_id).join(Organization,Organization.id==Member.organization_id).where(Member.user_id==user.id,Organization.is_active.is_(True))
@@ -602,7 +791,7 @@ def my_invitations(search:ListSearch=Depends(),user:User=Depends(current_user),d
     rfq_ids={i.rfq_id for i in invitations}
     rfqs={r.id:r for r in db.scalars(select(RFQ).where(RFQ.id.in_(rfq_ids))).all()}
     descriptions:dict[str,list[str]]={}
-    for rfq_id,description in db.execute(select(RFQItem.rfq_id,RFQItem.description).where(RFQItem.rfq_id.in_(rfq_ids))).all():descriptions.setdefault(rfq_id,[]).append(description)
+    for rfq_id,description in db.execute(select(RFQItem.rfq_id,RFQItem.description).where(RFQItem.rfq_id.in_(rfq_ids),RFQItem.is_active.is_(True))).all():descriptions.setdefault(rfq_id,[]).append(description)
     return [{**record(i),'rfq_reference':rfqs[i.rfq_id].reference,'title':rfqs[i.rfq_id].title,'item_descriptions':descriptions.get(i.rfq_id,[])} for i in invitations]
 
 @router.post('/invitations/{invitation_id}/{action}',response_model=InvitationOut)

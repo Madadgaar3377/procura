@@ -77,6 +77,63 @@ def test_publish_runs_bounded_match_without_waiting_for_outbox_worker():
     finally:engine.dispose()
 
 
+def test_buyer_filtered_and_total_matches_are_separate_persisted_views():
+    client,sessions,engine,ids=setup_matching_app('Riyadh')
+    try:
+        assert client.post(f"/api/v1/rfqs/{ids['rfq']}/publish").status_code==200
+        filtered=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results?view=filtered")
+        total=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results?view=total")
+        assert filtered.status_code==total.status_code==200
+        assert filtered.json()['matched_suppliers']<=total.json()['total_candidates']
+        assert total.json()['total_candidates']>=1 and filtered.json()['matched_suppliers']==0
+        assert {row['id'] for row in filtered.json()['matches']}<= {row['id'] for row in total.json()['matches']}
+    finally:engine.dispose()
+
+
+def test_published_rfq_without_matching_job_reports_recoverable_failure():
+    client,sessions,engine,ids=setup_matching_app('Riyadh')
+    try:
+        with sessions() as db:
+            rfq=db.get(RFQ,ids['rfq'])
+            rfq.status='published'
+            db.commit()
+        response=client.get(f"/api/v1/matching/rfqs/{ids['rfq']}/results")
+        assert response.status_code==200,response.text
+        assert response.json()['matching_status']=='failed'
+        assert 'not queued' in response.json()['explanation']
+    finally:engine.dispose()
+
+
+def test_recovery_resets_old_revision_cursor_without_duplicate_job():
+    from scripts.requeue_rfq_matching import recover_rfq
+    client,sessions,engine,ids=setup_matching_app('Riyadh')
+    try:
+        with sessions() as db:
+            rfq=db.get(RFQ,ids['rfq'])
+            rfq.status='published'
+            rfq.revision=2
+            db.add(Outbox(event='rfq.published',status='failed',
+                payload={'rfq_id':rfq.id,'revision':1,'cursor':'obsolete'},
+                dedupe_key=f'rfq-published:{rfq.id}'))
+            db.commit()
+        with sessions() as db:
+            assert recover_rfq(db,ids['rfq'])
+            db.commit()
+            jobs=db.scalars(select(Outbox).where(Outbox.event=='rfq.published')).all()
+            assert len(jobs)==2
+            recovery=next(job for job in jobs if job.status=='pending')
+            assert recovery.payload=={'rfq_id':ids['rfq'],'revision':2,'repaired':True}
+        with sessions() as db:
+            assert recover_rfq(db,ids['rfq'])
+            db.commit()
+            assert len(db.scalars(select(Outbox).where(Outbox.event=='rfq.published')).all())==2
+            db.scalar(select(Outbox).where(Outbox.status=='pending')).status='processed'
+            db.commit()
+            assert recover_rfq(db,ids['rfq']) is False
+            assert len(db.scalars(select(Outbox).where(Outbox.event=='rfq.published')).all())==2
+    finally:engine.dispose()
+
+
 def test_publication_continues_in_durable_batches_without_duplicate_invitations(monkeypatch):
     from app.config import get_settings
     # Exhaust the synchronous budget after one small page so the durable job must continue.

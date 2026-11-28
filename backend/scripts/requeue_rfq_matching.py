@@ -16,13 +16,22 @@ def recover_rfq(db, rfq_id: str, *, prepare_existing_invitations: bool = False) 
         Outbox.payload['rfq_id'].as_string() == rfq_id,
     ).order_by(Outbox.created_at.desc(), Outbox.id.desc())).all()
     now = datetime.now(UTC)
-    active = next((job for job in jobs if job.status in {'pending', 'retry'} or (job.status == 'processing' and job.lock_until and job.lock_until.replace(tzinfo=job.lock_until.tzinfo or UTC) > now)), None)
+    revision = int(rfq.revision or 0)
+    if jobs and jobs[0].status == 'processed' and (jobs[0].payload or {}).get('revision') in (None, revision):
+        print(f'RFQ {rfq_id}: matching already completed for revision {revision}; no recovery queued')
+        return False
+    active = next((job for job in jobs if (job.payload or {}).get('revision') in (None, revision)
+        and (job.status in {'pending', 'retry'} or (job.status == 'processing' and job.lock_until
+        and job.lock_until.replace(tzinfo=job.lock_until.tzinfo or UTC) > now))), None)
     if active:
         print(f'RFQ {rfq_id}: existing active job {active.id} status={active.status}; no duplicate queued')
     else:
-        stalled = next((job for job in jobs if job.status == 'processing'), None)
-        recovery = stalled or next((job for job in jobs if job.dedupe_key == f'rfq-recovery:{rfq_id}'), None)
+        stalled = next((job for job in jobs if job.status == 'processing' and
+            (not job.lock_until or job.lock_until.replace(tzinfo=job.lock_until.tzinfo or UTC) <= now)), None)
+        recovery = stalled or next((job for job in jobs if job.dedupe_key == f'rfq-recovery:{rfq_id}:{revision}'), None)
         if recovery:
+            # A cursor from an older revision is never reused against current materials.
+            recovery.payload = {'rfq_id': rfq_id, 'revision': revision, 'repaired': True}
             recovery.status = 'pending'
             recovery.attempts = 0
             recovery.next_attempt_at = None
@@ -30,8 +39,8 @@ def recover_rfq(db, rfq_id: str, *, prepare_existing_invitations: bool = False) 
             recovery.last_error = None
             print(f'RFQ {rfq_id}: requeued job {recovery.id}')
         else:
-            recovery = Outbox(event='rfq.published', payload={'rfq_id': rfq_id},
-                dedupe_key=f'rfq-recovery:{rfq_id}')
+            recovery = Outbox(event='rfq.published', payload={'rfq_id': rfq_id, 'revision': revision, 'repaired': True},
+                dedupe_key=f'rfq-recovery:{rfq_id}:{revision}')
             db.add(recovery)
             db.flush()
             print(f'RFQ {rfq_id}: queued recovery job {recovery.id}')
@@ -69,12 +78,12 @@ def main():
         try:
             if args.all_stuck:
                 now = datetime.now(UTC)
-                open_rfqs = db.scalars(select(RFQ.id).where(
+                open_rfqs = db.execute(select(RFQ.id, RFQ.revision).where(
                     RFQ.status.in_({'published', 'collecting_quotes'}),
                     RFQ.response_deadline > now,
                 )).all()
                 recovered = 0
-                for rid in open_rfqs:
+                for rid, current_revision in open_rfqs:
                     latest = db.scalar(select(Outbox).where(
                         Outbox.event == 'rfq.published',
                         Outbox.payload['rfq_id'].as_string() == rid,
@@ -82,6 +91,7 @@ def main():
                     is_stuck = (
                         latest is None
                         or latest.status in {'failed', 'uncertain'}
+                        or ((latest.payload or {}).get('revision') not in (None, int(current_revision or 0)))
                         or (latest.status == 'processing' and (not latest.lock_until or latest.lock_until.replace(tzinfo=latest.lock_until.tzinfo or UTC) <= now))
                     )
                     if is_stuck and recover_rfq(db, rid, prepare_existing_invitations=args.prepare_existing_invitations):

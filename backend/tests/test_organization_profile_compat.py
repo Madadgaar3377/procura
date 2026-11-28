@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.database import Base
 from app.models import Organization
-from app.profile_schema import compatible_organization_reads
+from app.profile_schema import compatible_organization_reads, _BIND_COLUMN_CACHE
 
 
 def test_organization_reads_work_before_profile_completion_migration():
@@ -19,6 +19,8 @@ def test_organization_reads_work_before_profile_completion_migration():
             db.execute(text("DROP INDEX ix_organizations_profile_status"))
             db.execute(text("ALTER TABLE organizations DROP COLUMN profile_status"))
             db.commit()
+            # Production stops/restarts the API around DDL; simulate that cache reset.
+            _BIND_COLUMN_CACHE.clear()
 
         with sessions() as db:
             company = db.scalar(select(Organization).where(Organization.id == company_id))

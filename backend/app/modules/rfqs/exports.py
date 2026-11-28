@@ -46,7 +46,7 @@ def _authorize_rfq_read(db: Session, user: User, rfq_id: str) -> RFQ:
 
 def group_rfq_items(db: Session, rfq: RFQ, *, lang: str = 'en') -> list[dict]:
     """Group RFQ items by Main Category -> Subcategory -> Materials, preserving original item IDs."""
-    items = list(db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id).order_by(RFQItem.created_at, RFQItem.id)).all())
+    items = list(db.scalars(select(RFQItem).where(RFQItem.rfq_id == rfq.id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at, RFQItem.id)).all())
     cat_ids = {cid for item in items for cid in (item.main_category_id, item.subcategory_id) if cid}
     categories = {c.id: c for c in db.scalars(select(Category).where(Category.id.in_(cat_ids))).all()} if cat_ids else {}
 

@@ -30,8 +30,8 @@ def test_one_queue_failure_does_not_starve_other_queues(monkeypatch):
         def close(self):self.closed=True
 
     def process(name, fail=False):
-        def run(db):
-            calls.append(name)
+        def run(db, **kwargs):
+            calls.append(f"{name}:{kwargs['lane']}" if kwargs.get('lane') else name)
             if fail:
                 raise RuntimeError('queue unavailable')
             return []
@@ -43,14 +43,16 @@ def test_one_queue_failure_does_not_starve_other_queues(monkeypatch):
     for i, name in enumerate(names):
         monkeypatch.setattr(worker, name, process(name, fail=i in (0, 4)))
     assert worker.process_once() is False
-    assert calls == names
-    assert len({id(db) for db in sessions}) == 6
+    assert [name for name in calls if not name.startswith('process_outbox_batch')] == names[1:]
+    assert calls.count('process_outbox_batch') == 1
+    assert calls.count('process_outbox_batch:matching') == 6  # Import preemption.
+    assert len({id(db) for db in sessions}) == len(calls)
     assert all(db.closed and db.rollbacks>=1 for db in sessions)
 
 
 def test_duplicate_dedicated_worker_exits_without_polling(monkeypatch, tmp_path):
     path = tmp_path / 'worker.lock'
-    monkeypatch.setattr(worker, 'import_worker_lock', lambda: import_worker_lock(path))
+    monkeypatch.setattr(worker, 'import_worker_lock', lambda _lane_path: import_worker_lock(path))
     monkeypatch.setattr('sys.argv', ['import-worker', '--once'])
     monkeypatch.setattr(worker, 'process_once', lambda: pytest.fail('duplicate worker polled'))
     with import_worker_lock(path) as acquired:

@@ -17,7 +17,7 @@ def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True)
     """
     old=db.scalar(select(Quotation).where(Quotation.invitation_id==invitation.id))
     if old:return old
-    items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==invitation.rfq_id).order_by(RFQItem.created_at,RFQItem.id)).all()
+    items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==invitation.rfq_id,RFQItem.is_active.is_(True)).order_by(RFQItem.created_at,RFQItem.id)).all()
     from app.modules.procurement.portal import matched_item_ids
     matched=set(matched_item_ids(db,invitation))
     if matched:items=[item for item in items if item.id in matched]
@@ -71,13 +71,13 @@ def build_draft(db,invitation,*,basis='supply',automatic=False,allow_empty=True)
         currency=rate.currency
         eligible.append((item,material,rate,note))
     if not eligible and not allow_empty:return None
-    quote=Quotation(invitation_id=invitation.id,rfq_id=invitation.rfq_id,supplier_org_id=invitation.supplier_org_id,price_basis=basis,submission_source='automatic_draft' if automatic else 'manual',review_required=True,review_reasons=[])
+    quote=Quotation(invitation_id=invitation.id,rfq_id=invitation.rfq_id,supplier_org_id=invitation.supplier_org_id,price_basis=basis,submission_source='automatic_draft' if automatic else 'manual',review_required=True,review_reasons=[],rfq_revision=rfq.revision if (rfq:=db.get(RFQ,invitation.rfq_id)) else 0)
     db.add(quote);db.flush()
     quote.currency=currency or 'SAR'
     terms={}
     from app.serializers import record
     for item,material,rate,note in eligible:
-        db.add(QuoteLine(quotation_id=quote.id,rfq_item_id=item.id,offered_description=rate.offered_description or rate.supplier_description or (material.name_en if material else item.description),brand=rate.brand,model=rate.model,offered_specs=rate.offered_specs,compliance='unconfirmed',quantity=item.quantity,unit_price=rate.unit_price,lead_days=rate.lead_days,note=note,source_rate_id=rate.id,source_rate_version=rate.version,source_rate_snapshot=record(rate),vat_rate=rate.vat_rate,warranty_months=rate.warranty_months,availability=rate.availability or 'unknown'))
+        db.add(QuoteLine(quotation_id=quote.id,rfq_item_id=item.id,requested_snapshot=record(item),offered_description=rate.offered_description or rate.supplier_description or (material.name_en if material else item.description),brand=rate.brand,model=rate.model,offered_specs=rate.offered_specs,compliance='unconfirmed',quantity=item.quantity,unit_price=rate.unit_price,lead_days=rate.lead_days,note=note,source_rate_id=rate.id,source_rate_version=rate.version,source_rate_snapshot=record(rate),vat_rate=rate.vat_rate,warranty_months=rate.warranty_months,availability=rate.availability or 'unknown'))
         if rate.payment_terms and not terms.get('payment_terms'):terms['payment_terms']=rate.payment_terms
         if rate.valid_until and (not terms.get('validity_until') or rate.valid_until.isoformat()<terms['validity_until']):terms['validity_until']=rate.valid_until.isoformat()
     quote.commercial_terms=terms
@@ -101,9 +101,79 @@ def prepare_invitation_quote(db, invitation_id):
     if quote:return quote
     return build_draft(db,inv,automatic=True,allow_empty=False)
 
+
+def refresh_automatic_draft(db, invitation, affected_ids):
+    """Reprice only affected, still valid saved-rate lines of an unsubmitted draft."""
+    from app.modules.matching.service import requested_brand, _product_description
+    from app.modules.rfqs.material_matching import technical_conflict
+    from app.serializers import record
+    quote=db.scalar(select(Quotation).where(Quotation.invitation_id==invitation.id).with_for_update())
+    if not quote or quote.status!='draft' or quote.submission_source!='automatic_draft':return quote
+    rfq=db.get(RFQ,invitation.rfq_id)
+    scope=set(invitation.matched_item_ids or [])
+    items={item.id:item for item in db.scalars(select(RFQItem).where(
+        RFQItem.rfq_id==rfq.id,RFQItem.is_active.is_(True),
+        RFQItem.id.in_(set(affected_ids)&scope))).all()}
+    old={line.rfq_item_id:line for line in db.scalars(select(QuoteLine).where(
+        QuoteLine.quotation_id==quote.id,QuoteLine.rfq_item_id.in_(affected_ids))).all()}
+    reasons=list(quote.review_reasons or [])
+    now=datetime.now(timezone.utc)
+    for item_id in affected_ids:
+        item=items.get(item_id);line=old.get(item_id)
+        if not item:
+            if line:db.delete(line)
+            continue
+        material=db.get(Material,item.material_id) if item.material_id else None
+        query=select(PriceBookItem).where(PriceBookItem.org_id==quote.supplier_org_id,
+            PriceBookItem.active.is_(True),PriceBookItem.price_basis==quote.price_basis,
+            or_(PriceBookItem.valid_until.is_(None),PriceBookItem.valid_until>now))
+        if material:query=query.where(PriceBookItem.material_id==material.id)
+        else:query=query.where(PriceBookItem.material_id.is_(None),
+            PriceBookItem.subcategory_id==item.subcategory_id)
+        rates=db.scalars(query.order_by(PriceBookItem.updated_at.desc())).all()
+        rate=next((candidate for candidate in rates if material or
+            normalize_text(candidate.supplier_description)==normalize_text(item.description)),None)
+        offered=(rate.offered_description or rate.supplier_description or (material.name_en if material else '')) if rate else ''
+        valid=bool(rate and rate.unit_price>0 and rate.technical_confirmed
+            and rate.valid_until and utc(rate.valid_until)>now and rate.availability=='available'
+            and (not material or (material.active and material.version==rate.material_version))
+            and (rate.stock_quantity is None or rate.stock_quantity>=item.quantity)
+            and (not rate.min_order_quantity or item.quantity>=rate.min_order_quantity)
+            and normalize_unit(item.unit)==rate.unit
+            and (not material or normalize_unit(material.unit)==rate.unit))
+        if valid and material and technical_conflict(item.description,material.name_en,item.specifications):
+            valid=False
+        if rate and valid:
+            valid=not technical_conflict('',offered,f'{item.description}\n{item.specifications or ""}')
+            required_specs=_product_description(item.specifications)
+            if required_specs and normalize_text(required_specs)!=normalize_text(_product_description(rate.offered_specs)):valid=False
+            brand=requested_brand(item)
+            if brand and brand[2] and normalize_text(rate.brand) not in brand[1]:valid=False
+            if quote.currency!=rate.currency:valid=False
+        if not valid:
+            if line:db.delete(line)
+            reasons.append(f'No valid saved rate for revised material {item.id}; supplier input required')
+            continue
+        if not line:
+            line=QuoteLine(quotation_id=quote.id,rfq_item_id=item.id)
+            db.add(line)
+        line.requested_snapshot=record(item)
+        line.quantity=item.quantity;line.unit_price=rate.unit_price
+        line.offered_description=offered;line.offered_specs=rate.offered_specs
+        line.brand=rate.brand;line.model=rate.model;line.compliance='unconfirmed'
+        line.lead_days=rate.lead_days
+        line.source_rate_id=rate.id;line.source_rate_version=rate.version
+        line.source_rate_snapshot=record(rate);line.vat_rate=rate.vat_rate
+        line.warranty_months=rate.warranty_months;line.availability=rate.availability or 'unknown'
+    quote.rfq_revision=rfq.revision;quote.review_required=True
+    quote.review_reasons=list(dict.fromkeys(reasons+[f'Review RFQ revision {rfq.revision} before submitting']))
+    db.flush()
+    return quote
+
 def submit_record(db,quote,actor,*,automatic=False):
     quote.status='submitted';quote.submitted_at=datetime.now(timezone.utc);quote.review_required=False;quote.review_reasons=[];quote.submission_source='automatic' if automatic else 'manual'
-    event=Outbox(event='quotation.submitted',payload={'rfq_id':quote.rfq_id,'quotation_id':quote.id},dedupe_key=f'quotation-submitted:{quote.id}')
+    quote.rfq_revision=rfq.revision if (rfq:=db.get(RFQ,quote.rfq_id)) else quote.rfq_revision
+    event=Outbox(event='quotation.submitted',payload={'rfq_id':quote.rfq_id,'quotation_id':quote.id,'quotation_revision':quote.revision},dedupe_key=f'quotation-submitted:{quote.id}:{quote.revision}')
     db.add(event);db.flush()
     rfq=db.get(RFQ,quote.rfq_id)
     from app.modules.notifications.procurement import queue_in_app
@@ -137,7 +207,7 @@ def prepare_authorized_quote(db,invitation_id):
     from app.modules.procurement.portal import matched_item_ids
     matched=set(matched_item_ids(db,inv))
     items=db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id,
-        RFQItem.id.in_(matched))).all() if matched else []
+        RFQItem.is_active.is_(True),RFQItem.id.in_(matched))).all() if matched else []
     lines={line.rfq_item_id:line for line in db.scalars(select(QuoteLine).where(QuoteLine.quotation_id==quote.id)).all()}
     materials={m.id:m for m in db.scalars(select(Material).where(Material.id.in_([i.material_id for i in items if i.material_id]))).all()}
     rates={r.id:r for r in db.scalars(select(PriceBookItem).where(PriceBookItem.id.in_([l.source_rate_id for l in lines.values() if l.source_rate_id]))).all()}
@@ -164,11 +234,14 @@ def prepare_authorized_quote(db,invitation_id):
     inv.status='accepted'
     if reasons:
         quote.review_reasons=list(dict.fromkeys(reasons));quote.review_required=True
-        for member in db.scalars(select(Member).where(Member.organization_id==org.id)).all():db.add(Notification(recipient_user_id=member.user_id,event='quotation.review_required',message=f'Manual quotation review required for {rfq.reference}',status='delivered'))
+        if actor and actor.is_active:
+            db.add(Notification(recipient_user_id=actor.id,event='quotation.review_required',message=f'Manual quotation review required for {rfq.reference}',status='delivered'))
         audit(db,actor,'quotation.automatic_review_required',org.id,quote.id,reasons=quote.review_reasons,policy_revision=quote.policy_revision)
+    elif policy.get('auto_submit'):
+        submit_record(db,quote,actor,automatic=True)
     else:
         quote.review_required=True
         quote.review_reasons=['Supplier approval required before quotation submission']
-        for member in db.scalars(select(Member).where(Member.organization_id==org.id)).all():
-            db.add(Notification(recipient_user_id=member.user_id,event='quotation.review_required',message=f'Quotation draft ready for approval on {rfq.reference}',status='delivered'))
+        if actor and actor.is_active:
+            db.add(Notification(recipient_user_id=actor.id,event='quotation.review_required',message=f'Quotation draft ready for approval on {rfq.reference}',status='delivered'))
     db.flush();return quote

@@ -146,8 +146,8 @@ class RateImportOut(ResponseModel):
 
 RFQOut = contract('RFQOut', models.RFQ, ('attachment_records','client_request_id'))
 RFQItemOut = contract('RFQItemOut', models.RFQItem)
-InvitationOut = contract('InvitationOut', models.Invitation, ('match_evidence',))
-MatchOut = contract('MatchOut', models.RFQMatch)
+InvitationOut = contract('InvitationOut', models.Invitation, ('match_evidence', 'rfq_revision'))
+MatchOut = contract('MatchOut', models.RFQMatch, ('rfq_revision',))
 class MatchedItemDetail(ResponseModel):
     item_id: str
     description: str
@@ -296,13 +296,34 @@ class Comparison(ResponseModel):
     method: str = ''
     currency: str = 'SAR'
 
+class TaxonomyOption(ResponseModel):
+    id: str
+    name: str
+    parent_id: str | None = None
+
+class MatchFilterOptions(ResponseModel):
+    disciplines: list[str] = Field(default_factory=list)
+    main_categories: list[TaxonomyOption] = Field(default_factory=list)
+    subcategories: list[TaxonomyOption] = Field(default_factory=list)
+
 class MatchResults(ResponseModel):
     matches: list[MatchSummary]
     invitations: list[BuyerInvitation]
     progress: Literal['draft', 'published', 'matching_queued', 'matching_in_progress', 'matching_completed', 'matching_failed', 'invitations_available', 'matches_available', 'no_eligible_suppliers', 'closed']
     matching_status: Literal['queued', 'processing', 'completed', 'failed']
+    # Buyer-safe cause when matching_status is 'failed' (codes only, no internals).
+    matching_failure_code: Literal['no_matching_job', 'matching_stalled', 'matching_error'] | None = None
+    matching_failure_reason: str | None = None
+    # Display pagination/filtering only: totals for the current view and filters.
+    page_total: int = 0
+    invitation_total: int = 0
+    invitation_limit: int = 25
+    invitation_offset: int = 0
+    sort: str = 'relevance'
+    filter_options: MatchFilterOptions = Field(default_factory=lambda: MatchFilterOptions())
     pending_invitation_ids: list[str]
     matched_suppliers: int = 0
+    total_candidates: int = 0
     invited_suppliers: int = 0
     pending_suppliers: int = 0
     suppliers_evaluated: int = 0

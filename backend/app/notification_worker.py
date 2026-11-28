@@ -96,7 +96,7 @@ def duplicate_delivery(db,event):
     address). Legacy jobs without a key fall back to the per-supplier SMS rule.
     """
     payload=event.payload;context=payload.get('context') or {};channel=payload.get('channel')
-    if payload.get('template') not in {'rfq_invitation','deadline_reminder'} or not payload.get('destination'):return None
+    if payload.get('template') not in {'rfq_invitation','deadline_reminder','rfq_revision'} or not payload.get('destination'):return None
     sent=Outbox.status.in_({'awaiting_status','processed','uncertain','processing'})
     base=[Outbox.id!=event.id,Outbox.event=='notification.delivery',sent,Outbox.provider_message_id.is_not(None),
           Outbox.payload['channel'].as_string()==channel,Outbox.payload['destination'].as_string()==payload['destination']]
@@ -474,6 +474,13 @@ def prepare_invitation_with_isolated_quote(db,event):
 
 
 def auto_prepare_quote(db,event):
+    if event.payload.get('revision'):
+        from app.modules.quotations.automation import refresh_automatic_draft
+        from app.models import Invitation
+        invitation=db.get(Invitation,event.payload['invitation_id'])
+        if invitation:
+            refresh_automatic_draft(db,invitation,event.payload.get('affected_item_ids') or [])
+        return
     from app.modules.quotations.automation import prepare_invitation_quote
     prepare_invitation_quote(db,event.payload['invitation_id'])
 
@@ -496,6 +503,99 @@ def fair_order(rows,limit,share):
     return (picked+deferred)[:limit]
 
 
+def _delivery_lane_condition(db, ch_lane: str, settings, now, budgets: dict):
+    """Build SQL condition for email/sms lane that skips rate-limited bulk rows while allowing OTPs and status polls."""
+    base = lane_filter(ch_lane)
+    if settings.mock_notifications:
+        return base
+    if ch_lane == 'email' and email_paused(now):
+        # Allow defer_paused_email to bound deferrals, or only process submitting/awaiting_status.
+        return base
+    if ch_lane not in budgets:
+        budgets[ch_lane] = send_budget(db, ch_lane, now)
+    if budgets[ch_lane] is not None and budgets[ch_lane] <= 0:
+        template_col = func.coalesce(Outbox.payload['template'].as_string(), '')
+        auth_only = and_(Outbox.event == 'notification.delivery', template_col.in_(tuple(AUTH_TEMPLATES)))
+        if ch_lane == 'sms':
+            reconcile = and_(
+                Outbox.event == 'notification.delivery',
+                or_(Outbox.status == 'awaiting_status', Outbox.provider_message_id.is_not(None)),
+            )
+            return and_(base, or_(auth_only, reconcile))
+        return and_(base, auth_only)
+    return base
+
+
+def _select_candidate_ids(db, base_eligible, limit: int, settings, now, lane: str, event_ids, budgets: dict) -> list[str]:
+    from sqlalchemy import case
+    if event_ids is not None:
+        cond = base_eligible
+        lane_cond = lane_filter(lane)
+        if lane_cond is not None:
+            cond = and_(cond, lane_cond)
+        rows = db.execute(
+            select(Outbox.id)
+            .where(cond, Outbox.id.in_(event_ids))
+            .order_by(Outbox.created_at, Outbox.id)
+            .limit(len(event_ids) or 1)
+        ).all()
+        return [r[0] for r in rows]
+
+    if lane == 'all':
+        picked: list[str] = []
+        # 1. Reserved priority for RFQ matching jobs so notifications/imports never starve matching.
+        m_rows = db.execute(
+            select(Outbox.id, Outbox.payload)
+            .where(base_eligible, lane_filter('matching'))
+            .order_by(Outbox.created_at, Outbox.id)
+            .limit(max(8, limit))
+        ).all()
+        if m_rows:
+            picked.extend(fair_order(m_rows, max(2, (limit + 1) // 2), max(1, settings.outbox_org_batch_share)))
+
+        # 2. Reserved share for automatic quotations and procurement lifecycle events.
+        if len(picked) < limit:
+            rem = limit - len(picked)
+            qe_rows = db.execute(
+                select(Outbox.id, Outbox.payload)
+                .where(base_eligible, or_(lane_filter('quotations'), lane_filter('events')))
+                .order_by(case((Outbox.event == 'quotation.auto_prepare', 0), else_=1), Outbox.created_at, Outbox.id)
+                .limit(rem * 4)
+            ).all()
+            if qe_rows:
+                picked.extend(fair_order(qe_rows, max(1, (rem + 1) // 2 if rem > 2 else rem), settings.outbox_org_batch_share))
+
+        # 3. Remaining capacity goes to budget-eligible email & SMS deliveries.
+        if len(picked) < limit:
+            rem = limit - len(picked)
+            d_cond = or_(
+                _delivery_lane_condition(db, 'email', settings, now, budgets),
+                _delivery_lane_condition(db, 'sms', settings, now, budgets),
+            )
+            d_rows = db.execute(
+                select(Outbox.id, Outbox.payload)
+                .where(base_eligible, d_cond)
+                .order_by(Outbox.created_at, Outbox.id)
+                .limit(rem * 4)
+            ).all()
+            if d_rows:
+                picked.extend(fair_order(d_rows, rem, settings.outbox_org_batch_share))
+        return list(dict.fromkeys(picked))[:limit]
+
+    if lane in {'email', 'sms'}:
+        lane_cond = _delivery_lane_condition(db, lane, settings, now, budgets)
+    else:
+        lane_cond = lane_filter(lane)
+    cond = and_(base_eligible, lane_cond) if lane_cond is not None else base_eligible
+    rows = db.execute(
+        select(Outbox.id, Outbox.payload)
+        .where(cond)
+        .order_by(Outbox.created_at, Outbox.id)
+        .limit(limit * 4)
+    ).all()
+    return fair_order(rows, limit, settings.outbox_org_batch_share)
+
+
 def process_batch(db,limit=None,now=None,event_ids=None,lane='all'):
     now=core._utc(now or datetime.now(UTC))
     settings=get_settings()
@@ -511,14 +611,11 @@ def process_batch(db,limit=None,now=None,event_ids=None,lane='all'):
                 db.rollback()
                 log.warning('Background sweep=%s failed (%s)', sweep.__name__, type(exc).__name__)
     due=or_(Outbox.next_attempt_at.is_(None),Outbox.next_attempt_at<=now)
-    eligible=or_(and_(Outbox.status.in_({'pending','retry','awaiting_status'}),due),and_(Outbox.status=='processing',or_(Outbox.lock_until.is_(None),Outbox.lock_until<=now)))
+    base_eligible=or_(and_(Outbox.status.in_({'pending','retry','awaiting_status'}),due),and_(Outbox.status=='processing',or_(Outbox.lock_until.is_(None),Outbox.lock_until<=now)))
     lane_condition=lane_filter(lane)
-    if lane_condition is not None:eligible=and_(eligible,lane_condition)
-    query=select(Outbox.id,Outbox.payload).where(eligible)
-    if event_ids is not None:query=query.where(Outbox.id.in_(event_ids))
-    rows=db.execute(query.order_by(Outbox.created_at,Outbox.id).limit(limit*4 if event_ids is None else len(event_ids) or 1)).all()
-    ids=fair_order(rows,limit if event_ids is None else len(rows),settings.outbox_org_batch_share) if event_ids is None else [r[0] for r in rows]
+    eligible=and_(base_eligible,lane_condition) if lane_condition is not None else base_eligible
     done=[];budgets={}
+    ids=_select_candidate_ids(db,base_eligible,limit,settings,now,lane,event_ids,budgets)
     poll_started=time.monotonic();budget=get_settings().outbox_poll_time_budget_seconds
     for position,event_id in enumerate(ids):
         # Unclaimed events stay queued for the next poll; nothing is skipped or lost.
@@ -564,6 +661,12 @@ def process_batch(db,limit=None,now=None,event_ids=None,lane='all'):
             elif event.event=='quotation.submitted':
                 from app.modules.notifications.procurement import quotation_notice
                 quotation_notice(db,event)
+            elif event.event=='rfq.revised':
+                from app.modules.notifications.procurement import revision_notices
+                revision_notices(db,event,now)
+            elif event.event=='rfq.revision.notice':
+                from app.modules.notifications.procurement import revision_notice
+                revision_notice(db,event)
             elif event.event in {'rfq.invitation','rfq.deadline.reminder'}:
                 prepare_invitation_with_isolated_quote(db,event)
             elif event.event=='quotation.auto_prepare':
@@ -596,10 +699,16 @@ def process_batch(db,limit=None,now=None,event_ids=None,lane='all'):
                     # Complete sanitized provider response (no addresses, IPs or tokens).
                     event.payload={**event.payload,'provider_response':detail}
                     if is_email_event(event):record_email_outcome(exc,now)
+                max_attempts = (
+                    get_settings().matching_max_attempts
+                    if event.event == 'rfq.published'
+                    else get_settings().delivery_max_attempts
+                )
                 if event.payload.get('channel')=='email' and (getattr(exc,'uncertain',False) or (event.delivery_status=='submitting' and not isinstance(exc,DeliveryError))):
                     event.status='uncertain';event.next_attempt_at=None
-                elif retryable and event.attempts<get_settings().delivery_max_attempts:
-                    delay=min(900,15*2**(event.attempts-1))
+                elif retryable and event.attempts<max_attempts:
+                    base_delay = 5 if event.event == 'rfq.published' else 15
+                    delay=min(900,base_delay*2**(event.attempts-1))
                     if detail and detail.get('failure_class')=='rate_limited':
                         delay=max(delay,get_settings().smtp_failure_pause_seconds)
                     event.status='retry';event.next_attempt_at=now+timedelta(seconds=delay)

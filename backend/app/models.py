@@ -515,6 +515,7 @@ class PriceBookItem(TimeID, Base):
     unit: Mapped[str] = mapped_column(String(30), default='')
     currency: Mapped[str] = mapped_column(String(5), default='SAR', server_default='SAR')
     availability: Mapped[str] = mapped_column(String(20), default='unknown', server_default='unknown')
+
     price_basis: Mapped[str] = mapped_column(String(30), default='supply', server_default='supply')
     active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
     offered_description: Mapped[str] = mapped_column(Text, default='', server_default='')
@@ -547,6 +548,10 @@ class RFQ(TimeID, Base):
     # Buyer-configurable quotation ranking weights; NULL means the client defaults 50/30/20.
     scoring_weights: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     delivery_address: Mapped[str] = mapped_column(String(300), default='', server_default='')
+    delivery_country: Mapped[str] = mapped_column(String(100), default='', server_default='')
+    revision: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, server_default=text('CURRENT_TIMESTAMP'))
+    updated_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
 
 class RFQItem(TimeID, Base):
     __tablename__='rfq_items'
@@ -558,15 +563,38 @@ class RFQItem(TimeID, Base):
     specifications: Mapped[str] = mapped_column(Text)
     unit: Mapped[str] = mapped_column(String(30))
     quantity: Mapped[Decimal] = mapped_column(Numeric(14,3))
+    discipline: Mapped[str] = mapped_column(String(50), default='', server_default='')
+    required_brand: Mapped[str] = mapped_column(String(150), default='', server_default='')
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
+    removed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class RFQRevision(TimeID, Base):
+    __tablename__ = 'rfq_revisions'
+    __table_args__ = (UniqueConstraint('rfq_id', 'number', name='uq_rfq_revision_number'),
+                      Index('ix_rfq_revisions_rfq_status', 'rfq_id', 'status'))
+    rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id'), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(20), default='pending')
+    created_by_user_id: Mapped[str] = mapped_column(ForeignKey('users.id'))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    before_snapshot: Mapped[dict] = mapped_column(JSON)
+    after_snapshot: Mapped[dict] = mapped_column(JSON)
+    changes: Mapped[dict] = mapped_column(JSON)
+    matching_summary: Mapped[dict] = mapped_column(JSON, default=dict)
 
 class RFQMatch(TimeID, Base):
     __tablename__='rfq_matches'
-    __table_args__=(UniqueConstraint('rfq_id','supplier_org_id',name='uq_match'),Index('ix_rfq_matches_rfq_status','rfq_id','status'),)
+    __table_args__=(
+        UniqueConstraint('rfq_id','supplier_org_id',name='uq_match'),
+        Index('ix_rfq_matches_rfq_status','rfq_id','status'),
+        Index('ix_rfq_matches_rfq_rev_supplier','rfq_id','rfq_revision','supplier_org_id'),
+    )
     rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id'), index=True)
     supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'))
     score: Mapped[int] = mapped_column(Integer)
     reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(30), default='eligible')
+    rfq_revision: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
 
 class Invitation(TimeID, Base):
     __tablename__='rfq_invitations'
@@ -575,6 +603,7 @@ class Invitation(TimeID, Base):
     supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id'), index=True)
     status: Mapped[str] = mapped_column(String(30), default='invited')
     invited_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    rfq_revision: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
     # RFQ item ids this supplier matched; the portal's default "Matched Items" view.
     matched_item_ids: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # Superseded before delivery because the supplier no longer qualifies (record kept).
@@ -599,6 +628,7 @@ class Quotation(TimeID, Base):
     vat_rate: Mapped[Decimal] = mapped_column(Numeric(5,4), default=Decimal('0.15'))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revision: Mapped[int] = mapped_column(Integer, default=1)
+    rfq_revision: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
 
     submission_source: Mapped[str] = mapped_column(String(30), default='manual', server_default='manual')
     review_required: Mapped[bool] = mapped_column(Boolean, default=True, server_default=text('true'))
@@ -611,6 +641,7 @@ class QuoteLine(TimeID, Base):
     __table_args__=(UniqueConstraint('quotation_id','rfq_item_id',name='uq_quote_item'),)
     quotation_id: Mapped[str] = mapped_column(ForeignKey('quotations.id'), index=True)
     rfq_item_id: Mapped[str] = mapped_column(ForeignKey('rfq_items.id'))
+    requested_snapshot: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     brand: Mapped[str] = mapped_column(String(150), default='')
     model: Mapped[str] = mapped_column(String(150), default='')
     offered_specs: Mapped[str] = mapped_column(Text, default='')
@@ -628,6 +659,16 @@ class QuoteLine(TimeID, Base):
     discount_percent: Mapped[Decimal] = mapped_column(Numeric(5,2), default=Decimal('0'), server_default='0')
     warranty_months: Mapped[int | None] = mapped_column(Integer, nullable=True)
     availability: Mapped[str] = mapped_column(String(20), default='unknown', server_default='unknown')
+
+class QuotationRevision(TimeID, Base):
+    __tablename__ = 'quotation_revisions'
+    __table_args__ = (UniqueConstraint('quotation_id', 'number', name='uq_quotation_revision_number'),)
+    quotation_id: Mapped[str] = mapped_column(ForeignKey('quotations.id'), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    rfq_revision: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String(30))
+    snapshot: Mapped[dict] = mapped_column(JSON)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey('users.id'), nullable=True)
 
 class Notification(TimeID, Base):
     __tablename__='notifications'
