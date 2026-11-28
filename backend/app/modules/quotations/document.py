@@ -87,6 +87,7 @@ def _shape_text(value: str, arabic: bool) -> str:
 
 def quotation_document(db, quote, lines):
     from app.modules.quotations.router import invoice
+    from app.modules.procurement.money import Line as MoneyLine, d, money
     rfq = db.get(RFQ, quote.rfq_id)
     buyer = db.get(Organization, rfq.buyer_org_id)
     supplier = db.get(Organization, quote.supplier_org_id)
@@ -111,6 +112,8 @@ def quotation_document(db, quote, lines):
         req = requested.get(line.rfq_item_id)
         original = line.requested_snapshot or {}
         line_total = (Decimal(line.quantity) * Decimal(line.unit_price)).quantize(Decimal('.01'), rounding=ROUND_HALF_UP)
+        # Same Line arithmetic as invoice(): gross line total, then the line discount.
+        priced = MoneyLine(d(line.quantity), d(line.unit_price), d(getattr(line, 'discount_percent', None)))
         doc_lines.append({
             'rfq_item_id': line.rfq_item_id,
             'description': original.get('description') or (req.description if req else line.offered_description),
@@ -126,8 +129,14 @@ def quotation_document(db, quote, lines):
             'lead_days': line.lead_days,
             'vat_rate': str(line.vat_rate if line.vat_rate is not None else quote.vat_rate),
             'compliance': line.compliance,
+            'discount_percent': str(d(getattr(line, 'discount_percent', None))),
+            'discount_amount': str(priced.discount),
+            'net_total': str(priced.net),
         })
 
+    # Net before VAT is derived from the authoritative totals, never re-priced here.
+    totals = {**totals, 'discount': totals.get('discount', '0.00'), 'delivery_charge': totals.get('delivery_charge', '0.00'),
+              'net_amount': str(money(d(totals['total']) - d(totals['vat'])))}
     return {
         'template_key': terms.get('template_key', 'standard_v1'),
         'supplier': company(supplier),

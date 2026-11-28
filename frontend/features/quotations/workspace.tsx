@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import { FileUpload } from '@/components/ui/file-upload';
 import { useSession } from '@/features/auth/session';
 import { GroupedRfqMaterials, RfqExportActions, groupRfqItems } from '@/features/rfqs/grouped-rfq-materials';
+import { BuyerQuotationReview } from './buyer-review';
 
 function InvitationGroupedPreview({ rfqId, categories }: { rfqId: string; categories: Schemas['CategoryOut'][] }) {
  const { t } = useLocale();
@@ -143,7 +144,11 @@ function QuotationDocumentPreview({ quoteId, documentData }: { quoteId: string; 
  </section>;
 }
 
+/** Buyers and admins review a submitted quotation read-only; suppliers keep the editor. */
 export function QuoteEditor({id,role}:{id:string;role:string}){
+ return role==='supplier'?<SupplierQuoteEditor id={id} role={role}/>:<BuyerQuotationReview id={id} role={role}/>;
+}
+function SupplierQuoteEditor({id,role}:{id:string;role:string}){
  const {t,arabic}=useLocale();
  const q=useApi<Schemas['QuoteDetail']>(`quotations/${id}`);const rfq=useApi<Schemas['RFQDetail']>(q.data?`rfqs/${q.data.quotation.rfq_id}`:null);
  const quoteHistory=useApi<{id:string;number:number;rfq_revision:number;status:string;created_at:string;snapshot:Record<string,unknown>}[]>(`quotations/${id}/revisions`);

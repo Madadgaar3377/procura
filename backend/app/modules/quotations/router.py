@@ -2,7 +2,8 @@ from app.search import ListSearch
 from app.response_contracts import QuotationSummary, Comparison, QuoteDetail
 from datetime import datetime,timezone
 from decimal import Decimal,ROUND_HALF_UP
-from fastapi import APIRouter,Depends,File,HTTPException,Query,Request,UploadFile
+from fastapi import APIRouter,Body,Depends,File,HTTPException,Query,Request,UploadFile
+from pydantic import BaseModel,Field
 from sqlalchemy.orm import Session
 from sqlalchemy import func,select
 from app.database import get_db
@@ -14,6 +15,11 @@ from app.serializers import record
 router=APIRouter(prefix='/quotations',tags=['Supplier Quotations & Buyer Comparison'])
 
 SUBMITTED_STATUSES = {'submitted', 'shortlisted', 'awarded', 'rejected'}
+
+
+class DecisionIn(BaseModel):
+    """Optional buyer note recorded on the audit trail (used for rejection reasons)."""
+    reason:str|None=Field(None,max_length=500)
 
 def snapshot(db,quote,lines=None):
     if lines is None:
@@ -250,7 +256,7 @@ def comparison(rfq_id:str,price_weight:int|None=Query(None,ge=0,le=100),delivery
 
 
 @router.post('/{quotation_id}/decision/{decision}',response_model=QuoteDetail)
-def decide(quotation_id:str,decision:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
+def decide(quotation_id:str,decision:str,payload:DecisionIn|None=Body(None),user:User=Depends(current_user),db:Session=Depends(get_db)):
     from app.modules.notifications.service import enqueue_org_notice
     from app.config import get_settings
     if decision not in {'shortlisted','awarded','rejected'}:raise HTTPException(422,'Choose shortlisted, awarded or rejected')
@@ -272,7 +278,10 @@ def decide(quotation_id:str,decision:str,user:User=Depends(current_user),db:Sess
             Quotation.rfq_id==rfq.id,Quotation.status=='awarded',Quotation.id!=quote.id)))
         if mine & taken:raise HTTPException(409,'An award already exists for this RFQ')
     before=quote.status;quote.status=decision
-    audit(db,user,'quotation.'+decision,rfq.buyer_org_id,quote.id,before=before,after=decision)
+    reason=(payload.reason or '').strip() if payload else ''
+    details={'before':before,'after':decision}
+    if reason and decision=='rejected':details['reason']=reason
+    audit(db,user,'quotation.'+decision,rfq.buyer_org_id,quote.id,**details)
     template='quotation_'+decision
     enqueue_org_notice(db,org_id=quote.supplier_org_id,template=template,
         context={'reference':rfq.reference,'title':rfq.title,'org_id':quote.supplier_org_id,
@@ -292,9 +301,14 @@ def decide(quotation_id:str,decision:str,user:User=Depends(current_user),db:Sess
 def decision_history(quotation_id:str,user:User=Depends(current_user),db:Session=Depends(get_db)):
     from app.models import AuditEvent
     get_quote(quotation_id,user,db)
-    return [{'action':event.action,'created_at':event.created_at,'details':event.metadata_json}
+    # Submission, revision and buyer decisions only; metadata is whitelisted so
+    # internal identifiers (sessions, policies, actors) never reach the other party.
+    actions={'quotation.submitted','quotation.revision_started','quotation.shortlisted','quotation.awarded','quotation.rejected'}
+    safe={'before','after','reason','source','revision','rfq_revision'}
+    return [{'action':event.action,'created_at':event.created_at,
+             'details':{key:value for key,value in (event.metadata_json or {}).items() if key in safe}}
             for event in db.scalars(select(AuditEvent).where(AuditEvent.entity_id==quotation_id,
-            AuditEvent.action.in_({'quotation.shortlisted','quotation.awarded','quotation.rejected'})).order_by(AuditEvent.created_at,AuditEvent.id)).all()]
+            AuditEvent.action.in_(actions)).order_by(AuditEvent.created_at,AuditEvent.id)).all()]
 
 
 @router.post('/{quotation_id}/attachments')
