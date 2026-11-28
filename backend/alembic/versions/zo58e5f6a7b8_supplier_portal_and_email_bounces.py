@@ -18,6 +18,11 @@ depends_on = None
 
 
 def upgrade():
+    # Alembic uses its own connection, so the app engine's lock timeout does not apply.
+    # Fail promptly rather than queue an ACCESS EXCLUSIVE table lock indefinitely.
+    if op.get_bind().dialect.name == 'postgresql':
+        op.execute("SET LOCAL lock_timeout = '5s'")
+
     op.add_column('rfq_invitations', sa.Column('match_evidence', sa.JSON(), nullable=True))
 
     op.add_column('outbox_events', sa.Column('submitted_at', sa.DateTime(timezone=True), nullable=True))
