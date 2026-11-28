@@ -33967,6 +33967,17 @@
       },
       "RFQImportConfirmedLine": {
         "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
           "material_id": {
             "anyOf": [
               {
@@ -34572,6 +34583,17 @@
       },
       "RFQLineIn": {
         "properties": {
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
           "material_id": {
             "anyOf": [
               {

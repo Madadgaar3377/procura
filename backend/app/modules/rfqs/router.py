@@ -143,7 +143,7 @@ def create(payload:RFQIn,user:User=Depends(current_user),db:Session=Depends(get_
     rfq=RFQ(reference='RFQ-'+__import__('uuid').uuid4().hex[:12].upper(),buyer_org_id=org.id,client_request_id=payload.client_request_id,title=payload.title,city=payload.city,response_deadline=payload.response_deadline,required_qualifications=payload.required_qualifications,project_name=payload.project_name,required_delivery_date=payload.required_delivery_date,additional_instructions=payload.additional_instructions,delivery_address=payload.delivery_address)
     try:
         db.add(rfq);db.flush()
-        for entry in lines:db.add(RFQItem(rfq_id=rfq.id,**entry))
+        for entry in lines:db.add(RFQItem(rfq_id=rfq.id,**{key:value for key,value in entry.items() if key!='id'}))
         audit(db,user,'rfq.created',org.id,rfq.id);db.commit()
     except IntegrityError:
         db.rollback()
@@ -254,9 +254,17 @@ def update_draft(rfq_id:str,payload:RFQIn,user:User=Depends(current_user),db:Ses
     if payload.buyer_org_id!=rfq.buyer_org_id:raise HTTPException(422,'Cannot change RFQ organization')
     if payload.response_deadline.astimezone(UTC)<=datetime.now(UTC):raise HTTPException(422,'Deadline must be in the future')
     lines=prepare_lines(db,payload.items)
-    for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all():db.delete(item)
-    db.flush()
-    for line in lines:db.add(RFQItem(rfq_id=rfq.id,**line))
+    existing={item.id:item for item in db.scalars(select(RFQItem).where(RFQItem.rfq_id==rfq.id)).all()}
+    submitted=[line['id'] for line in lines if line.get('id')]
+    if len(submitted)!=len(set(submitted)) or any(item_id not in existing for item_id in submitted):
+        raise HTTPException(422,'An RFQ material ID does not belong to this draft')
+    for line in lines:
+        item_id=line.pop('id',None)
+        if item_id:
+            item=existing.pop(item_id)
+            for field,value in line.items():setattr(item,field,value)
+        else:db.add(RFQItem(rfq_id=rfq.id,**line))
+    for item in existing.values():db.delete(item)
     rfq.title=payload.title;rfq.city=payload.city;rfq.response_deadline=payload.response_deadline
     rfq.required_qualifications=payload.required_qualifications
     rfq.project_name=payload.project_name;rfq.required_delivery_date=payload.required_delivery_date

@@ -67,6 +67,48 @@ def test_form_blank_values_create_rfq_with_201(env):
     assert listed.status_code == 200 and body['rfq']['id'] in {r['id'] for r in listed.json()}
 
 
+def test_edit_draft_preserves_material_ids_and_saved_fields(env):
+    e = env; seed_disciplines(e)
+    created = e.client.post('/api/v1/rfqs', json=rfq([
+        line(description='Ready mix concrete C40', specifications='Pump delivery\nBrand approved', quantity='12.500'),
+        line(material_id='cable-1', main_category_id='el', subcategory_id='el-sub',
+             description='XLPE Cable 4x16mm', unit='M', quantity='8'),
+    ]))
+    assert created.status_code == 201, created.text
+    rfq_id = created.json()['rfq']['id']
+    original = created.json()['items']
+    updated = e.client.put(f'/api/v1/rfqs/{rfq_id}', json=rfq([
+        line(id=original[0]['id'], main_category_id='me', subcategory_id='me-sub',
+             description='Custom gate valve assembly', specifications='Pressure 16 bar\nBrand: approved',
+             unit='NO.', quantity='2.375'),
+        line(description='Ready mix concrete C40', specifications='New line', quantity='1.250'),
+    ]))
+    assert updated.status_code == 200, updated.text
+    reopened = e.client.get(f'/api/v1/rfqs/{rfq_id}')
+    assert reopened.status_code == 200, reopened.text
+    rows = reopened.json()['items']
+    assert len(rows) == 2
+    kept = next(row for row in rows if row['id'] == original[0]['id'])
+    assert (kept['main_category_id'], kept['subcategory_id'], kept['unit'], kept['quantity']) == ('me', 'me-sub', 'NO.', '2.375')
+    assert kept['description'] == 'Custom gate valve assembly'
+    assert kept['specifications'] == 'Pressure 16 bar\nBrand: approved'
+    assert original[1]['id'] not in {row['id'] for row in rows}
+    assert any(row['specifications'] == 'New line' for row in rows)
+
+
+def test_edit_draft_rejects_foreign_material_id(env):
+    e = env; seed_disciplines(e)
+    first = e.client.post('/api/v1/rfqs', json=rfq([line()])).json()
+    second = e.client.post('/api/v1/rfqs', json=rfq([line()])).json()
+    rfq_id = first['rfq']['id']
+    response = e.client.put(f'/api/v1/rfqs/{rfq_id}', json=rfq([
+        line(id=second['items'][0]['id'], description='Unauthorized row change'),
+    ]))
+    assert response.status_code == 422
+    reopened = e.client.get(f'/api/v1/rfqs/{rfq_id}').json()
+    assert reopened['items'][0]['id'] == first['items'][0]['id']
+
+
 def test_single_and_multi_discipline_rfqs_persist_and_match(env):
     e = env; seed_disciplines(e)
     single = e.client.post('/api/v1/rfqs', json=rfq([line(material_id='cable-1', main_category_id='el', subcategory_id='el-sub',

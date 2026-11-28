@@ -528,6 +528,7 @@ class RateImportMapping(Model):
     material_id:str
 
 class RFQLineIn(Model):
+    id:str|None=None
     material_id:str|None=None
     main_category_id:str|None=None
     subcategory_id:str|None=None
@@ -536,7 +537,7 @@ class RFQLineIn(Model):
     unit:str=Field(min_length=1,max_length=30)
     quantity:Decimal=Field(gt=0,max_digits=14,decimal_places=3)
 
-    @field_validator('material_id','main_category_id','subcategory_id',mode='before')
+    @field_validator('id','material_id','main_category_id','subcategory_id',mode='before')
     @classmethod
     def blank_reference_is_unset(cls,value):
         # HTML selects and cleared Material Master picks submit "" for "none".
