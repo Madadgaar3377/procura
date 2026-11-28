@@ -88,6 +88,7 @@ export interface Schemas {
   "DashboardStatus": { "status": string; "count": number };
   "DatabaseConnectStatus": { "connected": boolean; "status": "connected" | "disconnected"; "message": string; "error"?: string | null; "checked_at": string };
   "Decision": { "approve": boolean; "notes": string; "assigned_role"?: "owner" | "manager" | "supplier" | "viewer" | null };
+  "DecisionIn": { "reason"?: string | null };
   "DeclineIn": { "reason"?: string };
   "DeliveryFeedback": { "outcome": string; "evidence": string };
   "DeliveryIn": { "delivery_date"?: string | null; "vehicle_no"?: string; "driver_name"?: string; "carrier"?: string; "remarks"?: string; "dispatch"?: boolean; "lines": Array<Schemas["DeliveryLineIn"]> };
@@ -523,7 +524,7 @@ export interface Operations {
   "GET /api/v1/quotations/{quotation_id}/revisions": { body: never; response: unknown };
   "POST /api/v1/quotations/{quotation_id}/revise": { body: never; response: unknown };
   "GET /api/v1/quotations/rfqs/{rfq_id}/comparison": { body: never; response: Schemas["Comparison"] };
-  "POST /api/v1/quotations/{quotation_id}/decision/{decision}": { body: never; response: Schemas["QuoteDetail"] };
+  "POST /api/v1/quotations/{quotation_id}/decision/{decision}": { body: Schemas["DecisionIn"] | null; response: Schemas["QuoteDetail"] };
   "GET /api/v1/quotations/{quotation_id}/history": { body: never; response: unknown };
   "POST /api/v1/quotations/{quotation_id}/attachments": { body: never; response: unknown };
   "GET /api/v1/quotations/{quotation_id}/attachments/{attachment_id}": { body: never; response: unknown };
