@@ -82,34 +82,43 @@ pg_dump --format=custom --file=/var/backups/procura-$(date +%F-%H%M).dump "$DATA
 # 1. Code
 cd /var/www/procura && git pull
 
-# 2. Backend
+# 2. Maintenance window: identify and stop the API and every database worker
+# before DDL. Remove unit names below that are not installed on this VPS.
+systemctl list-units --all --type=service 'procura*'
+sudo systemctl stop procura-backend.service procura-import-worker.service \
+  procura-worker@matching.service procura-worker@email.service \
+  procura-worker@sms.service procura-worker@quotations.service \
+  procura-worker@events.service procura-bounce-worker.service
+
+# 3. Backend: confirm no transaction holds rfq_invitations before upgrading.
 cd backend
 /var/www/procura/venv/bin/pip install -r requirements.txt
+/var/www/procura/venv/bin/python scripts/diagnose_portal_migration.py
 /var/www/procura/venv/bin/python -m alembic upgrade head      # zo58e5f6a7b8
 /var/www/procura/venv/bin/python -m alembic current
 
-# 3. Configuration (.env): review the new optional keys in .env.example.
+# 4. Configuration (.env): review the new optional keys in .env.example.
 #    Set EMAIL_SEND_LIMIT_PER_MINUTE / _PER_HOUR to the provider's real limits.
 #    Make sure SMTP_REPLY_TO is set in production.
 
-# 4. Frontend (NEXT_PUBLIC_API_URL must be your deployed API URL)
+# 5. Frontend (NEXT_PUBLIC_API_URL must be your deployed API URL)
 cd ../frontend && npm ci && npm run build
 
-# 5. Restart
-sudo systemctl restart procura-backend procura-frontend
-sudo systemctl restart 'procura-worker@*'      # or procura-import-worker if lanes are not installed
+# 6. Start the API and only the worker units that were running before maintenance.
+sudo systemctl start procura-backend.service procura-frontend.service
+# Start each installed worker unit from step 2 after the migration succeeds.
 
-# 6. Nginx: confirm no rewrite sends /supplier-portal elsewhere; add the
+# 7. Nginx: confirm no rewrite sends /supplier-portal elsewhere; add the
 #    `location = /supplier-portal` block from docs/nginx-procumaterial.conf.example
 sudo nginx -t && sudo systemctl reload nginx
 
-# 7. Verify (read-only)
+# 8. Verify (read-only)
 curl -sI https://procumaterial.com/supplier-portal | grep -i cache-control   # private, no-store
 cd /var/www/procura/backend
 /var/www/procura/venv/bin/python scripts/diagnose_delivery.py --check-providers --check-dns
 /var/www/procura/venv/bin/python scripts/diagnose_delivery.py --recent-email-failures 20
 
-# 8. Optional, after creating a dedicated bounce mailbox and confirming Spacemail accepts it
+# 9. Optional, after creating a dedicated bounce mailbox and confirming Spacemail accepts it
 #    as envelope sender: set SMTP_ENVELOPE_FROM and BOUNCE_IMAP_*, then
 sudo cp deploy/systemd/procura-bounce-worker.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now procura-bounce-worker
