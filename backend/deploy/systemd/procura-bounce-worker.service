@@ -1,0 +1,26 @@
+# Procumaterial return-path bounce processor (IMAPS). Optional: enable only after
+# BOUNCE_IMAP_* points at a DEDICATED bounce mailbox (not the business inbox) and
+# SMTP_ENVELOPE_FROM is set to that address and accepted by the SMTP provider.
+# Install: copy to /etc/systemd/system/, adjust User/paths to match procura-backend.service,
+# then: systemctl daemon-reload && systemctl enable --now procura-bounce-worker
+[Unit]
+Description=Procumaterial email bounce processor
+After=network-online.target procura-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/var/www/procura/backend
+EnvironmentFile=/var/www/procura/backend/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/var/www/procura/venv/bin/python3 -m app.bounce_worker --interval 120
+Restart=on-failure
+RestartSec=30
+# 2 = bounce processing not configured; do not restart-loop.
+RestartPreventExitStatus=2
+TimeoutStopSec=60
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

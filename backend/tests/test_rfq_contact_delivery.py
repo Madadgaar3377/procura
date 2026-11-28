@@ -24,7 +24,7 @@ def flow(monkeypatch):
     settings=get_settings().model_copy(update={'mock_notifications':False})
     monkeypatch.setattr(worker,'get_settings',lambda:settings)
     calls=[]
-    monkeypatch.setattr(worker,'send_email',lambda address,*args: calls.append(('email',address)) or '<smtp-id>')
+    monkeypatch.setattr(worker,'send_email',lambda address,*args,**kwargs: calls.append(('email',address)) or '<smtp-id>')
     monkeypatch.setattr(worker,'send_sms',lambda phone,*args,**kwargs: calls.append(('sms',phone)) or {'id':'sms-id','state':'Pending','http_status':202})
     monkeypatch.setattr(worker,'get_sms_status',lambda key: {'id':key,'state':'Delivered','lookup':True,'http_status':200})
     with sessions() as db:
@@ -178,7 +178,7 @@ def test_admin_restriction_and_feedback_authorization(flow):
 
 def test_smtp_unknown_outcome_never_automatically_resubmits(flow,monkeypatch):
     _,sessions,ids,publish,process,calls=flow
-    def timeout(*args):raise delivery_error('SMTP DATA timed out',uncertain=True)
+    def timeout(*args,**kwargs):raise delivery_error('SMTP DATA timed out',uncertain=True)
     monkeypatch.setattr(worker,'send_email',timeout)
     publish();process()
     with sessions() as db:

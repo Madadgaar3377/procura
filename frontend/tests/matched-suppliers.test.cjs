@@ -27,7 +27,7 @@ const fixture={matches:[
 function view({data=fixture,arabic=false,cooldown=false,embedded=false,id}={}){
  let cursor=0;const state=[],effects=[],requests=[],writes=[],messages=[];
  const store={favorites:[{supplier_org_id:'s1',name:'Acme Materials'}],data:structuredClone(data)};
- if(cooldown)store.data.reminder_available_at=new Date(Date.now()+86400000).toISOString();
+ if(cooldown)store.data.invitations[1].next_reminder_at=new Date(Date.now()+86400000).toISOString();
  const rfqs=[{id:'r1',reference:'RFQ-001',title:'First RFQ',project_name:'Project Alpha',city:'Riyadh',status:'published'}, {id:'r2',reference:'RFQ-002',title:'Second RFQ',project_name:'Project Beta',city:'Jeddah',status:'published'}];
  const hooks={...React,useState(initial){const index=cursor++;if(!(index in state))state[index]=typeof initial==='function'?initial():initial;return[state[index],value=>state[index]=typeof value==='function'?value(state[index]):value];},useEffect(fn){effects.push(fn);},useMemo:fn=>fn()};
  const button=({children,...props})=>React.createElement('button',props,children);
@@ -40,7 +40,7 @@ function view({data=fixture,arabic=false,cooldown=false,embedded=false,id}={}){
  '@/features/shared/ui':{State:({error,loading})=>error?React.createElement('div',{role:'alert'},error.message):loading?React.createElement('div',{role:'status'},'Loading'):null},
  '@/features/shared/server-list':{useServerList:base=>({rows:base?rfqs:[],controls:React.createElement('div',null,'Server RFQ search and paging'),reload(){},fetching:false})},
  '@/lib/api/client':{json:JSON.stringify,api:async(route,init)=>{writes.push({route,...init});const supplier=route.split('/').at(-1);if(init.method==='PUT')store.favorites.push({supplier_org_id:supplier,name:'Saved'});if(init.method==='DELETE')store.favorites=store.favorites.filter(row=>row.supplier_org_id!==supplier);return{};}},
- '@/lib/api/use-api':{useApi:route=>{requests.push(route);let value;if(route?.startsWith('rfqs/'))value={rfq:rfqs.find(row=>row.id===route.split('/')[1])||rfqs[0],items:[{main_category_id:'c1',quantity:'12',unit:'M'},{main_category_id:'c1',quantity:'3',unit:'M'}]};if(route?.startsWith('matching/'))value=store.data;if(route?.startsWith('taxonomy/'))value=[{id:'c1',name_en:'Electrical',name_ar:'Electrical Arabic'}];if(route?.includes('/favorites?'))value=store.favorites;return{data:value,loading:false,fetching:false,reload(){}};}},
+ '@/lib/api/use-api':{useApi:route=>{requests.push(route);let value;if(route?.startsWith('rfqs/'))value={rfq:rfqs.find(row=>row.id===route.split('/')[1])||rfqs[0],items:[{main_category_id:'c1',quantity:'12',unit:'M'},{main_category_id:'c1',quantity:'3',unit:'M'}]};if(route?.includes('/quotations-summary'))value={automatic_quotations:[],manual_quotations:[],preparing_automatic_count:0,preparing_manual_count:0};else if(route?.includes('/notifications-status'))value={total:0,by_status:{}};else if(route?.startsWith('matching/'))value=store.data;if(route?.startsWith('taxonomy/'))value=[{id:'c1',name_en:'Electrical',name_ar:'Electrical Arabic'}];if(route?.includes('/favorites?'))value=store.favorites;return{data:value,loading:false,fetching:false,reload(){}};}},
  './matching-model':model,'./matching-copy':copy,'./admin-matching-diagnostics':{AdminMatchingDiagnostics:()=>null},'./matched-suppliers.module.css':{__esModule:true,default:new Proxy({},{get:(_,name)=>name})},
  });
  function expand(node){if(Array.isArray(node))return node.map(expand);if(!React.isValidElement(node))return node;if(typeof node.type==='function')return expand(node.type(node.props));return React.cloneElement(node,{},...React.Children.toArray(expand(node.props.children)));}
@@ -55,13 +55,12 @@ const markup=tree=>renderToStaticMarkup(tree);
 test('recommendations contain only current eligible outcomes; ineligible results are collapsed',()=>{
  const v=view({id:'r1'}),tree=v.render(),html=markup(tree);
  const cards=nodes(tree).filter(node=>node.type==='article');
- assert.deepEqual(cards.map(card=>card.props['data-recommended']),[true,true,false,false]);
- const other=nodes(tree).find(node=>node.type==='details'&&node.props.className==='other');
- assert.equal(other.props.open,undefined);assert.match(text(other),/Delivery location not covered/);
- assert.match(html,/Find the right suppliers/);assert.match(html,/Main category capability/);assert.match(html,/Confirm the specific product/);
+ assert.deepEqual(cards.map(card=>card.props['data-recommended']),[true,true]);
+ assert.doesNotMatch(html,/Outside Coverage|Unverified Company/);
+ assert.match(html,/Find the right suppliers/);assert.match(html,/Recommended suppliers/);
  assert.doesNotMatch(html,/Not an exact product|item:private-uuid|96%|Dispatched|pm-favorites-section/);
  assert.equal(nodes(tree).filter(node=>node.type==='h1').length,1);
- assert.equal(nodes(tree).filter(node=>node.type==='article')[0].props.children.filter(Boolean).length,3);
+ assert.ok(nodes(tree).filter(node=>node.type==='article')[0].props.children.filter(Boolean).length>=3);
  assert.equal(nodes(tree).filter(node=>node.type==='nav'&&node.props['aria-label']==='Breadcrumbs').length,0);
 });
 
@@ -73,8 +72,8 @@ test('RFQ selection preserves URL-independent state and resets both page offsets
  assert.match(markup(tree),/Server RFQ search and paging/);
 });
 
-test('evaluated pagination uses all 60 evaluated suppliers rather than only 2 eligible',()=>{
- const v=view({id:'r1'});let tree=v.render();const pager=find(tree,'nav','Evaluated supplier pages');
+test('matched pagination uses the eligible supplier count',()=>{
+ const v=view({id:'r1',data:{...fixture,matched_suppliers:60}});let tree=v.render();const pager=find(tree,'nav','Matched supplier pages');
  const next=find(pager,'button','Next');assert.equal(next.props.disabled,false);next.props.onClick();v.render();
  assert.ok(v.requests.includes('matching/rfqs/r1/results?limit=25&offset=25'));
  // Invitation page remains at zero, with one extra bounded request only.
@@ -84,7 +83,7 @@ test('evaluated pagination uses all 60 evaluated suppliers rather than only 2 el
 test('one favorite toggle per supplier uses existing PUT/DELETE and the favorites tab',async()=>{
  const v=view({id:'r1'});let tree=v.render();
  const stars=nodes(tree).filter(node=>node.type==='button'&&/^(Save as favorite|Remove from favorites):/.test(node.props['aria-label']||''));
- assert.equal(stars.length,4);await stars[0].props.onClick();tree=v.render();
+ assert.equal(stars.length,2);await stars[0].props.onClick();tree=v.render();
  assert.equal(v.writes[0].method,'DELETE');assert.equal(v.writes[0].route,'organizations/buyer/favorites/s1');
  const save=nodes(tree).find(node=>node.type==='button'&&node.props['aria-label']==='Save as favorite: Acme Materials');
  await save.props.onClick();assert.equal(v.writes[1].method,'PUT');

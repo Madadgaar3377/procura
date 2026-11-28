@@ -583,6 +583,9 @@ class Invitation(TimeID, Base):
     # Manual buyer reminders: per-supplier cooldown and history count.
     last_reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reminder_count: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    # Persisted per-line match evidence ({item_id: {material_ids, category_ids}}) written by
+    # the matching job, so recipient routing never re-runs supplier matching.
+    match_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 class Quotation(TimeID, Base):
     __tablename__='quotations'
@@ -644,6 +647,35 @@ class DeliveryRestriction(TimeID, Base):
     destination: Mapped[str] = mapped_column(String(220))
     reason: Mapped[str] = mapped_column(String(30))
     detail: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Bounce bookkeeping. A cleared restriction (admin corrected/revalidated the address)
+    # is kept for history and no longer blocks delivery.
+    bounce_count: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    last_event_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cleared_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cleared_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class EmailDeliveryEvent(TimeID, Base):
+    """Provider delivery feedback (DSN bounce, webhook delivery/bounce, admin evidence).
+
+    ``external_id`` is the provider event id or a digest of the bounce report, unique
+    per source, so the same report processed twice is applied once.
+    """
+    __tablename__ = 'email_delivery_events'
+    __table_args__ = (
+        UniqueConstraint('source', 'external_id', name='uq_email_delivery_event_source'),
+        Index('ix_email_delivery_events_outbox', 'outbox_id'),
+        Index('ix_email_delivery_events_destination', 'destination_hash'),
+    )
+    source: Mapped[str] = mapped_column(String(20))
+    external_id: Mapped[str] = mapped_column(String(128))
+    outbox_id: Mapped[str | None] = mapped_column(ForeignKey('outbox_events.id', ondelete='SET NULL'), nullable=True)
+    provider_message_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    event_type: Mapped[str] = mapped_column(String(30))
+    destination_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    diagnostic: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    applied: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
 
 class Outbox(TimeID, Base):
@@ -651,6 +683,7 @@ class Outbox(TimeID, Base):
     __table_args__=(
         Index('uq_outbox_dedupe_key','dedupe_key',unique=True),
         Index('ix_outbox_status_next_attempt','status','next_attempt_at'),
+        Index('ix_outbox_event_submitted_at','event','submitted_at'),
     )
     event: Mapped[str] = mapped_column(String(100))
     payload: Mapped[dict] = mapped_column(JSON)
@@ -664,6 +697,8 @@ class Outbox(TimeID, Base):
     delivery_status: Mapped[str | None] = mapped_column(String(40), nullable=True)
     status_checks: Mapped[int] = mapped_column(Integer, default=0, server_default=text('0'))
     secret_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When the message was handed to the provider (provider sending-limit accounting).
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 class MembershipPlan(TimeID, Base):
     __tablename__='membership_plans'
@@ -975,3 +1010,29 @@ Index('ix_dashboard_verification_org_status', Verification.org_id, Verification.
 Index('ix_dashboard_import_created', ImportBatch.created_at)
 Index('ix_dashboard_outbox_event_status', Outbox.event, Outbox.status)
 Index('ix_outbox_provider_message_id', Outbox.provider_message_id, postgresql_where=text('provider_message_id IS NOT NULL'), sqlite_where=text('provider_message_id IS NOT NULL'))
+
+
+class SupplierPortalSession(TimeID, Base):
+    """Restricted session exchanged for one invitation magic link.
+
+    It authorizes only the invitation, RFQ and supplier organization of the link it
+    was exchanged from. Only a SHA-256 hash of the session secret is stored; the secret
+    lives in an HttpOnly cookie. ``verified_at`` records recipient verification (a
+    one-time code sent to the destination the link was delivered to), required before
+    a binding quotation is submitted.
+    """
+    __tablename__ = 'supplier_portal_sessions'
+    __table_args__ = (Index('ix_supplier_portal_sessions_invitation', 'invitation_id', 'revoked_at'),)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    access_token_id: Mapped[str] = mapped_column(ForeignKey('supplier_access_tokens.id', ondelete='CASCADE'), index=True)
+    invitation_id: Mapped[str] = mapped_column(ForeignKey('rfq_invitations.id', ondelete='CASCADE'))
+    rfq_id: Mapped[str] = mapped_column(ForeignKey('rfqs.id', ondelete='CASCADE'))
+    supplier_org_id: Mapped[str] = mapped_column(ForeignKey('organizations.id', ondelete='CASCADE'))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    verification_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    verification_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default='0')
+    verification_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

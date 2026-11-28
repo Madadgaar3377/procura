@@ -146,7 +146,7 @@ class RateImportOut(ResponseModel):
 
 RFQOut = contract('RFQOut', models.RFQ, ('attachment_records','client_request_id'))
 RFQItemOut = contract('RFQItemOut', models.RFQItem)
-InvitationOut = contract('InvitationOut', models.Invitation)
+InvitationOut = contract('InvitationOut', models.Invitation, ('match_evidence',))
 MatchOut = contract('MatchOut', models.RFQMatch)
 class MatchedItemDetail(ResponseModel):
     item_id: str
@@ -169,6 +169,9 @@ class MatchSummary(MatchOut):
     matched_categories: list[str] = Field(default_factory=list)
     invitation_status: str | None = None
     quotation_status: str | None = None
+    # Actual delivery per channel (None when no invitation is recorded).
+    email_status: str | None = None
+    sms_status: str | None = None
     profile_url: str | None = None
     match_levels: list[str] = Field(default_factory=list)
     brand_requirement_status: str = 'unverified'
@@ -275,6 +278,15 @@ class BuyerInvitation(InvitationOut):
     quotation_status: str | None = None
     reminder_eligible: bool = False
     next_reminder_at: str | None = None
+    # A recorded invitation is not a delivery: each channel reports its actual outcome
+    # (not_queued, queued, sending, retry_scheduled, accepted, sent, delivered, failed,
+    # hard_bounced, soft_bounced, suppressed, skipped, uncertain, simulated).
+    invitation_recorded: bool = True
+    email_status: str = 'not_queued'
+    email_reason: str | None = None
+    sms_status: str = 'not_queued'
+    sms_reason: str | None = None
+    supplier_response: str | None = None
 
 class Comparison(ResponseModel):
     rfq_id: str

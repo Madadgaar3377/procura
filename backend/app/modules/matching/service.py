@@ -1026,6 +1026,11 @@ def _match_batch(
         else:
             db.add(RFQMatch(rfq_id=rfq.id, supplier_org_id=org_id, score=0, reasons=reasons, status=entry['status']))
 
+    def invited_evidence(candidate: dict) -> dict:
+        # Recipient routing reads this instead of re-running matching per notification.
+        return {iid: {'material_ids': sorted(e['materials']), 'category_ids': sorted({cap.category_id for cap in e['caps']})}
+                for iid, e in candidate['items'].items()}
+
     def invited_items(candidate: dict) -> list[str]:
         # Only qualifying lines are the supplier's quotation scope.
         return sorted(candidate['items'])
@@ -1048,13 +1053,16 @@ def _match_batch(
             candidate = eligible.get(old.supplier_org_id)
             if candidate and old.status in {'invited', 'accepted'}:
                 old.matched_item_ids = invited_items(candidate)
+                old.match_evidence = invited_evidence(candidate)
             elif candidate and old.status == 'cancelled':
                 # Qualifies again after a correction: the never-delivered invitation is reinstated.
                 old.status, old.cancelled_at, old.cancellation_reason = 'invited', None, None
                 old.matched_item_ids = invited_items(candidate)
+                old.match_evidence = invited_evidence(candidate)
                 reinstated.append(old)
     invitations = [Invitation(rfq_id=rfq.id, supplier_org_id=c['org'].id, status='invited',
-                              matched_item_ids=invited_items(c)) for c in invitable if c['org'].id not in invited]
+                              matched_item_ids=invited_items(c), match_evidence=invited_evidence(c))
+                   for c in invitable if c['org'].id not in invited]
     db.add_all(invitations)
     if invitations:
         db.flush()

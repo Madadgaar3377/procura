@@ -8,6 +8,7 @@ from app.database import Base, get_db
 from app.models import AuditEvent, Capability, Category, Contact, Material, Organization, User, Verification
 from app.modules.organizations.router import router
 from app.security import admin_user, current_user
+from app.modules.capabilities.public_details import published_details
 
 
 def setup_client():
@@ -38,6 +39,34 @@ def set_actor(app,sessions,user_id):
     with sessions() as db:
         actor=db.get(User,user_id)
         app.dependency_overrides[current_user]=lambda:actor
+
+
+def test_admin_public_business_contacts_require_admin_and_explicit_selection():
+    client,sessions,engine,ids,app=setup_client()
+    try:
+        path=f"/organizations/admin/suppliers/{ids['org']}/public-profile"
+        with sessions() as db:
+            org=db.get(Organization,ids['org'])
+            org.business_email='office@example.test'
+            org.business_phone='+966500001234'
+            db.commit()
+            assert 'business_email' not in published_details(db,ids['org'])
+        set_actor(app,sessions,ids['normal'])
+        assert client.get(path).status_code==403
+        assert client.patch(path,json={'fields':['business_email']}).status_code==403
+        set_actor(app,sessions,ids['admin'])
+        assert client.get(path).json()=={'fields':[]}
+        assert client.patch(path,json={'fields':['contact_name']}).status_code==422
+        assert client.patch(path,json={'fields':['business_email']}).json()=={'fields':['business_email']}
+        with sessions() as db:
+            public=published_details(db,ids['org'])
+            assert public['business_email']=='office@example.test'
+            assert 'business_phone' not in public and 'contact_name' not in public
+        assert client.patch(path,json={'fields':[]}).json()=={'fields':[]}
+        with sessions() as db:
+            assert 'business_email' not in published_details(db,ids['org'])
+    finally:
+        client.close();engine.dispose()
 
 
 def test_supplier_delete_without_reason_is_admin_only_and_preserves_related_records():

@@ -15,6 +15,14 @@ import { useToast } from '@/features/shared/toast';
 import { eligibilityReason, isRecommended, isSubmitted, matchEvidence, matchingState, PAGE_SIZE, type Match } from './matching-model';
 import styles from './matched-suppliers.module.css';
 import { matchingArabic } from './matching-copy';
+
+const DELIVERY_LABELS: Record<string, string> = {
+  not_queued: 'Not sent', queued: 'Queued', sending: 'Sending', retry_scheduled: 'Retry scheduled',
+  accepted: 'Accepted by provider', sent: 'Sent', delivered: 'Delivered', failed: 'Failed', hard_bounced: 'Bounced',
+  soft_bounced: 'Soft bounce, retrying', suppressed: 'Address suppressed', skipped: 'Not sent', uncertain: 'Outcome uncertain',
+  simulated: 'Simulated (test mode)',
+};
+const deliveryLabel = (status?: string | null) => DELIVERY_LABELS[status || 'not_queued'] || status || 'Not sent';
 import { AdminMatchingDiagnostics } from './admin-matching-diagnostics';
 
 type Favorite = { supplier_org_id: string; name: string; profile_url?: string | null };
@@ -105,6 +113,7 @@ function SupplierRow({ match, city, favorite, toggle, tr }: {
       <span className={styles.invitationStatus}>{match.invitation_status === 'accepted' ? tr('Invitation accepted')
         : match.invitation_status === 'declined' ? tr('Invitation declined')
         : match.invitation_status ? tr('Invitation recorded') : tr('No invitation recorded')}</span>
+      {match.invitation_status && <span className={styles.invitationStatus}>{tr('Email')}: {tr(deliveryLabel(match.email_status))} · {tr('SMS')}: {tr(deliveryLabel(match.sms_status))}</span>}
       <span className={styles.invitationStatus}>{match.quotation_status ? `${tr('Quotation')}: ${tr(match.quotation_status)}` : tr('No quotation submitted')}</span>
       <div>{match.profile_url&&<Link className={styles.profileLink} href={match.profile_url}>{tr('View profile')}<IconArrowUpRight size={15}/></Link>}
         <button type="button" className={styles.favorite} disabled={busy}
@@ -333,6 +342,11 @@ export function Matching({ id, embedded = false }: { id?: string; embedded?: boo
               <span>{invitation.supplier_name}</span></label>
             <span>{invitation.status === 'accepted' ? tr('Accepted') : invitation.status === 'declined' ? tr('Declined') : invitation.status === 'invited' ? tr('Pending response') : t(invitation.status.replaceAll('_', ' '))}</span>
             <span>{isSubmitted(invitation.quotation_status) ? tr('Quotation received') : tr('No quotation submitted')}</span>
+            {/* A recorded invitation is not a delivery: each channel shows its real outcome. */}
+            <span className={styles.deliveryStatus}>
+              <span data-status={invitation.email_status}>{tr('Email')}: {tr(deliveryLabel(invitation.email_status))}{invitation.email_reason ? ` (${tr(invitation.email_reason.replaceAll('_', ' '))})` : ''}</span>
+              <span data-status={invitation.sms_status}>{tr('SMS')}: {tr(deliveryLabel(invitation.sms_status))}{invitation.sms_reason ? ` (${tr(invitation.sms_reason.replaceAll('_', ' '))})` : ''}</span>
+            </span>
             {eligibleReminderIds.has(invitation.id)
               ? <Button size="sm" variant="outline" disabled={reminding} onClick={() => void sendReminders([invitation.id])}>{tr('Send reminder')}</Button>
               : <small>{invitation.next_reminder_at ? `${tr('Next reminder available')}: ${dateTime(invitation.next_reminder_at)}` : ''}</small>}

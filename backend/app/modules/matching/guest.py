@@ -81,6 +81,10 @@ def authorize(db, token, *, lock=False):
     inv=db.scalar(query.with_for_update() if lock else query)
     if not inv or not rfq or inv.status=='declined' or rfq.status not in {'published','collecting_quotes'} or as_utc(rfq.response_deadline)<=datetime.now(UTC):
         raise HTTPException(403,'Invitation is no longer available')
+    # Persisted final matching result + active, non-suspended supplier (no re-matching).
+    from app.modules.notifications.procurement import eligible_orgs
+    if inv.supplier_org_id not in eligible_orgs(db,rfq,[inv.supplier_org_id]):
+        raise HTTPException(403,'Invitation is no longer available')
     context={'org_id':inv.supplier_org_id,'rfq_id':rfq.id}
     if not current_recipient(db,{'context':context,'template':claims['template'],'channel':claims['channel'],'destination':claims['destination']}):
         raise HTTPException(403,'Invitation authorization changed')

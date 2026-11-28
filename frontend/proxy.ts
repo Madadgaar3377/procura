@@ -87,6 +87,7 @@ export const config = {
     '/faq',
     '/privacy',
     '/terms',
+    '/supplier-portal',
     '/app',
     '/app/:path*',
   ],

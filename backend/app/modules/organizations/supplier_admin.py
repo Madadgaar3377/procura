@@ -31,10 +31,12 @@ from app.models import (
     Material,
     Organization,
     OrganizationLocation,
+    PublicProfileConsent,
     SupplierProfileDetails,
     User,
 )
 from app.security import admin_user, audit
+from app.modules.organizations.public_profile import PublicationPreferences, consent_available
 
 router = APIRouter(prefix='/admin/suppliers')
 
@@ -460,6 +462,30 @@ def detail_extensions(db: Session, org: Organization) -> dict:
 
 
 # ---------------------------------------------------------------- read endpoints
+
+@router.get('/{org_id}/public-profile', response_model=PublicationPreferences)
+def admin_public_profile(org_id: str, admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    supplier_or_404(db, org_id)
+    if not consent_available(db):
+        raise HTTPException(503, 'Public profile preferences require the pending database migration')
+    consent = db.get(PublicProfileConsent, org_id)
+    return {'fields': consent.fields if consent else []}
+
+
+@router.patch('/{org_id}/public-profile', response_model=PublicationPreferences)
+def admin_save_public_profile(org_id: str, payload: PublicationPreferences,
+                              admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    supplier_or_404(db, org_id)
+    if not consent_available(db):
+        raise HTTPException(503, 'Public profile preferences require the pending database migration')
+    consent = db.get(PublicProfileConsent, org_id)
+    if consent is None:
+        consent = PublicProfileConsent(org_id=org_id)
+        db.add(consent)
+    consent.fields = sorted(set(payload.fields))
+    audit(db, admin, 'organization.public_visibility_updated', org_id, org_id)
+    db.commit()
+    return {'fields': consent.fields}
 
 @router.get('/{org_id}/capability-tree')
 def supplier_capability_tree(org_id: str, admin: User = Depends(admin_user), db: Session = Depends(get_db)):

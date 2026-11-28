@@ -9,12 +9,12 @@ const React=require('react');
 const {renderToStaticMarkup}=require('react-dom/server');
 class ApiError extends Error{constructor(status){super('Unavailable');this.status=status;}}
 const supplier={id:'supplier-id',name:'Original Company Name',city:'Dammam',verified:true,
- profile:{description:'Original company introduction',business_phone:'+966500001234',business_email:'sales@example.test',website:'https://supplier.example.test',company_type:'both'},
+ profile:{description:'Original company introduction',business_phone:'+966500001234',business_email:'sales@example.test',website:'https://supplier.example.test',company_type:'both',country:'Saudi Arabia',address:'Office 12, Dammam'},
  capability_groups:[{id:'electrical',name_en:'Electrical',name_ar:'الكهرباء',subcategories:[{id:'tools',name_en:'Tools',name_ar:'الأدوات'}]}],service_cities:['Riyadh','Jeddah']};
 function render({data=supplier,arabic=false,error,loading=false,related=[],promotions={premium:false,featured:false}}={}){
  const filename=path.resolve(__dirname,'../features/suppliers/profile.tsx');const localRequire=createRequire(filename);const exported={};
  const source=ts.transpileModule(fs.readFileSync(filename,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;
- const dependencies=name=>name.endsWith('.css')?{}:name==='@/lib/locale'?{useLocale:()=>({arabic,t:value=>value})}:name==='@/lib/api/use-api'?{useApi:route=>route.startsWith('memberships/')?{data:promotions}:route.includes('/related')?{data:related,loading:false,reload(){}}:{data,error,loading,reload(){}}}:name==='@/lib/api/errors'?{ApiError}:name==='next/link'?{default:({children,...props})=>React.createElement('a',props,children),__esModule:true}:name==='@/features/marketing/chrome'?{MarketingCTA:({role,children})=>React.createElement('a',{href:role==='buyer'?'/register?role=buyer':'/register?role=supplier'},children)}:name==='./supplier-products'?{default:({groups})=>groups.length?React.createElement('div',null,...groups.map(group=>React.createElement('section',{key:group.id},React.createElement('summary',null,`${group.name_en} ${(group.subcategories||[]).length} subcategories`),...((group.subcategories||[]).length>12?[React.createElement('input',{key:'search',type:'search'})]:[]),...(group.subcategories||[]).map(child=>React.createElement('a',{key:child.id,href:`/suppliers?main_category_id=${group.id}&subcategory_id=${child.id}`},arabic?child.name_ar||child.name_en:child.name_en))))):React.createElement('p',null,'No approved capabilities published')}:name==='./promotion-badges'?loadBadges():localRequire(name);
+ const dependencies=name=>name.endsWith('.css')?{}:name==='@/lib/locale'?{useLocale:()=>({arabic,t:value=>value})}:name==='@/lib/api/use-api'?{useApi:route=>route.startsWith('memberships/')?{data:promotions}:route.includes('/related')?{data:related,loading:false,reload(){}}:{data,error,loading,reload(){}}}:name==='@/lib/api/errors'?{ApiError}:name==='@/lib/api/client'?{assetUrl:value=>value}:name==='next/link'?{default:({children,...props})=>React.createElement('a',props,children),__esModule:true}:name==='@/features/marketing/chrome'?{MarketingCTA:({role,children})=>React.createElement('a',{href:role==='buyer'?'/register?role=buyer':'/register?role=supplier'},children)}:name==='./supplier-products'?{default:({groups})=>groups.length?React.createElement('div',null,...groups.map(group=>React.createElement('section',{key:group.id},React.createElement('summary',null,`${group.name_en} ${(group.subcategories||[]).length} subcategories`),...((group.subcategories||[]).length>12?[React.createElement('input',{key:'search',type:'search'})]:[]),...(group.subcategories||[]).map(child=>React.createElement('a',{key:child.id,href:`/suppliers?main_category_id=${group.id}&subcategory_id=${child.id}`},arabic?child.name_ar||child.name_en:child.name_en))))):React.createElement('p',null,'No approved capabilities published')}:name==='./promotion-badges'?loadBadges():localRequire(name);
  function loadBadges(){const output={};const badgeSource=ts.transpileModule(fs.readFileSync(path.resolve(__dirname,'../features/suppliers/promotion-badges.tsx'),'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText;vm.runInNewContext(badgeSource,{exports:output,require:dependencies});return output;}
  vm.runInNewContext(source,{exports:exported,require:dependencies});
  return renderToStaticMarkup(React.createElement(exported.default,{id:'supplier-id'}));
@@ -22,18 +22,27 @@ function render({data=supplier,arabic=false,error,loading=false,related=[],promo
 test('supplier profile renders authorized contact actions, grouped services and distinct office/coverage',()=>{
  const html=render();
  assert.match(html,/href="tel:\+966500001234"/);
- assert.match(html,/href="mailto:sales%40example.test\?subject=Procurement%20Enquiry%20via%20Procumaterial"/);
- assert.match(html,/href="https:\/\/supplier.example.test" target="_blank" rel="noopener noreferrer"/);
+ assert.match(html,/href="mailto:sales@example.test"/);
+ assert.match(html,/href="https:\/\/supplier.example.test"/);
  assert.match(html,/Original company introduction/);assert.match(html,/Original Company Name/);
+ assert.equal((html.match(/Original company introduction/g)||[]).length,1);
+ assert.match(html,/href="mailto:sales@example.test"/);assert.match(html,/Copy Business email/);assert.match(html,/Copy Business phone/);
+ assert.match(html,/Saudi Arabia/);assert.match(html,/Office 12, Dammam/);
  assert.match(html,/Office City:/);assert.match(html,/Dammam/);assert.match(html,/Riyadh/);assert.match(html,/Jeddah/);
  assert.match(html,/main_category_id=electrical&amp;subcategory_id=tools/);
  assert.match(html,/href="\/register\?role=buyer"/);
  assert.ok(!html.includes('unit_price')&&!html.includes('cr_number'));
 });
+test('private employee contacts and unpublished business fields stay hidden',()=>{
+ const html=render({data:{...supplier,profile:{website:'https://supplier.example.test',employee_email:'private@example.test',employee_phone:'+966500009999'}}});
+ assert.ok(!html.includes('private@example.test')&&!html.includes('+966500009999'));
+ assert.ok(!html.includes('Business email')&&!html.includes('Business phone'));
+ assert.match(html,/supplier.example.test/);
+});
 test('unpublished contacts do not create empty call/email/website actions',()=>{
  const html=render({data:{...supplier,profile:{}}});
  assert.ok(!html.includes('href="tel:')&&!html.includes('href="mailto:')&&!html.includes('supplier.example.test'));
- assert.match(html,/Information not provided/);assert.match(html,/has not published a business phone or email/);
+ assert.ok(!html.includes('About Company')&&!html.includes('Contact Supplier'));
 });
 
 test('contact actions are not duplicated and small capability lists need no search',()=>{

@@ -106,9 +106,15 @@ def email_message_id(key):
     return '<delivery-'+sha256(key.encode()).hexdigest()[:32]+'@'+domain+'>'
 
 
-def send_email(address, subject, plain_text, html_body, idempotency_key, *, attachments=None):
+def send_email(address, subject, plain_text, html_body, idempotency_key, *, attachments=None, headers=None,
+               message_id=None):
+    """Submit one message. Returns its Message-ID; acceptance is NOT confirmed delivery.
+
+    ``headers`` adds correlation headers (e.g. X-Procura-Delivery-Id) that bounce
+    reports echo back. ``message_id`` overrides the deterministic id (soft-bounce resend).
+    """
     settings = get_settings()
-    message_id = email_message_id(idempotency_key)
+    message_id = message_id or email_message_id(idempotency_key)
     if settings.mock_notifications:
         log.warning("Email delivery simulated: MOCK_NOTIFICATIONS=true; no email sent")
         return message_id
@@ -138,6 +144,12 @@ def send_email(address, subject, plain_text, html_body, idempotency_key, *, atta
         except ValueError as exc:
             raise delivery_error('Invalid SMTP_REPLY_TO',retryable=False) from exc
         message['Reply-To']=reply_to
+    for name, value in (headers or {}).items():
+        if name.lower() in {'from', 'to', 'subject', 'message-id', 'date', 'reply-to', 'bcc', 'cc'}:
+            continue
+        text = str(value or '')
+        if text and chr(13) not in text and chr(10) not in text:
+            message[name] = text
     message.set_content(plain_text)
     message.add_alternative(html_body, subtype="html")
     for filename, data, mime_type in (attachments or ()):
@@ -159,7 +171,8 @@ def send_email(address, subject, plain_text, html_body, idempotency_key, *, atta
             smtp.login(settings.smtp_username, settings.smtp_password)
             log.info("Email SMTP connected and authenticated")
             stage = "data"
-            refused = smtp.send_message(message)
+            envelope = parseaddr(settings.smtp_envelope_from or '')[1] or None
+            refused = smtp.send_message(message, from_addr=envelope) if envelope else smtp.send_message(message)
             if refused:
                 raise delivery_error("SMTP recipient refused", retryable=False)
             stage = "accepted"

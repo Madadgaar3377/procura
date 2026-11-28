@@ -94,6 +94,33 @@ function Section({title, action, children}: {title: string; action?: ReactNode; 
   return <section className="sd-section"><header><h3>{title}</h3>{action}</header>{children}</section>;
 }
 
+function PublicContactVisibility({supplierId}: {supplierId: string}) {
+  const {t} = useLocale();
+  const path = `organizations/admin/suppliers/${encodeURIComponent(supplierId)}/public-profile`;
+  const preferences = useApi<{fields: string[]}>(path);
+  const [fields, setFields] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+  useEffect(() => { if (preferences.data) setFields(preferences.data.fields || []); }, [preferences.data]);
+  const choices = [['business_email', 'Business email'], ['business_phone', 'Business phone']] as const;
+  return <Section title={t('Public business contact visibility')}>
+    <p className="sd-muted">{t('Publish only the saved company email and phone you have reviewed. Employee and category contacts stay private.')}</p>
+    {preferences.error ? <p role="alert">{t('Unable to load public visibility settings.')}</p> : preferences.loading ? <p role="status">{t('Loading preferences…')}</p> : <>
+      <div className="sd-checks">{choices.map(([field, label]) => <label key={field}><input type="checkbox" checked={fields.includes(field)} onChange={event => {setMessage(''); setFields(current => event.target.checked ? [...current, field] : current.filter(value => value !== field));}}/>{t(label)}</label>)}</div>
+      <Button type="button" variant="outline" size="sm" disabled={saving || sameSet(fields, preferences.data?.fields || [])} onClick={async () => {
+        setSaving(true); setMessage('');
+        try {
+          const preserved = (preferences.data?.fields || []).filter(field => !choices.some(([choice]) => choice === field));
+          await api(path, {method: 'PATCH', body: json({fields: [...preserved, ...fields.filter(field => choices.some(([choice]) => choice === field))]})});
+          preferences.reload(); setMessage(t('Public contact visibility saved.'));
+        } catch { setMessage(t('Unable to save public visibility settings.')); }
+        finally { setSaving(false); }
+      }}>{t('Save public contact visibility')}</Button>
+      {message && <p role="status">{message}</p>}
+    </>}
+  </Section>;
+}
+
 /* ------------------------------------------------------------------ main component */
 
 export function SupplierDetailsModal({supplierId, onClose, onChanged, onInspect, onVerify}: {
@@ -231,7 +258,7 @@ export function SupplierDetailsModal({supplierId, onClose, onChanged, onInspect,
       {editing && tab !== 'products' && tab !== 'capabilities' && data?.profile && !data.profile.extension_ready && (tab === 'locations' || tab === 'overview') &&
         <p className="notice warn">{t('Business type, services and company locations need database migration zm56c3d4e5f6 before they can be saved.')}</p>}
       <State loading={detail.loading && !data} error={detail.error} retry={detail.reload}/>
-      {data && tab === 'overview' && <OverviewTab data={data} editing={editing} drafts={drafts} setDrafts={setDrafts} missing={missing}/>}
+      {data && tab === 'overview' && <><OverviewTab data={data} editing={editing} drafts={drafts} setDrafts={setDrafts} missing={missing}/><PublicContactVisibility supplierId={supplierId}/></>}
       {data && tab === 'capabilities' && <CapabilitiesTab base={base} tree={tree} editing={editing} drafts={drafts} setDrafts={setDrafts} categories={categories.data || []} busy={busy} immediate={immediate} onInspect={onInspect}/>}
       {data && tab === 'products' && <ProductsTab base={base} data={data} editing={editing} drafts={drafts} setDrafts={setDrafts}/>}
       {data && tab === 'contacts' && <ContactsTab base={base} data={data} tree={tree.data} editing={editing} drafts={drafts} setDrafts={setDrafts} busy={busy} immediate={immediate} missing={missing}/>}

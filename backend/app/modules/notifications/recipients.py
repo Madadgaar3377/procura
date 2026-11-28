@@ -26,8 +26,13 @@ def normalize_destination(channel, value):
 
 
 def restriction(db, channel, destination):
+    """Active restriction reason (opted_out / suppressed / invalid_recipient) or None.
+
+    Cleared restrictions (an admin corrected and revalidated the address) are history.
+    """
     row = db.scalar(select(DeliveryRestriction).where(
-        DeliveryRestriction.channel == channel, DeliveryRestriction.destination == destination))
+        DeliveryRestriction.channel == channel, DeliveryRestriction.destination == destination,
+        DeliveryRestriction.cleared_at.is_(None)))
     return row.reason if row else None
 
 
@@ -37,11 +42,13 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
     from app.modules.matching.service import supplier_evaluations
     rfq = db.get(RFQ, rfq_id)
     invitation = db.scalar(select(Invitation).where(Invitation.rfq_id == rfq_id, Invitation.supplier_org_id == org_id))
-    if template == 'deadline_reminder' and invitation and invitation.matched_item_ids:
-        # Reminders follow the invitation's recorded scope; matching is not re-run.
-        evaluated = {'covered_items': invitation.matched_item_ids, 'item_evidence': {}}
+    if invitation and invitation.matched_item_ids is not None:
+        # Persisted final matching result: the invitation's recorded line scope and the
+        # evidence the matching job stored. Notification routing never re-runs matching.
+        evaluated = {'covered_items': invitation.matched_item_ids, 'item_evidence': invitation.match_evidence or {}}
     else:
-        # Shares the eligibility evaluation already made for this outbox event.
+        # Legacy invitation without a recorded scope (created before scope persistence):
+        # evaluated once per outbox event, shared with the quotation draft.
         evaluated = supplier_evaluations(db, rfq, [org_id])[org_id] if rfq else {}
     covered = set(evaluated.get('covered_items', []))
     # Materials and capability categories that produced each line's match.
@@ -149,10 +156,12 @@ def resolve(db, org_id, rfq_id, template='rfq_invitation'):
                 break
     for channel in output:
         if not output[channel]:
-            reason = next((r for r in ('opted_out', 'suppressed', 'invalid_contact') if r in reasons[channel]), 'no_contact')
+            reason = next((r for r in ('opted_out', 'suppressed', 'invalid_recipient', 'invalid_contact')
+                           if r in reasons[channel]), 'no_contact')
             output[channel] = [{'skip_reason': reason, 'reason_detail':
                 ('No phone available' if channel == 'sms' else 'No email available') if reason == 'no_contact'
                 else 'No usable mobile number (invalid, landline or fax)' if channel == 'sms' and reason == 'invalid_contact'
+                else 'Email address bounced as invalid; correct it in the supplier record' if reason == 'invalid_recipient'
                 else reason.replace('_', ' ')}]
     return output
 

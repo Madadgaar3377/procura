@@ -211,7 +211,13 @@ def supplier_detail(db:Annotated[Session,Depends(get_db)],supplier_id:str,includ
         raise HTTPException(404,'Supplier not found')
     profiles=public_profiles(db,[org],include_categories and not (include_coverage or include_profile))
     if include_coverage or include_profile:add_coverage(db,profiles,include_categories,include_groups=include_profile)
-    if include_profile:profiles[0]['profile']=published_details(db,supplier_id)
+    if include_profile:
+        vocabulary = set()
+        for group in profiles[0].get('capability_groups', []):
+            vocabulary.add(group['name_en'])
+            for child in group['subcategories']:
+                vocabulary.update([child['name_en'], *child['trade_keywords'], *child['materials']])
+        profiles[0]['profile'] = published_details(db, supplier_id, vocabulary)
     return profiles[0]
 
 

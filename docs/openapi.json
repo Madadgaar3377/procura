@@ -2599,6 +2599,753 @@
         }
       }
     },
+    "/api/v1/organizations/admin/suppliers/{org_id}/public-profile": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Public Profile",
+        "operationId": "admin_public_profile_api_v1_organizations_admin_suppliers__org_id__public_profile_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationPreferences"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Admin Save Public Profile",
+        "operationId": "admin_save_public_profile_api_v1_organizations_admin_suppliers__org_id__public_profile_patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicationPreferences"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationPreferences"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/capability-tree": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Supplier Capability Tree",
+        "operationId": "supplier_capability_tree_api_v1_organizations_admin_suppliers__org_id__capability_tree_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/products": {
+      "get": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Supplier Products",
+        "operationId": "supplier_products_api_v1_organizations_admin_suppliers__org_id__products_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 200,
+              "default": "",
+              "title": "Q"
+            }
+          },
+          {
+            "name": "discipline",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 60,
+              "default": "",
+              "title": "Discipline"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 36,
+              "default": "",
+              "title": "Category Id"
+            }
+          },
+          {
+            "name": "node",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 500,
+              "default": "",
+              "title": "Node"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^(|approved|pending|suspended|revoked|rejected)$",
+              "default": "",
+              "title": "Status"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 25,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/profile-details": {
+      "put": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Update Profile Details",
+        "operationId": "update_profile_details_api_v1_organizations_admin_suppliers__org_id__profile_details_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileDetailsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/locations": {
+      "put": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Replace Locations",
+        "operationId": "replace_locations_api_v1_organizations_admin_suppliers__org_id__locations_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LocationsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/coverage": {
+      "put": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Replace Delivery Coverage",
+        "description": "Set delivery cities for every (or the listed) capability category; one row per city.",
+        "operationId": "replace_delivery_coverage_api_v1_organizations_admin_suppliers__org_id__coverage_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoverageInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/capability-groups": {
+      "post": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Add Capability Group",
+        "operationId": "add_capability_group_api_v1_organizations_admin_suppliers__org_id__capability_groups_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityGroupInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/capability-groups/{category_id}": {
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Update Capability Group",
+        "operationId": "update_capability_group_api_v1_organizations_admin_suppliers__org_id__capability_groups__category_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Category Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityGroupPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Delete Capability Group",
+        "operationId": "delete_capability_group_api_v1_organizations_admin_suppliers__org_id__capability_groups__category_id__delete",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "category_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Category Id"
+            }
+          },
+          {
+            "name": "confirm",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Confirm"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/trades/{trade_id}": {
+      "patch": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Update Source Products",
+        "description": "Edit imported source product wording (fuzzy matching evidence) and its responsible employees.",
+        "operationId": "update_source_products_api_v1_organizations_admin_suppliers__org_id__trades__trade_id__patch",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "trade_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Trade Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TradePatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/admin/suppliers/{org_id}/contacts/{contact_id}/assignments": {
+      "put": {
+        "tags": [
+          "Organizations & Verification"
+        ],
+        "summary": "Replace Contact Assignments",
+        "description": "Set exactly which capability categories (and optionally products) route RFQs to this employee.\n\nThe assignment covers every city row of a category, so routing does not depend on which\ndelivery city the RFQ names. Categories that are not yet capabilities are rejected rather\nthan silently creating supplier capability.",
+        "operationId": "replace_contact_assignments_api_v1_organizations_admin_suppliers__org_id__contacts__contact_id__assignments_put",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "org_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "contact_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Contact Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ContactAssignmentsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/organizations": {
       "post": {
         "tags": [
@@ -9778,7 +10525,7 @@
           "Buyer RFQs"
         ],
         "summary": "Remind Pending",
-        "description": "Queue pending supplier reminders with a shared rolling 24-hour cooldown.",
+        "description": "Queue reminders for one, selected or all pending suppliers; report every outcome.\n\nBody: ``{}`` or no body = every pending supplier; ``{\"invitation_ids\": [...]}`` or\n``{\"supplier_org_ids\": [...]}`` = those suppliers. Pending means the persisted\nmatching result (same query as the buyer page): an active invitation of a matched\nsupplier without a submitted quotation. Each supplier invitation has its own\ncooldown. Suppliers without a usable contact are skipped, never silently counted.\nMessages are queued durable outbox events; delivery is reported by the provider later.",
         "operationId": "remind_pending_api_v1_rfqs__rfq_id__reminders_post",
         "security": [
           {
@@ -10154,6 +10901,7 @@
           "Supplier Matching"
         ],
         "summary": "Admin Rerun",
+        "description": "Re-run matching for a published RFQ without recreating it.\n\nExisting matches are re-evaluated in place, invitations stay unique per supplier\n(uq_invitation), and quotations and supplier responses are never modified.",
         "operationId": "admin_rerun_api_v1_matching_admin_rfqs__rfq_id__rerun_post",
         "security": [
           {
@@ -10169,6 +10917,18 @@
               "type": "string",
               "title": "Rfq Id"
             }
+          },
+          {
+            "name": "run_now",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Evaluate immediately within the publish time budget; any remainder stays queued.",
+              "default": true,
+              "title": "Run Now"
+            },
+            "description": "Evaluate immediately within the publish time budget; any remainder stays queued."
           }
         ],
         "responses": {
@@ -12693,15 +13453,20 @@
         ],
         "summary": "Restrict Destination",
         "operationId": "restrict_destination_api_v1_notifications_admin_restrictions_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
         "requestBody": {
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/DestinationRestriction"
               }
             }
-          },
-          "required": true
+          }
         },
         "responses": {
           "200": {
@@ -12722,12 +13487,106 @@
               }
             }
           }
-        },
+        }
+      },
+      "get": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Restrictions",
+        "operationId": "restrictions_api_v1_notifications_admin_restrictions_get",
         "security": [
           {
             "HTTPBearer": []
           }
-        ]
+        ],
+        "parameters": [
+          {
+            "name": "channel",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "name": "reason",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Reason"
+            }
+          },
+          {
+            "name": "active",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": true,
+              "title": "Active"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/notifications/admin/outbox/{event_id}/retry": {
@@ -12862,6 +13721,458 @@
             "HTTPBearer": []
           }
         ]
+      }
+    },
+    "/api/v1/notifications/admin/deliveries": {
+      "get": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Deliveries",
+        "operationId": "deliveries_api_v1_notifications_admin_deliveries_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 200,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/admin/deliveries/summary": {
+      "get": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Summary",
+        "operationId": "summary_api_v1_notifications_admin_deliveries_summary_get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "rfq_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Rfq Id"
+            }
+          },
+          {
+            "name": "org_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Org Id"
+            }
+          },
+          {
+            "name": "channel",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Channel"
+            }
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date From"
+            }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Date To"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/admin/deliveries/{event_id}": {
+      "get": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Delivery Detail",
+        "operationId": "delivery_detail_api_v1_notifications_admin_deliveries__event_id__get",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/admin/restrictions/{restriction_id}/revalidate": {
+      "post": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Revalidate",
+        "description": "An admin confirmed the address is valid again (e.g. mailbox restored). History kept.",
+        "operationId": "revalidate_api_v1_notifications_admin_restrictions__restriction_id__revalidate_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "restriction_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Restriction Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Revalidate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/admin/deliveries/{event_id}/correct-contact": {
+      "post": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Correct Contact",
+        "description": "Replace a bounced supplier email in that supplier's records and optionally resend.\n\nOnly records of the delivery's supplier organization holding the bounced address are\nchanged (contact channels, legacy contact email, business email). Nothing is deleted.",
+        "operationId": "correct_contact_api_v1_notifications_admin_deliveries__event_id__correct_contact_post",
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Event Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectContact"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/webhooks/email": {
+      "post": {
+        "tags": [
+          "Notifications & Outbox"
+        ],
+        "summary": "Email Webhook",
+        "description": "Signed provider delivery/bounce events (HMAC-SHA256, see bounces.verify_webhook).\n\nHeaders: ``X-Procura-Timestamp`` (unix seconds) and ``X-Procura-Signature``\n(``sha256=<hex HMAC of \"<timestamp>.<raw body>\">``). Body: ``{\"events\": [{\"id\",\n\"type\", \"message_id\", \"delivery_id\", \"recipient\", \"status\", \"diagnostic\"}]}``.",
+        "operationId": "email_webhook_api_v1_notifications_webhooks_email_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/memberships/plans": {
@@ -18163,6 +19474,840 @@
         }
       }
     },
+    "/api/v1/supplier-portal/session": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Start Session",
+        "description": "Exchange a magic-link token for a restricted, HttpOnly portal session.",
+        "operationId": "start_session_api_v1_supplier_portal_session_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me": {
+      "get": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "View",
+        "operationId": "view_api_v1_supplier_portal_me_get",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/accept": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Accept",
+        "operationId": "accept_api_v1_supplier_portal_me_accept_post",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/decline": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Decline",
+        "operationId": "decline_api_v1_supplier_portal_me_decline_post",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclineIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/draft": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Save Draft",
+        "operationId": "save_draft_api_v1_supplier_portal_me_draft_post",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DraftIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/verification/request": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Request Code",
+        "description": "Send a one-time code to the email/phone this link was delivered to.",
+        "operationId": "request_code_api_v1_supplier_portal_me_verification_request_post",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/verification/confirm": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Confirm Code",
+        "operationId": "confirm_code_api_v1_supplier_portal_me_verification_confirm_post",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CodeIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/submit": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Submit",
+        "description": "Binding submission: explicit confirmation + verified recipient + real prices only.",
+        "operationId": "submit_api_v1_supplier_portal_me_submit_post",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitIn"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/rfq.pdf": {
+      "get": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Rfq Document",
+        "operationId": "rfq_document_api_v1_supplier_portal_me_rfq_pdf_get",
+        "parameters": [
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "en",
+                "ar"
+              ],
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/quotation.pdf": {
+      "get": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Quotation Document",
+        "operationId": "quotation_document_api_v1_supplier_portal_me_quotation_pdf_get",
+        "parameters": [
+          {
+            "name": "lang",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "en",
+                "ar"
+              ],
+              "type": "string",
+              "default": "en",
+              "title": "Lang"
+            }
+          },
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/attachments/{attachment_id}": {
+      "get": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Attachment",
+        "operationId": "attachment_api_v1_supplier_portal_me_attachments__attachment_id__get",
+        "parameters": [
+          {
+            "name": "attachment_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Attachment Id"
+            }
+          },
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/supplier-portal/me/logout": {
+      "post": {
+        "tags": [
+          "Supplier Magic Link Portal"
+        ],
+        "summary": "Logout",
+        "operationId": "logout_api_v1_supplier_portal_me_logout_post",
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Invitation"
+            }
+          },
+          {
+            "name": "x-portal-invitation",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 36
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "X-Portal-Invitation"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/public/document-builder/{kind}/totals": {
       "post": {
         "tags": [
@@ -18346,6 +20491,26 @@
         ],
         "summary": "Whatsapp Status",
         "operationId": "whatsapp_status_api_v1_webhooks_whatsapp_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/webhooks/sms-gate": {
+      "post": {
+        "tags": [
+          "Public Document Builders"
+        ],
+        "summary": "Sms Gate Status",
+        "description": "Delivery reports pushed by SMS Gateway for Android (sms:sent / sms:delivered / sms:failed).\n\nAuthenticated by the provider's HMAC signature, not by a user session. It only updates\nthe delivery state of an SMS this platform already submitted (matched by provider\nmessage id); it can never create or resubmit a message. Status polling remains the\nfallback when webhooks are not configured or not delivered.",
+        "operationId": "sms_gate_status_api_v1_webhooks_sms_gate_post",
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -20251,6 +22416,45 @@
             ],
             "title": "Matched Item Ids"
           },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "cancellation_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancellation Reason"
+          },
+          "last_reminded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Reminded At"
+          },
+          "reminder_count": {
+            "type": "integer",
+            "title": "Reminder Count"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -20279,6 +22483,65 @@
             "type": "boolean",
             "title": "Reminder Eligible",
             "default": false
+          },
+          "next_reminder_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Reminder At"
+          },
+          "invitation_recorded": {
+            "type": "boolean",
+            "title": "Invitation Recorded",
+            "default": true
+          },
+          "email_status": {
+            "type": "string",
+            "title": "Email Status",
+            "default": "not_queued"
+          },
+          "email_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Reason"
+          },
+          "sms_status": {
+            "type": "string",
+            "title": "Sms Status",
+            "default": "not_queued"
+          },
+          "sms_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sms Reason"
+          },
+          "supplier_response": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Response"
           }
         },
         "type": "object",
@@ -20288,6 +22551,10 @@
           "status",
           "invited_at",
           "matched_item_ids",
+          "cancelled_at",
+          "cancellation_reason",
+          "last_reminded_at",
+          "reminder_count",
           "id",
           "created_at",
           "supplier_name"
@@ -20312,6 +22579,167 @@
           "eligibility_status"
         ],
         "title": "CapabilityEligibilityIn"
+      },
+      "CapabilityGroupInput": {
+        "properties": {
+          "category_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Category Id"
+          },
+          "material_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Material Ids"
+          },
+          "brands": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 100,
+            "title": "Brands"
+          },
+          "trade_keywords": {
+            "type": "string",
+            "maxLength": 5000,
+            "title": "Trade Keywords",
+            "default": ""
+          },
+          "cities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cities"
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id"
+        ],
+        "title": "CapabilityGroupInput"
+      },
+      "CapabilityGroupPatch": {
+        "properties": {
+          "material_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material Ids"
+          },
+          "add_material_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Add Material Ids"
+          },
+          "remove_material_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 1000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remove Material Ids"
+          },
+          "brands": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brands"
+          },
+          "trade_keywords": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 5000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Trade Keywords"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "approved",
+                  "pending",
+                  "suspended"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "cities": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 60
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cities"
+          }
+        },
+        "type": "object",
+        "title": "CapabilityGroupPatch"
       },
       "CapabilityIn": {
         "properties": {
@@ -22173,6 +24601,22 @@
         ],
         "title": "ClaimableSupplierMatch"
       },
+      "CodeIn": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "maxLength": 6,
+            "minLength": 6,
+            "pattern": "^[0-9]{6}$",
+            "title": "Code"
+          }
+        },
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "CodeIn"
+      },
       "CommercialTerms": {
         "properties": {
           "quotation_reference": {
@@ -22344,6 +24788,51 @@
           "confirm"
         ],
         "title": "ContactActionConfirmation"
+      },
+      "ContactAssignment": {
+        "properties": {
+          "category_id": {
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 1,
+            "title": "Category Id"
+          },
+          "material_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 500,
+            "title": "Material Ids"
+          },
+          "is_primary": {
+            "type": "boolean",
+            "title": "Is Primary",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "category_id"
+        ],
+        "title": "ContactAssignment"
+      },
+      "ContactAssignmentsInput": {
+        "properties": {
+          "assignments": {
+            "items": {
+              "$ref": "#/components/schemas/ContactAssignment"
+            },
+            "type": "array",
+            "maxItems": 300,
+            "title": "Assignments"
+          }
+        },
+        "type": "object",
+        "required": [
+          "assignments"
+        ],
+        "title": "ContactAssignmentsInput"
       },
       "ContactChannelAdminInput": {
         "properties": {
@@ -22820,6 +25309,59 @@
         ],
         "title": "ContactReviewInput"
       },
+      "CorrectContact": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 220,
+            "minLength": 5,
+            "title": "Email"
+          },
+          "resend": {
+            "type": "boolean",
+            "title": "Resend",
+            "default": true
+          }
+        },
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "CorrectContact"
+      },
+      "CoverageInput": {
+        "properties": {
+          "cities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 60,
+            "minItems": 1,
+            "title": "Cities"
+          },
+          "category_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 500
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cities"
+        ],
+        "title": "CoverageInput"
+      },
       "DashboardActivity": {
         "properties": {
           "id": {
@@ -23095,6 +25637,18 @@
         ],
         "title": "Decision"
       },
+      "DeclineIn": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "title": "Reason",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "DeclineIn"
+      },
       "DeliveryFeedback": {
         "properties": {
           "outcome": {
@@ -23317,6 +25871,18 @@
           "detail"
         ],
         "title": "DestinationRestriction"
+      },
+      "DraftIn": {
+        "properties": {
+          "quotation": {
+            "$ref": "#/components/schemas/QuoteIn"
+          }
+        },
+        "type": "object",
+        "required": [
+          "quotation"
+        ],
+        "title": "DraftIn"
       },
       "DuplicateGroup": {
         "properties": {
@@ -23731,6 +26297,17 @@
           "name": {
             "type": "string",
             "title": "Name"
+          },
+          "profile_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Profile Url"
           }
         },
         "type": "object",
@@ -24701,6 +27278,45 @@
             ],
             "title": "Matched Item Ids"
           },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "cancellation_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancellation Reason"
+          },
+          "last_reminded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Reminded At"
+          },
+          "reminder_count": {
+            "type": "integer",
+            "title": "Reminder Count"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -24718,6 +27334,10 @@
           "status",
           "invited_at",
           "matched_item_ids",
+          "cancelled_at",
+          "cancellation_reason",
+          "last_reminded_at",
+          "reminder_count",
           "id",
           "created_at"
         ],
@@ -24754,6 +27374,45 @@
             ],
             "title": "Matched Item Ids"
           },
+          "cancelled_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancelled At"
+          },
+          "cancellation_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cancellation Reason"
+          },
+          "last_reminded_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Reminded At"
+          },
+          "reminder_count": {
+            "type": "integer",
+            "title": "Reminder Count"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -24786,6 +27445,10 @@
           "status",
           "invited_at",
           "matched_item_ids",
+          "cancelled_at",
+          "cancellation_reason",
+          "last_reminded_at",
+          "reminder_count",
           "id",
           "created_at",
           "rfq_reference",
@@ -24983,6 +27646,85 @@
         ],
         "title": "InvoiceReview"
       },
+      "LocationInput": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "head_office",
+              "office",
+              "branch",
+              "factory",
+              "warehouse",
+              "showroom"
+            ],
+            "title": "Kind"
+          },
+          "city": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 100
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "City"
+          },
+          "address": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Address"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "title": "LocationInput"
+      },
+      "LocationsInput": {
+        "properties": {
+          "locations": {
+            "items": {
+              "$ref": "#/components/schemas/LocationInput"
+            },
+            "type": "array",
+            "maxItems": 50,
+            "title": "Locations"
+          },
+          "confirm_clear": {
+            "type": "boolean",
+            "title": "Confirm Clear",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "locations"
+        ],
+        "title": "LocationsInput"
+      },
       "Login": {
         "properties": {
           "phone_country": {
@@ -25121,6 +27863,71 @@
               }
             ],
             "title": "Reminder Available At"
+          },
+          "reminders_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reminders Enabled"
+          },
+          "reminders_disabled_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reminders Disabled Code"
+          },
+          "reminders_disabled_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reminders Disabled Reason"
+          },
+          "exact_material_matches": {
+            "type": "integer",
+            "title": "Exact Material Matches",
+            "default": 0
+          },
+          "product_description_matches": {
+            "type": "integer",
+            "title": "Product Description Matches",
+            "default": 0
+          },
+          "subcategory_matches": {
+            "type": "integer",
+            "title": "Subcategory Matches",
+            "default": 0
+          },
+          "main_category_matches": {
+            "type": "integer",
+            "title": "Main Category Matches",
+            "default": 0
+          },
+          "excluded_suppliers": {
+            "type": "integer",
+            "title": "Excluded Suppliers",
+            "default": 0
+          },
+          "excluded_by_status": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Excluded By Status"
           },
           "limit": {
             "type": "integer",
@@ -25282,6 +28089,28 @@
               }
             ],
             "title": "Quotation Status"
+          },
+          "email_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email Status"
+          },
+          "sms_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sms Status"
           },
           "profile_url": {
             "anyOf": [
@@ -25566,6 +28395,35 @@
             },
             "type": "array",
             "title": "Supplier Reasons"
+          },
+          "funnel": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Funnel"
+          },
+          "channel_delivery": {
+            "additionalProperties": {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Channel Delivery"
+          },
+          "reminders": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Reminders"
+          },
+          "failed_job_reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Failed Job Reasons"
           }
         },
         "type": "object",
@@ -25862,7 +28720,9 @@
             "enum": [
               "pending",
               "retry",
-              "processing"
+              "processing",
+              "processed",
+              "failed"
             ],
             "title": "Job Status"
           },
@@ -27942,6 +30802,18 @@
             "type": "integer",
             "title": "Status Checks"
           },
+          "submitted_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Submitted At"
+          },
           "id": {
             "type": "string",
             "title": "Id"
@@ -27965,6 +30837,7 @@
           "provider_message_id",
           "delivery_status",
           "status_checks",
+          "submitted_at",
           "id",
           "created_at"
         ],
@@ -29483,6 +32356,75 @@
           "require_capability_approval"
         ],
         "title": "PricePolicyOut"
+      },
+      "ProfileDetailsInput": {
+        "properties": {
+          "business_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "manufacturer",
+                    "distributor",
+                    "supplier",
+                    "contractor",
+                    "trader",
+                    "service_provider",
+                    "authorized_agent",
+                    "importer"
+                  ]
+                },
+                "type": "array",
+                "maxItems": 8
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Types"
+          },
+          "business_services": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "supply",
+                    "delivery",
+                    "installation",
+                    "testing_commissioning",
+                    "maintenance",
+                    "fabrication",
+                    "design",
+                    "rental",
+                    "after_sales_support"
+                  ]
+                },
+                "type": "array",
+                "maxItems": 9
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Business Services"
+          },
+          "imported_scope_text": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Imported Scope Text"
+          }
+        },
+        "type": "object",
+        "title": "ProfileDetailsInput"
       },
       "PromotionInput": {
         "properties": {
@@ -31828,7 +34770,7 @@
                   "type": "string"
                 },
                 "type": "array",
-                "maxItems": 100,
+                "maxItems": 1000,
                 "minItems": 1
               },
               {
@@ -31836,6 +34778,22 @@
               }
             ],
             "title": "Invitation Ids"
+          },
+          "supplier_org_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 1000,
+                "minItems": 1
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supplier Org Ids"
           }
         },
         "type": "object",
@@ -32601,6 +35559,21 @@
         "type": "object",
         "title": "RetryDelivery"
       },
+      "Revalidate": {
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 5,
+            "title": "Note"
+          }
+        },
+        "type": "object",
+        "required": [
+          "note"
+        ],
+        "title": "Revalidate"
+      },
       "ReviewMaterialPreviewOut": {
         "properties": {
           "id": {
@@ -32684,6 +35657,21 @@
           "claims"
         ],
         "title": "ReviewQueue"
+      },
+      "SessionIn": {
+        "properties": {
+          "token": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 20,
+            "title": "Token"
+          }
+        },
+        "type": "object",
+        "required": [
+          "token"
+        ],
+        "title": "SessionIn"
       },
       "SessionOut": {
         "properties": {
@@ -32968,6 +35956,23 @@
           "material"
         ],
         "title": "SubcategoryMaterialOut"
+      },
+      "SubmitIn": {
+        "properties": {
+          "quotation": {
+            "$ref": "#/components/schemas/QuoteIn"
+          },
+          "confirm_submission": {
+            "type": "boolean",
+            "title": "Confirm Submission",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "quotation"
+        ],
+        "title": "SubmitIn"
       },
       "SubscriptionChange": {
         "properties": {
@@ -33875,7 +36880,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 80
+                "maxLength": 30
               },
               {
                 "type": "null"
@@ -33977,6 +36982,63 @@
           "currency"
         ],
         "title": "Totals"
+      },
+      "TradePatch": {
+        "properties": {
+          "raw_trade": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 10000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Trade"
+          },
+          "raw_products": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 20000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Products"
+          },
+          "raw_brands": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 5000
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Brands"
+          },
+          "contact_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array",
+                "maxItems": 50
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contact Ids"
+          }
+        },
+        "type": "object",
+        "title": "TradePatch"
       },
       "UnitOptionOut": {
         "properties": {

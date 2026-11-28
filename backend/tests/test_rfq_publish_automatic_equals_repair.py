@@ -179,8 +179,9 @@ def test_invitation_job_evaluates_once_and_records_the_exact_skip_reason(env, mo
         assert [e.payload['supplier_org_id'] for e in skipped] == ['text-plugs']
         assert skipped[0].delivery_status == 'eligibility_review_required'
         assert skipped[0].payload['eligibility_reason'].startswith('suspended: Supplier organization is suspended')
-        # Quotation draft + notification share one evaluation per invitation job.
-        assert len(calls) == len(events)
+        # Notification processing reads the persisted final matching result and never
+        # re-runs supplier matching (previously one evaluation per invitation job).
+        assert calls == []
 
 
 def test_worker_poll_stops_claiming_after_its_time_budget(env, monkeypatch):

@@ -296,6 +296,8 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
             priced=set(db.scalars(select(PriceBookItem.org_id).where(PriceBookItem.org_id.in_(supplier_ids),
                 PriceBookItem.active.is_(True),or_(*conditions)).distinct()).all())
     items_by_id={item.id:item for item in rfq_items}
+    invitation_rows=db.execute(select(Invitation,Organization.name,Quotation.status).join(Organization,Organization.id==Invitation.supplier_org_id).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id,Invitation.status!='cancelled').order_by(Invitation.id).limit(limit).offset(offset)).all()
+    channel_status=invitation_channel_status(db,rfq.id,set(supplier_ids)|{i.supplier_org_id for i,_,_ in invitation_rows})
     for match,org in match_rows:
         covered=[reason[5:] for reason in (match.reasons or []) if reason.startswith('item:')]
         directory_visible=bool(org.is_supplier and org.is_active and org.verified_status=='verified')
@@ -336,8 +338,10 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
             'service_coverage_status':('unknown' if 'delivery coverage unconfirmed' in (match.reasons or []) else 'covered') if match.status in {'eligible','partial'} else ('not covered' if match.status=='location_mismatch' else 'unknown'),
             'invitation_review_required':historical_review,
             'invitation_status':invitation_status,'quotation_status':quotation_status,
+            # Actual delivery outcome per channel; a recorded invitation is not a delivery.
+            'email_status':channel_status.get((org.id,'email'),{}).get('status') if invitation_status else None,
+            'sms_status':channel_status.get((org.id,'sms'),{}).get('status') if invitation_status else None,
             'profile_url':f'/suppliers/{org.id}' if directory_visible else None})
-    invitation_rows=db.execute(select(Invitation,Organization.name,Quotation.status).join(Organization,Organization.id==Invitation.supplier_org_id).outerjoin(Quotation,Quotation.invitation_id==Invitation.id).where(Invitation.rfq_id==rfq.id,Invitation.status!='cancelled').order_by(Invitation.id).limit(limit).offset(offset)).all()
     jobs={status:count for status,count in db.execute(select(Outbox.status,func.count()).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).group_by(Outbox.status)).all()}
     latest_job=db.scalar(select(Outbox).where(Outbox.event=='rfq.published',Outbox.payload['rfq_id'].as_string()==rfq.id).order_by(Outbox.created_at.desc(),Outbox.id.desc()).limit(1))
     job_status=latest_job.status if latest_job else None
@@ -429,7 +433,11 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
     rows=[]
     for i,name,quote in invitation_rows:
         due=next_reminder(i)
+        email=channel_status.get((i.supplier_org_id,'email'),{});sms=channel_status.get((i.supplier_org_id,'sms'),{})
         rows.append({**record(i),'supplier_name':name,'quotation_status':quote,
+                     'invitation_recorded':True,'email_status':email.get('status') or 'not_queued',
+                     'email_reason':email.get('reason'),'sms_status':sms.get('status') or 'not_queued',
+                     'sms_reason':sms.get('reason'),'supplier_response':i.status,
                      'reminder_eligible':i.supplier_org_id in pending and due is None,
                      'next_reminder_at':due.isoformat() if due else None,'reminder_count':i.reminder_count or 0})
     from app.modules.notifications.procurement import rfq_solicitation_state
@@ -444,6 +452,39 @@ def results(rfq_id:str,limit:int=Query(25,ge=1,le=100),offset:int=Query(0,ge=0),
             # Candidate and exclusion counts are admin diagnostics, not buyer results.
             'excluded_suppliers':0,'excluded_by_status':{},
             'explanation':explanation,'deliveries':deliveries,'reminder_available_at':available.isoformat() if available else None,'limit':limit,'offset':offset}
+
+
+# Best outcome first: a delivered message outranks a failed duplicate for the same channel.
+CHANNEL_RANK=('delivered','accepted','sent','simulated','uncertain','sending','queued','retry_scheduled',
+              'soft_bounced','hard_bounced','failed','suppressed','skipped')
+SAFE_SKIP_REASONS={'no_contact','invalid_contact','opted_out','suppressed','invalid_recipient','duplicate_suppressed',
+                   'invitation_no_longer_eligible','authorization_changed','eligibility_review_required',
+                   'rfq_closed_or_expired','superseded_not_eligible','whatsapp_not_configured'}
+
+
+def invitation_channel_status(db,rfq_id,org_ids):
+    """{(org_id, 'email'|'sms'): {'status', 'reason'}} for RFQ invitation deliveries.
+
+    Buyer-safe: statuses and reason codes only, never addresses or provider text.
+    WhatsApp is reported with SMS (same mobile destinations).
+    """
+    if not org_ids:return {}
+    from app.modules.notifications.admin_deliveries import delivery_label
+    rows=db.execute(select(Outbox.payload['context']['org_id'].as_string(),Outbox.payload['channel'].as_string(),
+        Outbox.status,Outbox.delivery_status).where(Outbox.event=='notification.delivery',
+        Outbox.payload['context']['rfq_id'].as_string()==rfq_id,
+        Outbox.payload['template'].as_string()=='rfq_invitation',
+        Outbox.payload['context']['org_id'].as_string().in_(list(org_ids)))).all()
+    best={}
+    for org_id,channel,status,provider in rows:
+        channel='sms' if channel=='whatsapp' else channel
+        label=delivery_label(status,provider)
+        current=best.get((org_id,channel))
+        rank=CHANNEL_RANK.index(label) if label in CHANNEL_RANK else len(CHANNEL_RANK)
+        if current is None or rank<current['rank']:
+            best[(org_id,channel)]={'status':label,'rank':rank,
+                'reason':provider if label in {'skipped','suppressed'} and provider in SAFE_SKIP_REASONS else None}
+    return best
 
 
 @router.get('/rfqs/{rfq_id}/quotations-summary')

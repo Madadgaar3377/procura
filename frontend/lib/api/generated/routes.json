@@ -146,6 +146,38 @@
     "GET",
     "PATCH"
   ],
+  "organizations/admin/suppliers/{org_id}/public-profile": [
+    "GET",
+    "PATCH"
+  ],
+  "organizations/admin/suppliers/{org_id}/capability-tree": [
+    "GET"
+  ],
+  "organizations/admin/suppliers/{org_id}/products": [
+    "GET"
+  ],
+  "organizations/admin/suppliers/{org_id}/profile-details": [
+    "PUT"
+  ],
+  "organizations/admin/suppliers/{org_id}/locations": [
+    "PUT"
+  ],
+  "organizations/admin/suppliers/{org_id}/coverage": [
+    "PUT"
+  ],
+  "organizations/admin/suppliers/{org_id}/capability-groups": [
+    "POST"
+  ],
+  "organizations/admin/suppliers/{org_id}/capability-groups/{category_id}": [
+    "PATCH",
+    "DELETE"
+  ],
+  "organizations/admin/suppliers/{org_id}/trades/{trade_id}": [
+    "PATCH"
+  ],
+  "organizations/admin/suppliers/{org_id}/contacts/{contact_id}/assignments": [
+    "PUT"
+  ],
   "organizations": [
     "POST",
     "GET"
@@ -640,7 +672,8 @@
     "POST"
   ],
   "notifications/admin/restrictions": [
-    "POST"
+    "POST",
+    "GET"
   ],
   "notifications/admin/outbox/{event_id}/retry": [
     "POST"
@@ -650,6 +683,24 @@
   ],
   "notifications/admin/outbox": [
     "GET"
+  ],
+  "notifications/admin/deliveries": [
+    "GET"
+  ],
+  "notifications/admin/deliveries/summary": [
+    "GET"
+  ],
+  "notifications/admin/deliveries/{event_id}": [
+    "GET"
+  ],
+  "notifications/admin/restrictions/{restriction_id}/revalidate": [
+    "POST"
+  ],
+  "notifications/admin/deliveries/{event_id}/correct-contact": [
+    "POST"
+  ],
+  "notifications/webhooks/email": [
+    "POST"
   ],
   "memberships/plans": [
     "GET"
@@ -928,6 +979,42 @@
   "supplier-portal/decline": [
     "POST"
   ],
+  "supplier-portal/session": [
+    "POST"
+  ],
+  "supplier-portal/me": [
+    "GET"
+  ],
+  "supplier-portal/me/accept": [
+    "POST"
+  ],
+  "supplier-portal/me/decline": [
+    "POST"
+  ],
+  "supplier-portal/me/draft": [
+    "POST"
+  ],
+  "supplier-portal/me/verification/request": [
+    "POST"
+  ],
+  "supplier-portal/me/verification/confirm": [
+    "POST"
+  ],
+  "supplier-portal/me/submit": [
+    "POST"
+  ],
+  "supplier-portal/me/rfq.pdf": [
+    "GET"
+  ],
+  "supplier-portal/me/quotation.pdf": [
+    "GET"
+  ],
+  "supplier-portal/me/attachments/{attachment_id}": [
+    "GET"
+  ],
+  "supplier-portal/me/logout": [
+    "POST"
+  ],
   "public/document-builder/{kind}/totals": [
     "POST"
   ],
@@ -936,6 +1023,9 @@
   ],
   "webhooks/whatsapp": [
     "GET",
+    "POST"
+  ],
+  "webhooks/sms-gate": [
     "POST"
   ]
 }

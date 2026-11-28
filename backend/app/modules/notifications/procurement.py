@@ -40,15 +40,64 @@ def context_for(db, rfq):
         "categories": ", ".join(categories),
         "url": base + "/app/supplier/rfqs/" + rfq.id,
         "rfq_id": rfq.id,
+        # Workload isolation key: one buyer's large RFQ cannot starve other organizations.
+        "buyer_org_id": rfq.buyer_org_id,
     }
 
 
-def eligible_orgs(db, rfq, org_ids=None):
-    from app.modules.matching.service import eligible_supplier_ids
+def persisted_eligibility(db, rfq, org_ids=None) -> dict[str, str | None]:
+    """Each supplier's invitation eligibility from the persisted final matching result.
+
+    None means eligible: a current invitable match (``eligible``/``partial``, not a
+    broad-only recommendation), an active (invited/accepted) invitation and an active,
+    non-suspended supplier organization. Otherwise the exact reason. Matching is never
+    re-run here: when capabilities change, the matching job re-evaluates the RFQ and
+    supersedes invitations of suppliers that no longer qualify, which this reads.
+    """
+    from app.models import RFQMatch
+    from app.modules.matching.service import BROAD_ONLY_REASON, MATCHED_STATUSES
 
     if org_ids is None:
         org_ids = db.scalars(select(Invitation.supplier_org_id).where(Invitation.rfq_id == rfq.id)).all()
-    return eligible_supplier_ids(db, rfq, org_ids)
+    ids = list(dict.fromkeys(org_ids))
+    if not ids:
+        return {}
+    matches = {m.supplier_org_id: m for m in db.scalars(select(RFQMatch).where(
+        RFQMatch.rfq_id == rfq.id, RFQMatch.supplier_org_id.in_(ids)))}
+    invitations = {i.supplier_org_id: i for i in db.scalars(select(Invitation).where(
+        Invitation.rfq_id == rfq.id, Invitation.supplier_org_id.in_(ids)))}
+    orgs = {o.id: o for o in db.scalars(select(Organization).where(Organization.id.in_(ids)))}
+    result = {}
+    for oid in ids:
+        org, match, invitation = orgs.get(oid), matches.get(oid), invitations.get(oid)
+        if not org or not org.is_active:
+            reason = 'inactive: Supplier organization is inactive'
+        elif org.verified_status in {'rejected', 'suspended'}:
+            reason = f'{org.verified_status}: Supplier organization is {org.verified_status}'
+        elif not invitation:
+            reason = 'not_invited: no invitation recorded for this supplier'
+        elif invitation.status == 'declined':
+            reason = 'invitation_declined: supplier declined this invitation'
+        elif not match or match.status not in MATCHED_STATUSES:
+            # The matching job's own verdict, in the format it records ("status: reason").
+            detail = next((r for r in (match.reasons if match else None) or [] if isinstance(r, str)), None)
+            reason = (f"{match.status}: {detail}" if match and detail else
+                      f"{match.status if match else 'not_matched'}: supplier is not in the final matching result")
+        elif 'broad_only' in (match.reasons or []):
+            reason = BROAD_ONLY_REASON
+        elif invitation.status == 'cancelled':
+            reason = 'superseded: ' + (invitation.cancellation_reason or 'invitation superseded before delivery')
+        elif invitation.status not in {'invited', 'accepted'}:
+            reason = f'invitation_{invitation.status}: invitation is no longer active'
+        else:
+            reason = None
+        result[oid] = reason
+    return result
+
+
+def eligible_orgs(db, rfq, org_ids=None):
+    """Eligible supplier ids from persisted matching results (no matching re-run)."""
+    return {oid for oid, reason in persisted_eligibility(db, rfq, org_ids).items() if reason is None}
 
 
 def pending_invitations(db, rfq, invitation_ids=None):
@@ -96,10 +145,8 @@ def prepare(db, event):
         org = db.get(Organization, event.payload.get("supplier_org_id"))
         if not invitation or not org or invitation.rfq_id != rfq.id or invitation.supplier_org_id != org.id:
             raise PermanentOutboxError("Invalid invitation notification target")
-        from app.modules.matching.service import supplier_eligibility
-
-        reason = "invitation_declined: supplier declined this invitation" if invitation.status == "declined" \
-            else supplier_eligibility(db, rfq, [org.id])[org.id]
+        # Persisted final matching result only; matching is not re-run per notification.
+        reason = persisted_eligibility(db, rfq, [org.id])[org.id]
         if reason:
             event.status = "skipped"
             event.delivery_status = "eligibility_review_required"
@@ -121,21 +168,32 @@ def prepare(db, event):
             template="rfq_invitation",
             context={**context, "supplier_name": org.name, "org_id": org.id,
                      "invitation_id": invitation.id,"pricing_message":pricing_message,
-                     "matched_count": len(matched_item_ids(db, invitation)) or len(missing)},
+                     "matched_count": len(matched_item_ids(db, invitation)) or len(missing),
+                     # One invitation per destination per RFQ, whatever re-queued it.
+                     "notice_key": f"rfq_invitation:{rfq.id}"},
             source_key=f"rfq-invitation:{invitation.id}",
         )
     else:
         selected=event.payload.get('invitation_ids')
         targets=None if selected is None else set(db.scalars(select(Invitation.supplier_org_id).where(
             Invitation.rfq_id==rfq.id,Invitation.id.in_(selected))).all())
-        for org_id in pending_orgs(db, rfq):
+        now=datetime.now(UTC)
+        cooldown=timedelta(hours=get_settings().rfq_reminder_cooldown_hours)
+        for pending in pending_invitations(db, rfq):
+            org_id=pending.supplier_org_id
             if targets is not None and org_id not in targets:continue
+            if targets is None:
+                # Automatic deadline reminder: honour the same per-supplier cooldown as
+                # manual reminders, so a supplier just reminded is not reminded twice.
+                last=pending.last_reminded_at
+                if last and (last.replace(tzinfo=UTC) if last.tzinfo is None else last)+cooldown>now:continue
+                pending.last_reminded_at=now;pending.reminder_count=(pending.reminder_count or 0)+1
             queue_in_app(db,event,org_id,'deadline_reminder',f'Procumaterial: {rfq.reference} response deadline is approaching.')
             enqueue_rfq_notice(
                 db,
                 org_id=org_id,
                 template="deadline_reminder",
-                context={**context, "org_id": org_id},
+                context={**context, "org_id": org_id, "notice_key": f"deadline_reminder:{rfq.id}:{event.id}"},
                 source_key=f"rfq-reminder:{event.id}:{org_id}",
             )
 

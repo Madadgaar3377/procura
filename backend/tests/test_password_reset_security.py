@@ -370,7 +370,7 @@ def test_reset_delivery_decodes_envelope_and_suppresses_revoked_requests(recover
         rendered.append((template,context,secret))
         return 'Subject','Body','<p>Body</p>'
     monkeypatch.setattr(notification_worker,'render_message',render)
-    monkeypatch.setattr(notification_worker,'send_email',lambda *args:'test-message')
+    monkeypatch.setattr(notification_worker,'send_email',lambda *args,**kwargs:'test-message')
     monkeypatch.setattr(notification_worker,'send_sms',lambda *args,**kwargs:{'id':'test-message','state':'Delivered'})
     deliver=notification_worker.deliver if worker_name=='notification_worker' else worker._deliver
     with sessions() as db:

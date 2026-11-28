@@ -19,6 +19,10 @@ def mine(search:ListSearch=Depends(),user:User=Depends(current_user),db:Session=
 
 def display_delivery_status(event):
     provider=(event.delivery_status or '').lower()
+    # Bounces and suppression are reported as such, never folded into "failed"/"skipped".
+    if provider=='hard_bounced':return 'hard_bounced'
+    if provider=='soft_bounced':return 'soft_bounced'
+    if event.status=='skipped' and provider in {'suppressed','invalid_recipient','opted_out'}:return 'suppressed'
     if event.status=='uncertain':return 'uncertain'
     if event.status=='failed':return 'failed'
     if event.status=='skipped':return 'skipped'
@@ -122,6 +126,19 @@ def retry_delivery(event_id:str,payload:RetryDelivery,admin:User=Depends(admin_u
     if event.delivery_status in {'Failed','Cancelled'}:raise HTTPException(409,'Provider reported a terminal outcome. Request a new notification instead.')
     if event.status=='uncertain' and not payload.confirmed_not_accepted:
         raise HTTPException(409,'Confirm through provider or mailbox logs that the message was not accepted before retrying')
+    if event.payload.get('channel')=='email' and event.payload.get('destination'):
+        from app.modules.notifications.recipients import restriction
+        blocked=restriction(db,'email',event.payload['destination'])
+        if blocked:
+            raise HTTPException(409,f'The address is {blocked.replace("_"," ")}. Correct the supplier email or revalidate it before retrying.')
+    from app.models import RFQ
+    rfq_id=(event.payload.get('context') or {}).get('rfq_id')
+    if event.payload.get('template') in {'rfq_invitation','deadline_reminder'} and rfq_id:
+        from app.modules.notifications.procurement import rfq_solicitation_state
+        rfq=db.get(RFQ,rfq_id)
+        if not rfq or not rfq_solicitation_state(rfq)[0]:
+            raise HTTPException(409,'The RFQ is closed, cancelled or expired; invitations are no longer sent')
+    event.payload={**event.payload,'manual_retries':int(event.payload.get('manual_retries') or 0)+1}
     if event.payload.get('channel')=='email':event.delivery_status=None
     if event.payload.get('procurement_recipient') and event.payload.get('channel')=='sms' and event.status=='uncertain' and payload.confirmed_not_accepted:
         event.delivery_status=None;event.provider_message_id=None

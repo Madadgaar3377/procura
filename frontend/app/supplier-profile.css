@@ -38,6 +38,9 @@
 .sp-contact-value>div{display:flex;flex-direction:column;gap:4px;min-width:0}
 .sp-contact-value>div>span{font-size:12px;color:#718096}
 .sp-contact-value bdi{font-size:14px}
+.sp-contact-value a{color:#174b83;text-decoration:underline;text-underline-offset:2px;overflow-wrap:anywhere}
+.sp-copy{margin-inline-start:auto;border:1px solid #dce5f1;background:#fff;border-radius:8px;padding:7px;cursor:pointer;color:#374c68}
+.sp-copy:hover,.sp-copy:focus-visible{background:#eaf2fb;outline-color:#174b83}
 .sp-information>div{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.1fr);gap:12px;padding-block:11px}
 .sp-information dt{line-height:1.7;margin:0}.sp-information dd{font-size:13px;font-weight:500}
 .sp-sidebar h2{font-size:20px}.sp-verification{border-color:#dce9e3;background:#f5faf7}.sp-verification .sp-verified{border:0;background:none;padding:0}.sp-verification h2{font-size:18px}

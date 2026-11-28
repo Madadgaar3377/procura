@@ -56,10 +56,17 @@ def issue_link(db, invitation: Invitation, rfq: RFQ, *, channel: str, destinatio
 
 
 def revoke_links(db, invitation_id: str, now: datetime | None = None) -> int:
+    """Revoke every link of an invitation and end the portal sessions exchanged from them."""
+    from app.models import SupplierPortalSession
+    now = now or datetime.now(UTC)
     result = db.execute(update(SupplierAccessToken).where(
         SupplierAccessToken.invitation_id == invitation_id,
         SupplierAccessToken.revoked_at.is_(None),
-    ).values(revoked_at=now or datetime.now(UTC)))
+    ).values(revoked_at=now))
+    db.execute(update(SupplierPortalSession).where(
+        SupplierPortalSession.invitation_id == invitation_id,
+        SupplierPortalSession.revoked_at.is_(None),
+    ).values(revoked_at=now))
     return result.rowcount or 0
 
 
@@ -85,7 +92,10 @@ def authorize(db, token: str, *, lock: bool = False):
     inv_query = select(Invitation).where(Invitation.id == row.invitation_id, Invitation.rfq_id == row.rfq_id,
                                          Invitation.supplier_org_id == row.supplier_org_id)
     inv = db.scalar(inv_query.with_for_update() if lock else inv_query)
-    if not rfq or not inv or inv.status == 'declined':
+    if not rfq or not inv or inv.status in {'declined', 'cancelled'}:
+        raise HTTPException(403, 'This invitation is no longer available')
+    org = db.get(Organization, inv.supplier_org_id)
+    if not org or not org.is_active or org.verified_status in {'rejected', 'suspended'}:
         raise HTTPException(403, 'This invitation is no longer available')
     row.last_used_at = now
     row.use_count = (row.use_count or 0) + 1

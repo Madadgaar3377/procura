@@ -15,6 +15,7 @@ import BusinessDashboard from '@/features/dashboard/workspace';
 import AdminDashboard from '@/features/admin/dashboard';
 import AdminUsers from '@/features/admin/users';
 import Notifications from '@/features/notifications/workspace';
+import AdminNotificationDashboard from '@/features/notifications/admin-dashboard';
 import Settings from '@/features/auth/settings';
 import Reports from '@/features/reports/workspace';
 import { useLocale } from '@/lib/locale';
@@ -45,7 +46,7 @@ export default function LivePortal({role,current,entity}:{role:'buyer'|'supplier
  if(current==='company'||current==='company-verification')return <Company role={role}/>;
  if(current==='settings'&&role==='admin')return <><Settings/><PlatformSettings/></>;
  if(current==='settings'||current==='sessions'||current==='profile')return <Settings/>;
- if(current==='notifications'||current==='automation')return <Notifications admin={role==='admin'}/>;
+ if(current==='notifications'||current==='automation')return role==='admin'?<><AdminNotificationDashboard/><Notifications admin/></>:<Notifications/>;
  if(current==='rfqs'&&entity==='new'&&role==='buyer')return <RFQWizard/>;
  if(current==='rfqs'&&entity)return <RFQDetail id={entity} role={role}/>;
  if(current==='rfqs')return <RFQList role={role}/>;

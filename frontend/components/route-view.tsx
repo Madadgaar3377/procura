@@ -282,7 +282,11 @@ export default function RouteView({ segments }: { segments: string[] }) {
   if (!demoMode && segments[0] === 'suppliers') return <PublicFrame><LiveDirectory id={segments[1]}/></PublicFrame>;
   if (segments[0] === "login" || segments[0] === "register" || segments[0] === "forgot-password" || segments[0] === "verify-email") return <AuthPage type={segments[0]}/>;
   if (segments[0] === "demo") return <DemoWalkthrough/>;
-  return <PublicPage slug={segments[0] || "about"}/>;
+  const slug = segments[0] || "about";
+  // Unknown paths are "not found", never silently the About page (that fallback hid
+  // the missing /supplier-portal route: invitation links opened About instead).
+  if (!publicCopy[slug] && slug !== "suppliers") return <PublicFrame><section className="container public-content" role="alert"><h1>Page not found</h1><p>The page you opened does not exist. If you followed an RFQ invitation link, open the complete link from your email or SMS.</p><Link href="/">Back to Procumaterial</Link></section></PublicFrame>;
+  return <PublicPage slug={slug}/>;
 }
 
 export function PortalShell({ role, path, segments, children }: { role: Role; path: string; segments: string[]; children?: React.ReactNode }) {

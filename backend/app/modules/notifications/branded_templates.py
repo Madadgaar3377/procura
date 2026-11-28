@@ -8,6 +8,21 @@ TAGLINE = "Procurement Without Complexity"
 
 
 def render_message(template: str, context: dict, secret: str | None = None) -> tuple[str, str, str]:
+    if template == 'portal_verification_code':
+        # Recipient verification before a binding quotation; bilingual (no link, code only).
+        ref = str(context.get('reference', ''))
+        minutes = int(context.get('minutes') or 15)
+        english = (f"Procumaterial: your quotation verification code for RFQ {ref} is {secret or ''}. "
+                   f"It expires in {minutes} minutes. Do not share it.")
+        arabic_text = (f"Procumaterial: رمز التحقق لتقديم عرض السعر لطلب {ref} هو {secret or ''}. "
+                       f"تنتهي صلاحيته خلال {minutes} دقيقة. لا تشاركه.")
+        plain = english if context.get('channel') == 'sms' else f"{english}\n\n{arabic_text}"
+        subject = f'Procumaterial | Quotation verification code — {ref}' if ref else 'Procumaterial | Quotation verification code'
+        html = ('<!doctype html><html><body style="font-family:Arial,Tahoma,sans-serif;color:#0F172A">'
+                f'<p>{escape(english)}</p><p dir="rtl" lang="ar">{escape(arabic_text)}</p>'
+                f'<p style="font-size:28px;letter-spacing:6px;font-weight:bold">{escape(secret or "")}</p>'
+                '<p>Procumaterial Team</p></body></html>')
+        return subject, plain, html
     if template == 'phone_changed':
         plain = 'Procumaterial Security: Your registered phone number was changed. If this was not you, contact Procumaterial support immediately.'
         if context.get('language') == 'ar':

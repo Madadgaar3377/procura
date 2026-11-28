@@ -28,6 +28,86 @@ PROCUREMENT_EVENTS={'purchase_order.issued','delivery_note.dispatched','goods_re
 
 
 SMS_FINAL_FAILURE={'Failed','Cancelled','Expired'}
+AUTH_TEMPLATES=frozenset({'phone_change_otp','phone_otp','email_otp','password_reset','password_changed','phone_changed',
+                          'portal_verification_code'})
+
+
+def email_headers(event):
+    """Correlation headers echoed back by bounce reports (no personal data)."""
+    headers={'X-Procura-Delivery-Id':event.id}
+    template=(event.payload or {}).get('template')
+    reply_to=get_settings().smtp_reply_to
+    if template in {'rfq_invitation','deadline_reminder'} and reply_to:
+        # Solicitation to imported suppliers: give receivers a standard opt-out route.
+        headers['List-Unsubscribe']=f'<mailto:{reply_to}?subject=unsubscribe>'
+    return headers
+
+
+def email_resend_id(event):
+    """Soft-bounce resends get a new Message-ID; earlier ids stay correlatable."""
+    payload=event.payload or {}
+    retries=int(payload.get('soft_bounce_retries') or 0)+int(payload.get('manual_retries') or 0)
+    return email_message_id(event.id if not retries else f'{event.id}:resend:{retries}')
+
+
+def mark_submitted(event,now,message_id=None):
+    event.submitted_at=now
+    if message_id:
+        ids=list((event.payload or {}).get('message_ids') or [])
+        if message_id not in ids:ids.append(message_id)
+        event.payload={**event.payload,'message_ids':ids[-10:]}
+
+
+def channel_of(event):
+    if event.event in CONTACT_EVENTS:return 'email'
+    if event.event!='notification.delivery':return None
+    channel=(event.payload or {}).get('channel')
+    return 'sms' if channel=='whatsapp' else channel
+
+
+def send_budget(db,channel,now):
+    """Remaining provider submissions allowed now for this channel (None = unlimited).
+
+    Counted from outbox submitted_at in the database, so every lane process and host
+    shares one provider budget. Over budget, events simply stay queued: no attempt is
+    consumed and nothing is marked failed.
+    """
+    settings=get_settings()
+    windows=([(60,settings.email_send_limit_per_minute),(3600,settings.email_send_limit_per_hour)] if channel=='email'
+             else [(60,settings.sms_send_limit_per_minute)] if channel=='sms' else [])
+    remaining=None
+    for seconds,limit in windows:
+        if not limit:continue
+        used=db.scalar(select(func.count()).select_from(Outbox).where(
+            Outbox.event.in_(('notification.delivery',*CONTACT_EVENTS)),Outbox.submitted_at>now-timedelta(seconds=seconds),
+            func.coalesce(Outbox.payload['channel'].as_string(),'email').in_(('sms','whatsapp') if channel=='sms' else ('email',))
+        )) or 0
+        left=max(0,limit-int(used))
+        remaining=left if remaining is None else min(remaining,left)
+    return remaining
+
+
+def duplicate_delivery(db,event):
+    """An earlier submission of the same notice to the same destination, if any.
+
+    Notices carry ``notice_key`` (rfq_invitation:<rfq> or deadline_reminder:<rfq>:<job>):
+    one message per destination per RFQ and notification type, whatever re-queued it
+    (rematch, reinstated invitation, recovery job, a second supplier record sharing the
+    address). Legacy jobs without a key fall back to the per-supplier SMS rule.
+    """
+    payload=event.payload;context=payload.get('context') or {};channel=payload.get('channel')
+    if payload.get('template') not in {'rfq_invitation','deadline_reminder'} or not payload.get('destination'):return None
+    sent=Outbox.status.in_({'awaiting_status','processed','uncertain','processing'})
+    base=[Outbox.id!=event.id,Outbox.event=='notification.delivery',sent,Outbox.provider_message_id.is_not(None),
+          Outbox.payload['channel'].as_string()==channel,Outbox.payload['destination'].as_string()==payload['destination']]
+    if context.get('notice_key'):
+        query=select(Outbox.id).where(*base,Outbox.payload['context']['notice_key'].as_string()==context['notice_key'])
+    elif channel in {'sms','whatsapp'} and payload['template']=='rfq_invitation':
+        query=select(Outbox.id).where(*base,Outbox.payload['template'].as_string()=='rfq_invitation',
+            Outbox.payload['context']['rfq_id'].as_string()==context.get('rfq_id'),
+            Outbox.payload['context']['org_id'].as_string()==context.get('org_id'))
+    else:return None
+    return db.scalar(query.limit(1))
 
 
 def sms_status_delay(checks):
@@ -133,6 +213,11 @@ def deliver(db,event,now):
     consent=user.phone_verified and user.sms_notifications_enabled if channel=='sms' else user.email_verified and user.email_notifications_enabled
     if not recipient or (not authentication and not consent):
         event.status='skipped';event.delivery_status='recipient_not_verified_or_opted_in';return
+    if not authentication and channel=='email':
+        from app.modules.notifications.recipients import restriction
+        blocked=restriction(db,'email',recipient)
+        if blocked:
+            event.status='skipped';event.delivery_status=blocked;return
     ttl=core._remaining_code_ttl(db,'phone_otp' if template=='phone_change_otp' else template,payload.get('context') or {},now) if authentication else 3600
     if template in {'phone_otp','email_otp','password_reset'}:
         from app.models import EmailOTP, PhoneOTP
@@ -183,16 +268,18 @@ def deliver(db,event,now):
                 email_attachments=[(f'Quotation-{safe_ref}.pdf',pdf_bytes,'application/pdf')]
         except Exception as exc:  # noqa: BLE001 - never block email delivery if PDF fails
             log.warning('Quotation PDF attachment skipped quote_id=%s (%s)',context.get('quotation_id'),type(exc).__name__)
-    event.delivery_status='submitting';event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_message_id(event.id)
-    delivery_id=event.id
+    event.delivery_status='submitting';event.provider_message_id=_mock_idempotency_id(event.id) if channel=='sms' else email_resend_id(event)
+    delivery_id=event.id;message_id=event.provider_message_id;event.submitted_at=now
     update_delivery_notification(db,delivery_id,'sending');db.commit()
     if channel=='sms':
         result=send_sms(recipient,plain,delivery_id,ttl_seconds=ttl);event.attempts+=1;apply_sms(db,event,result,now)
     else:
-        event.provider_message_id=(send_email(recipient,subject,plain,html,delivery_id,attachments=email_attachments)
-            if email_attachments else send_email(recipient,subject,plain,html,delivery_id));event.attempts+=1
+        kwargs={'headers':email_headers(event),'message_id':message_id}
+        if email_attachments:kwargs['attachments']=email_attachments
+        event.provider_message_id=send_email(recipient,subject,plain,html,delivery_id,**kwargs);event.attempts+=1
+        # Provider accepted (SMTP 250). Delivery is confirmed only by a DSN or webhook.
         event.delivery_status='accepted';event.status='processed';event.next_attempt_at=None
-        event.payload={**event.payload,'smtp_accepted':True}
+        event.payload={**event.payload,'smtp_accepted':True};mark_submitted(event,now,event.provider_message_id)
         update_delivery_notification(db,event.id,'accepted')
     event.secret_ciphertext=None
 
@@ -223,27 +310,22 @@ def deliver_procurement(db, event, now):
     rfq=db.get(RFQ,context['rfq_id'])
     invitation=db.scalar(select(Invitation).where(Invitation.rfq_id==context['rfq_id'],
         Invitation.supplier_org_id==context['org_id']))
+    verification=payload['template']=='portal_verification_code'
     reason=restriction(db,channel,payload['destination'])
+    # Persisted final matching result only (eligible_orgs never re-runs matching).
     if not reason and (not rfq or rfq.status not in {'published','collecting_quotes'} or
-        core._utc(rfq.response_deadline)<=now or not invitation or invitation.status=='declined' or
+        core._utc(rfq.response_deadline)<=now or not invitation or invitation.status in {'declined','cancelled'} or
         context['org_id'] not in eligible_orgs(db,rfq,[context['org_id']])):
         reason='invitation_no_longer_eligible'
-    if not reason and not current_recipient(db,payload):reason='authorization_changed'
-    if not reason and channel in {'sms','whatsapp'} and payload['template']=='rfq_invitation':
-        # One invitation SMS per destination per RFQ and supplier, whatever re-queued it
-        # (rematch, reinstated invitation, recovery job). Reminders have their own cooldown.
-        earlier=db.scalar(select(Outbox.id).where(
-            Outbox.id!=event.id,Outbox.event=='notification.delivery',
-            Outbox.status.in_({'awaiting_status','processed','uncertain'}),Outbox.provider_message_id.is_not(None),
-            Outbox.payload['channel'].as_string()==channel,Outbox.payload['template'].as_string()=='rfq_invitation',
-            Outbox.payload['destination'].as_string()==payload['destination'],
-            Outbox.payload['context']['rfq_id'].as_string()==context['rfq_id'],
-            Outbox.payload['context']['org_id'].as_string()==context['org_id']).limit(1))
+    # A verification code goes to the destination the link was already delivered to.
+    if not reason and not verification and not current_recipient(db,payload):reason='authorization_changed'
+    if not reason and not verification:
+        earlier=duplicate_delivery(db,event)
         if earlier:
             reason='duplicate_suppressed'
             event.payload={**payload,'duplicate_of':earlier}
     if reason:
-        event.status='skipped';event.delivery_status=reason;return
+        event.status='skipped';event.delivery_status=reason;event.secret_ciphertext=None;return
     if channel=='email' and get_settings().is_production and not get_settings().smtp_reply_to:
         raise core.PermanentOutboxError('Configure a monitored SMTP_REPLY_TO before sending RFQ email')
     settings=get_settings()
@@ -259,14 +341,21 @@ def deliver_procurement(db, event, now):
     if redirect:
         destination=redirect
         event.payload={**payload,'redirected_to_test_recipient':True}
-    # Passwordless, revocable magic link scoped to this supplier and RFQ invitation.
-    from app.modules.procurement.portal import issue_link, portal_url
-    link=portal_url(issue_link(db,invitation,rfq,channel=channel,destination=payload['destination'],contact_id=payload.get('contact_id'),now=now))
-    subject,plain,html=render_message(payload['template'],{**context,'channel':'sms' if channel=='whatsapp' else channel,'url':link})
+    if verification:
+        if channel=='whatsapp':raise core.PermanentOutboxError('Verification codes are sent by email or SMS only')
+        if not event.secret_ciphertext:
+            event.status='skipped';event.delivery_status='code_expired';return
+        secret=decrypt_delivery_secret(event.secret_ciphertext)
+        subject,plain,html=render_message('portal_verification_code',{**context,'channel':channel},secret)
+    else:
+        # Passwordless, revocable magic link scoped to this supplier and RFQ invitation.
+        from app.modules.procurement.portal import issue_link, portal_url
+        link=portal_url(issue_link(db,invitation,rfq,channel=channel,destination=payload['destination'],contact_id=payload.get('contact_id'),now=now))
+        subject,plain,html=render_message(payload['template'],{**context,'channel':'sms' if channel=='whatsapp' else channel,'url':link})
     event.payload={**event.payload,'last_attempt_at':now.isoformat()}
     event.delivery_status='submitting'
-    event.provider_message_id=_mock_idempotency_id(event.id) if channel in {'sms','whatsapp'} else email_message_id(event.id)
-    delivery_id=event.id
+    event.provider_message_id=_mock_idempotency_id(event.id) if channel in {'sms','whatsapp'} else email_resend_id(event)
+    delivery_id=event.id;message_id=event.provider_message_id;event.submitted_at=now
     db.commit()
     if channel=='whatsapp':
         from app.modules.procurement.whatsapp import send_template
@@ -280,9 +369,13 @@ def deliver_procurement(db, event, now):
         result=send_sms(payload['destination'],plain,delivery_id)
         event.attempts+=1;apply_sms(db,event,result,now)
     else:
-        event.provider_message_id=send_email(payload['destination'],subject,plain,html,delivery_id)
+        event.provider_message_id=send_email(payload['destination'],subject,plain,html,delivery_id,
+                                             headers=email_headers(event),message_id=message_id)
+        # Provider accepted (SMTP 250). Delivery is confirmed only by a DSN or webhook.
         event.attempts+=1;event.delivery_status='accepted';event.status='processed';event.next_attempt_at=None
         event.payload={**event.payload,'smtp_accepted':not get_settings().mock_notifications}
+        mark_submitted(event,now,event.provider_message_id)
+    event.secret_ciphertext=None
     if get_settings().mock_notifications:
         event.delivery_status='simulated';event.status='processed';event.next_attempt_at=None
 
@@ -385,8 +478,28 @@ def auto_prepare_quote(db,event):
     prepare_invitation_quote(db,event.payload['invitation_id'])
 
 
-def process_batch(db,limit=25,now=None,event_ids=None,lane='all'):
+def isolation_key(payload):
+    """Workload isolation: the buyer organization (or RFQ) a job belongs to."""
+    payload=payload or {};context=payload.get('context') or {}
+    return str(context.get('buyer_org_id') or context.get('rfq_id') or payload.get('rfq_id') or payload.get('org_id') or '')
+
+
+def fair_order(rows,limit,share):
+    """Oldest first, but at most ``share`` jobs per organization while others wait."""
+    picked=[];counts={};deferred=[]
+    for event_id,payload in rows:
+        key=isolation_key(payload)
+        if key and counts.get(key,0)>=share:deferred.append(event_id);continue
+        counts[key]=counts.get(key,0)+1;picked.append(event_id)
+        if len(picked)>=limit:return picked
+    # Spare capacity goes back to the deferred jobs rather than idling.
+    return (picked+deferred)[:limit]
+
+
+def process_batch(db,limit=None,now=None,event_ids=None,lane='all'):
     now=core._utc(now or datetime.now(UTC))
+    settings=get_settings()
+    limit=limit or settings.outbox_batch_size
     if event_ids is None and lane in {'all','events'}:
         from app.modules.notifications.procurement import schedule_reminders
         from app.modules.organizations.auto_approval import run_auto_approval_sweep
@@ -401,9 +514,11 @@ def process_batch(db,limit=25,now=None,event_ids=None,lane='all'):
     eligible=or_(and_(Outbox.status.in_({'pending','retry','awaiting_status'}),due),and_(Outbox.status=='processing',or_(Outbox.lock_until.is_(None),Outbox.lock_until<=now)))
     lane_condition=lane_filter(lane)
     if lane_condition is not None:eligible=and_(eligible,lane_condition)
-    query=select(Outbox.id).where(eligible)
+    query=select(Outbox.id,Outbox.payload).where(eligible)
     if event_ids is not None:query=query.where(Outbox.id.in_(event_ids))
-    ids=db.scalars(query.order_by(Outbox.created_at,Outbox.id).limit(limit)).all();done=[]
+    rows=db.execute(query.order_by(Outbox.created_at,Outbox.id).limit(limit*4 if event_ids is None else len(event_ids) or 1)).all()
+    ids=fair_order(rows,limit if event_ids is None else len(rows),settings.outbox_org_batch_share) if event_ids is None else [r[0] for r in rows]
+    done=[];budgets={}
     poll_started=time.monotonic();budget=get_settings().outbox_poll_time_budget_seconds
     for position,event_id in enumerate(ids):
         # Unclaimed events stay queued for the next poll; nothing is skipped or lost.
@@ -418,6 +533,18 @@ def process_batch(db,limit=25,now=None,event_ids=None,lane='all'):
                 defer_paused_email(event,now)
                 if event.status=='failed':update_delivery_notification(db,event.id,'failed')
                 db.commit();continue
+            channel=channel_of(event)
+            submits=channel in {'email','sms'} and event.status!='awaiting_status' and not (
+                channel=='sms' and event.provider_message_id and event.delivery_status not in {'submitting','unknown',None})
+            # Account security messages (OTP, password reset) are low volume and time
+            # critical: they are counted against the budget but never held behind bulk mail.
+            security=(event.payload or {}).get('template') in AUTH_TEMPLATES
+            if submits and not settings.mock_notifications and not security:
+                if channel not in budgets:budgets[channel]=send_budget(db,channel,now)
+                if budgets[channel] is not None and budgets[channel]<=0:
+                    # Provider sending limit reached: leave the job queued untouched.
+                    db.rollback();continue
+                if budgets[channel] is not None:budgets[channel]-=1
             event.status='processing';event.lock_until=now+timedelta(seconds=300);db.commit()
             if event.event=='rfq.published':
                 core._process_event(db,event,now)
@@ -477,14 +604,20 @@ def process_batch(db,limit=25,now=None,event_ids=None,lane='all'):
                         delay=max(delay,get_settings().smtp_failure_pause_seconds)
                     event.status='retry';event.next_attempt_at=now+timedelta(seconds=delay)
                     if event.payload.get('channel')=='email':event.delivery_status=None
-                else:event.status='failed';event.next_attempt_at=None
-                if (event.payload.get('procurement_recipient') and getattr(exc,'permanent_recipient',False)):
-                    from app.models import DeliveryRestriction
-                    from app.modules.notifications.recipients import restriction
-                    destination=event.payload['destination'];channel=event.payload['channel']
-                    if not restriction(db,channel,destination):
-                        db.add(DeliveryRestriction(channel=channel,destination=destination,
-                            reason='suppressed',detail='SMTP permanently refused recipient'))
+                else:
+                    event.status='failed';event.next_attempt_at=None
+                    if detail and event.payload.get('channel')=='email' and detail.get('category'):
+                        # Final SMTP outcome in the operator vocabulary (invalid_recipient,
+                        # spam_rejection, authentication_failure, ...). Never "delivered".
+                        event.delivery_status=detail['category']
+                if (event.payload.get('procurement_recipient') and getattr(exc,'permanent_recipient',False)
+                        and event.payload.get('channel')=='email' and not event.payload.get('redirected_to_test_recipient')):
+                    # Confirmed invalid recipient (RCPT TO 5.1.x): mark the address invalid and
+                    # flag the contact for correction. Sender/policy rejections never get here.
+                    from app.modules.notifications.bounces import suppress_address
+                    suppress_address(db,event.payload['destination'],reason='invalid_recipient',
+                                     detail=('SMTP refused recipient: '+str(detail.get('response') or ''))[:500] if detail
+                                     else 'SMTP permanently refused recipient',now=now)
                 # A definitive rejection before acceptance is safe to retry. An
                 # uncertain SMS keeps its deterministic provider ID for lookup.
                 if (event.payload.get('channel')=='sms' and event.delivery_status=='submitting'

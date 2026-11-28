@@ -156,6 +156,39 @@ class Settings(BaseSettings):
     # and how many pauses an unsent message may wait through before it fails.
     smtp_failure_pause_seconds: int = Field(default=900,ge=60,le=86400)
     delivery_max_deferrals: int = Field(default=48,ge=1,le=500)
+    # Optional SMTP envelope sender (Return-Path / MAIL FROM) for bounces, e.g. a
+    # dedicated bounces@ mailbox processed by app.bounce_worker. Empty keeps the
+    # existing behaviour (envelope sender = From address). Only set it to an address
+    # the authenticated SMTP account is allowed to use, or the provider rejects mail.
+    smtp_envelope_from: str = ''
+    # Provider sending limits shared by every email/SMS worker (counted in the database,
+    # so separate lane processes and hosts share one budget). 0 disables a limit.
+    email_send_limit_per_minute: int = Field(default=20,ge=0,le=10_000)
+    email_send_limit_per_hour: int = Field(default=250,ge=0,le=1_000_000)
+    sms_send_limit_per_minute: int = Field(default=10,ge=0,le=10_000)
+    # Outbox batch size per poll, and the share of one batch a single buyer/RFQ may
+    # take so one large RFQ cannot starve every other organization's notifications.
+    outbox_batch_size: int = Field(default=25,ge=1,le=500)
+    outbox_org_batch_share: int = Field(default=10,ge=1,le=500)
+    # Soft bounces (mailbox full, temporary 4.x.x after provider acceptance) are resent
+    # with exponential backoff up to this many times; hard bounces never are.
+    email_soft_bounce_max_retries: int = Field(default=3,ge=0,le=10)
+    email_soft_bounce_base_delay_seconds: int = Field(default=1800,ge=60,le=86400)
+    # Signed provider bounce/delivery webhooks (HMAC-SHA256 of the raw body). Empty
+    # disables the webhook endpoint.
+    email_webhook_secret: SecretStr = SecretStr('')
+    # Dedicated return-path mailbox polled over IMAPS by app.bounce_worker. Empty host
+    # disables IMAP processing. Use a dedicated mailbox, not the business inbox.
+    bounce_imap_host: str = ''
+    bounce_imap_port: int = Field(default=993,ge=1,le=65535)
+    bounce_imap_username: str = ''
+    bounce_imap_password: SecretStr = SecretStr('')
+    bounce_imap_folder: str = 'INBOX'
+    # Processed reports are moved here (created if missing); empty only flags \Seen.
+    bounce_imap_processed_folder: str = 'Processed-Bounces'
+    # Supplier portal: restricted session lifetime and recipient verification code.
+    supplier_portal_session_hours: int = Field(default=8,ge=1,le=72)
+    supplier_portal_code_minutes: int = Field(default=15,ge=5,le=60)
     # Shared secret configured as the SMS Gateway for Android webhook signing key.
     # Empty disables the webhook endpoint (status polling still reconciles messages).
     sms_gate_webhook_signing_key: SecretStr = SecretStr('')
